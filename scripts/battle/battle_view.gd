@@ -44,11 +44,11 @@ var end_box: CenterContainer
 
 func start(roster_a: Array, roster_b: Array, lead_a: int, lead_b: int,
 		p_side_names: Array, p_side_colors: Array, p_title: String,
-		cmdr_traits_a: Array = [], cmdr_traits_b: Array = []) -> void:
+		cmdr_traits_a: Array = [], cmdr_traits_b: Array = [], terrain: String = "plains") -> void:
 	side_names = p_side_names
 	side_colors = p_side_colors
 	battle_title = p_title
-	sim.setup_from_rosters(roster_a, roster_b, lead_a, lead_b, side_names, cmdr_traits_a, cmdr_traits_b)
+	sim.setup_from_rosters(roster_a, roster_b, lead_a, lead_b, side_names, cmdr_traits_a, cmdr_traits_b, terrain)
 	sim.battle_ended.connect(_on_battle_ended)
 
 
