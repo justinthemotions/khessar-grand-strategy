@@ -126,7 +126,7 @@ func _ready() -> void:
 		# stage a sample choice event so the popup is in the shot
 		var demo_ruler: SimCharacter = world.characters[world.realms[0].ruler_id]
 		world.raise_event(0, demo_ruler.id, "The Homage Tour",
-			"Sunniva Coldwell of House Coldwell kneels — but does not swear. A gift of 60 gold, she murmurs, would loosen the oath.",
+			"Godgifu Aurath-Voss of House Aurath-Voss kneels — but does not swear. A gift of 60 gold, she murmurs, would loosen the oath.",
 			[{"label": "Pay her price (60 gold)", "effect": func() -> void: pass},
 			{"label": "Refuse — the crown begs no one", "effect": func() -> void: pass}])
 		_capture_screenshot("user://ui_screenshot.png", 1.2)
