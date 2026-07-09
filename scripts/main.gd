@@ -114,6 +114,16 @@ var btn_fabricate: Button
 var opt_ward: OptionButton
 var btn_ward: Button
 var btn_ransom: Button
+var intrigue_label: Label       # Module 6: the web — plot phases, hooks, the lab
+var btn_ferret: Button
+var opt_scheme_kind: OptionButton
+var opt_scheme_target: OptionButton
+var btn_scheme: Button
+var btn_apothecary: Button
+var opt_vector: OptionButton
+var btn_mithridate: Button
+var hooks_box: VBoxContainer
+var intrigue_msg: Label
 
 
 func _ready() -> void:
@@ -129,7 +139,7 @@ func _ready() -> void:
 	# dev aids: `godot --path . -- --screenshot` (campaign UI) or
 	# `-- --battle-screenshot` (mid-battle) save a png to user:// and quit
 	if OS.get_cmdline_user_args().has("--screenshot"):
-		tabs_container.current_tab = 4  # show the Realm tab in the capture
+		tabs_container.current_tab = 3  # show the Intrigue tab in the capture
 		# stage a sample choice event so the popup is in the shot
 		var demo_ruler: SimCharacter = world.characters[world.realms[0].ruler_id]
 		world.raise_event(0, demo_ruler.id, "The Homage Tour",
@@ -460,6 +470,7 @@ func _make_right_column() -> VBoxContainer:
 	tabs_container.add_child(_make_diplomacy_tab())
 	tabs_container.add_child(_make_military_tab())
 	tabs_container.add_child(_make_council_tab())
+	tabs_container.add_child(_make_intrigue_tab())
 	tabs_container.add_child(_make_dynasty_tab())
 	tabs_container.add_child(_make_realm_tab())
 	col.add_child(tabs_container)
@@ -574,6 +585,182 @@ func _make_diplomacy_tab() -> VBoxContainer:
 	msg_label.add_theme_color_override("font_color", Color("d98a5f"))
 	actions.add_child(msg_label)
 	return actions
+
+
+func _make_intrigue_tab() -> ScrollContainer:
+	## Module 6: the web — the plot's anatomy, the Spymaster's digging,
+	## minor schemes, hooks held, and the hidden lab.
+	var scroll := ScrollContainer.new()
+	scroll.name = "Intrigue"
+	scroll.custom_minimum_size = Vector2(0, 300)
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", 6)
+	scroll.add_child(box)
+
+	intrigue_label = Label.new()
+	intrigue_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	intrigue_label.add_theme_font_size_override("font_size", 12)
+	box.add_child(intrigue_label)
+
+	btn_ferret = Button.new()
+	btn_ferret.text = "Ferret Out Secrets (%d gold)" % int(SimWorld.FERRET_COST)
+	btn_ferret.pressed.connect(func() -> void:
+		intrigue_msg.text = world.start_ferreting(0)
+		_refresh())
+	box.add_child(btn_ferret)
+
+	box.add_child(HSeparator.new())
+	box.add_child(_header("A Quiet Scheme"))
+	opt_scheme_kind = OptionButton.new()
+	opt_scheme_kind.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for kind in SimWorld.MINOR_SCHEME_LABELS:
+		opt_scheme_kind.add_item(SimWorld.MINOR_SCHEME_LABELS[kind])
+		opt_scheme_kind.set_item_metadata(opt_scheme_kind.item_count - 1, kind)
+	box.add_child(opt_scheme_kind)
+	opt_scheme_target = OptionButton.new()
+	opt_scheme_target.clip_text = true
+	opt_scheme_target.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(opt_scheme_target)
+	btn_scheme = Button.new()
+	btn_scheme.text = "Begin the Scheme (%d gold)" % int(SimWorld.MINOR_SCHEME_COST)
+	btn_scheme.pressed.connect(func() -> void:
+		var k := opt_scheme_kind.selected
+		var t := opt_scheme_target.selected
+		if k >= 0 and t >= 0:
+			intrigue_msg.text = world.start_minor_scheme(0,
+				str(opt_scheme_kind.get_item_metadata(k)), int(opt_scheme_target.get_item_metadata(t)))
+		_refresh())
+	box.add_child(btn_scheme)
+
+	box.add_child(HSeparator.new())
+	box.add_child(_header("The Apothecary Lab"))
+	btn_apothecary = Button.new()
+	btn_apothecary.text = "Establish an Apothecary Lab (%d gold)" % int(SimWorld.APOTHECARY_COST)
+	btn_apothecary.pressed.connect(func() -> void:
+		intrigue_msg.text = world.establish_apothecary(0)
+		_refresh())
+	box.add_child(btn_apothecary)
+	opt_vector = OptionButton.new()
+	opt_vector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for v in SimWorld.VECTOR_LABELS:
+		opt_vector.add_item("Brew: %s" % SimWorld.VECTOR_LABELS[v])
+		opt_vector.set_item_metadata(opt_vector.item_count - 1, v)
+	opt_vector.item_selected.connect(func(idx: int) -> void:
+		intrigue_msg.text = world.set_plot_vector(0, str(opt_vector.get_item_metadata(idx)))
+		call_deferred("_refresh"))
+	box.add_child(opt_vector)
+	btn_mithridate = Button.new()
+	btn_mithridate.pressed.connect(func() -> void:
+		intrigue_msg.text = world.toggle_mithridatism(0)
+		_refresh())
+	box.add_child(btn_mithridate)
+
+	box.add_child(HSeparator.new())
+	box.add_child(_header("Hooks Held"))
+	hooks_box = VBoxContainer.new()
+	hooks_box.add_theme_constant_override("separation", 2)
+	box.add_child(hooks_box)
+
+	intrigue_msg = Label.new()
+	intrigue_msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	intrigue_msg.custom_minimum_size = Vector2(0, 32)
+	intrigue_msg.add_theme_font_size_override("font_size", 12)
+	intrigue_msg.add_theme_color_override("font_color", Color("d98a5f"))
+	box.add_child(intrigue_msg)
+	return scroll
+
+
+func _refresh_intrigue() -> void:
+	var realm = world.realms[0]
+	var lines: Array = []
+	if realm.plot_progress >= 0.0:
+		var details: Dictionary = world.plot_details.get(0, {})
+		var phase := "Phase 1 — mapping the household"
+		if realm.plot_progress >= 100.0:
+			phase = "Phase 4 — the trap is set" + (", holding for a window" if bool(details.get("waiting", false)) else "")
+		elif realm.plot_progress >= 66.0:
+			phase = "Phase 3 — the vector: %s" % SimWorld.VECTOR_LABELS[str(details.get("vector", "nightshade"))]
+		elif realm.plot_progress >= 33.0:
+			phase = "Phase 2 — the asset: %s" % str(details.get("asset_role", "still unbought"))
+		var tname := "?"
+		if world.characters.has(realm.plot_target_id):
+			tname = world.full_name(world.characters[realm.plot_target_id])
+		lines.append("Plot against %s: %d%% — %s." % [tname, int(realm.plot_progress), phase])
+	if world.ferreting.has(0):
+		lines.append("The informants are out — %d months listening." % int(world.ferreting[0]))
+	for s in world.minor_schemes:
+		if int(s["realm"]) == 0 and world.characters.has(int(s["target"])):
+			lines.append("%s against %s — %d%% woven." % [
+				SimWorld.MINOR_SCHEME_LABELS[str(s["kind"])],
+				world.full_name(world.characters[int(s["target"])]), int(s["progress"])])
+	if realm.apothecary:
+		var alch_name := "the stills stand untended"
+		if world.characters.has(realm.alchemist_id) and world.characters[realm.alchemist_id].alive:
+			alch_name = world.full_name(world.characters[realm.alchemist_id])
+		lines.append("The lab bubbles beneath the estate — %s. Brewing: %s." % [
+			alch_name, SimWorld.VECTOR_LABELS[realm.plot_vector_pref]])
+	var ruler_mith := false
+	if realm.ruler_id >= 0:
+		var r: SimCharacter = world.characters[realm.ruler_id]
+		if world.mithridatism.has(r.id):
+			lines.append("The ruler takes the morning draughts — %d of %d months." % [
+				int(world.mithridatism[r.id]), SimWorld.MITHRIDATIC_MONTHS])
+			ruler_mith = true
+		elif r.traits.has("Mithridatic"):
+			lines.append("No cup can kill the ruler — the mithridatic work is done.")
+	if lines.is_empty():
+		lines.append("The web is quiet. Nothing moves that the crown has ordered.")
+	intrigue_label.text = "\n".join(lines)
+
+	btn_ferret.disabled = world.ferreting.has(0)
+	btn_apothecary.disabled = realm.apothecary
+	btn_mithridate.text = "Cease the Morning Draughts" if ruler_mith else "Begin Mithridatization (2 gold/month)"
+	for v_idx in opt_vector.item_count:
+		if str(opt_vector.get_item_metadata(v_idx)) == realm.plot_vector_pref:
+			opt_vector.select(v_idx)
+
+	# foreign adults as scheme targets
+	var picks: Array = []
+	for c in world.characters.values():
+		if c.alive and c.realm_id != 0 and c.age_years(world.tick) >= 16 and not world.wards.has(c.id):
+			picks.append(c)
+	picks.sort_custom(func(a, b) -> bool: return a.birth_tick < b.birth_tick)
+	var keep_id := -1
+	if opt_scheme_target.selected >= 0 and opt_scheme_target.selected < opt_scheme_target.item_count:
+		keep_id = int(opt_scheme_target.get_item_metadata(opt_scheme_target.selected))
+	opt_scheme_target.clear()
+	for c in picks:
+		opt_scheme_target.add_item("%s (%d)" % [world.full_name(c), c.age_years(world.tick)])
+		opt_scheme_target.set_item_metadata(opt_scheme_target.item_count - 1, c.id)
+		if c.id == keep_id:
+			opt_scheme_target.select(opt_scheme_target.item_count - 1)
+
+	# hooks: what the crown holds, and what it can force
+	for child in hooks_box.get_children():
+		child.queue_free()
+	var held: Array = world.hooks_of(0)
+	if held.is_empty():
+		hooks_box.add_child(_muted("No hooks held. Ferret out secrets, or catch a plotter red-handed."))
+	for h in held:
+		var t: SimCharacter = world.characters[int(h["target"])]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		var lab := Label.new()
+		lab.add_theme_font_size_override("font_size", 12)
+		lab.text = "%s — %s (%s)" % [world.full_name(t),
+			SimWorld.SECRET_LABELS.get(str(h["source"]), str(h["source"])), str(h["strength"])]
+		lab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(lab)
+		if world.vassal_contracts.has(t.id) and t.realm_id == 0:
+			var b := Button.new()
+			b.text = "Force harsh tax"
+			var tid: int = t.id
+			b.pressed.connect(func() -> void:
+				intrigue_msg.text = world.hook_force_contract(0, tid, "tax", "harsh")
+				_refresh())
+			row.add_child(b)
+		hooks_box.add_child(row)
 
 
 func _make_military_tab() -> VBoxContainer:
@@ -1305,6 +1492,7 @@ func _refresh() -> void:
 
 	_refresh_military()
 	_refresh_council()
+	_refresh_intrigue()
 	_refresh_dynasty()
 	_refresh_realm_tab()
 	map_view.queue_redraw()
