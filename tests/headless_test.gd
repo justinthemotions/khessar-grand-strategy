@@ -338,10 +338,13 @@ func _init() -> void:
 		s_ruler.id) != "", "tribal realms must not grant duchies")
 
 	# grants: a lord runs his county better than a stretched crown
+	# (skip anyone pinned at the opinion clamp — a blood-feud schismatic at
+	# -100 can't measurably warm to the crown, which is what we assert)
 	var lord: SimCharacter = null
 	for c in world.characters.values():
 		if c.alive and c.realm_id == 0 and c.age_years(world.tick) >= 16 \
-				and not c.denounced and c.id != world.realms[0].ruler_id:
+				and not c.denounced and c.id != world.realms[0].ruler_id \
+				and absi(world.opinion_of(c.id, world.realms[0].ruler_id)) < 100:
 			lord = c
 			break
 	assert(lord != null, "no candidate lord")
@@ -374,8 +377,12 @@ func _init() -> void:
 	assert(world.county_holder(own_pid) == null, "revoke failed")
 	assert(world.opinion_of(lord.id, world.realms[0].ruler_id) < op_lord_before, "a stripped lord must resent it")
 	world._kill(lord, "dies holding his duchy,")
-	assert(world.duchy_holder(own_duchy.id) == null, "titles must escheat to the crown on death")
-	print("revoke & escheat ok — %s reverted" % own_duchy.name)
+	# Module 4: titles are hereditary — an eligible heir inherits, else escheat
+	var duchy_after := world.duchy_holder(own_duchy.id)
+	assert(duchy_after == null or lord.children_ids.has(duchy_after.id),
+		"a dead lord's duchy must pass to his heir or escheat to the crown")
+	print("revoke & succession ok — %s %s" % [own_duchy.name,
+		"reverted to the crown" if duchy_after == null else "inherited by " + world.full_name(duchy_after)])
 
 	# de jure drift: conquered land assimilates after a generation
 	var stolen = null
