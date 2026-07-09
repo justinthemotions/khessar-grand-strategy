@@ -380,6 +380,12 @@ var last_war_occupied: Array = []     # counties the winner held when the war en
 # seeds — and the main emergent history — are never disturbed by it.
 var mrng := RandomNumberGenerator.new()
 var architect_id: int = -1            # Veril Ormand, the last surviving yes-vote
+# Faction Cast v1.0: the canonical Year Zero rulers of the map-only
+# realms, as real characters. They live outside the two simulated
+# realms' machinery (their own seeded RNG, scheduled beats — never a
+# draw from the main stream), so the map reads as people, not territory.
+var crng := RandomNumberGenerator.new()
+var cast_rulers: Dictionary = {}      # map realm id -> {"id": char id, "title": String}
 var central_secret_state: String = "buried"  # buried|revealed|contained|destroyed|leveraged|suppressed
 var patron_network_broken: bool = false      # Ending 3: the anchor is ash
 var faith_failures: Dictionary = {}   # char id -> failed prayers this year (Faith Crisis at 3)
@@ -513,6 +519,15 @@ func setup() -> void:
 	_ai_fill_council(1)
 	_log("[b]Year 0, Month 1 of the Silence.[/b] The gods have stopped answering — and every crown must learn anew what its legitimacy rests on.")
 	_seed_magic()  # the Night of the Third Hour answered by every living soul (Magic v1.0)
+	# Faction Cast v1.0: the live founders take their canonical names
+	# (the seed rolled placeholders from the pools; the Faction Map's
+	# names win — a pure rename, no dice touched)...
+	if realms[0].ruler_id >= 0:
+		characters[realms[0].ruler_id].name = "Garran"
+	if realms[1].ruler_id >= 0:
+		characters[realms[1].ruler_id].name = "Vorak"
+	# ...and the map-only realms get their canonical crowns as real people
+	_seed_faction_cast()
 
 
 func _seed_house(realm: Realm, house_name: String, ruling: bool) -> void:
@@ -620,6 +635,7 @@ func advance_month() -> void:
 	_plots_tick()
 	_intrigue_tick()
 	_magic_tick()
+	_cast_tick()
 	_diplomacy_tick()
 	_ai_diplomacy()
 	_economy()
@@ -635,7 +651,7 @@ func advance_month() -> void:
 func _births() -> void:
 	var mothers: Array = []
 	for c in characters.values():
-		if not (c.alive and c.is_female and c.spouse_id >= 0):
+		if not (c.alive and c.is_female and c.spouse_id >= 0) or is_cast(c):
 			continue
 		var husband: SimCharacter = characters[c.spouse_id]
 		if not husband.alive:
@@ -698,7 +714,7 @@ func _bastards_tick() -> void:
 	## Noble men stray. A bastard joins the father's house but stands
 	## outside the succession — until the dynasty head legitimizes them.
 	for c in characters.values():
-		if not c.alive or c.is_female or c.is_bastard:
+		if not c.alive or c.is_female or c.is_bastard or is_cast(c):
 			continue
 		var age: int = c.age_years(tick)
 		if age < ADULT_AGE or age > 45:
@@ -733,8 +749,8 @@ func _bastards_tick() -> void:
 func _deaths() -> void:
 	var doomed: Array = []
 	for c in characters.values():
-		if not c.alive:
-			continue
+		if not c.alive or is_cast(c):
+			continue  # the cast's fates are scheduled beats, not dice (Faction Cast v1.0)
 		var age: int = c.age_years(tick)
 		var chance := _death_chance(age, c.race)
 		if c.traits.has("Wasting"):
@@ -3236,6 +3252,170 @@ func _best_unpracticed(realm_id: int, stat: String) -> SimCharacter:
 	return best
 
 
+# ------------------------------------------- the Faction Cast (v1.0)
+# The canonical Year Zero rulers of Khessar's map-only realms, made
+# flesh: real SimCharacters with faces, races, ages, and answers to the
+# Silence — living outside the two simulated realms' machinery until
+# their government modules bring their realms fully live. All dice on
+# `crng`; the main history stream never feels them. The rulers come
+# straight from KhessarMapData.REALMS' canonical strings (Faction Map).
+
+func is_cast(c: SimCharacter) -> bool:
+	return c != null and c.realm_id >= 2
+
+
+func _map_realm_named(name_part: String) -> int:
+	for mr in map.realms:
+		if str(mr.name).contains(name_part):
+			return mr.id
+	return -1
+
+
+func _cast_character(p_name: String, house_name: String, female: bool, age: int,
+		map_realm_id: int, race: String, culture: String, stats: Dictionary,
+		traits: Array, response: String) -> SimCharacter:
+	var dyn: Dynasty = null
+	for d: Dynasty in dynasties.values():
+		if d.name == house_name:
+			dyn = d
+			break
+	if dyn == null:
+		dyn = Dynasty.new(dynasties.size(), house_name)
+		dynasties[dyn.id] = dyn
+	var c := _create_character(p_name, female, tick - age * 12 - crng.randi_range(0, 11), dyn.id, map_realm_id)
+	c.race = race
+	c.culture = culture
+	for k in stats:
+		c.set(STAT_PROPS[k], clampi(int(stats[k]), 1, 30))
+	c.genome = Genetics.founder(crng)
+	for t in traits:
+		_add_trait(c, str(t))
+	_add_trait(c, response)
+	return c
+
+
+func _seed_faction_cast() -> void:
+	## Faction Map v1.0's named crowns, seated. Anselm Vorontheim (the
+	## Grand Magister) waits for the Administrative government module —
+	## realm 0 is modeled through its noble houses until then.
+	crng.seed = 555
+	# --- Pellar: the Iron Library's shield ---
+	var pellar := _map_realm_named("Pellar")
+	var eithne := _cast_character("Eithne", "House Vellian", true, 52, pellar, "human", "free_city",
+		{"dip": 16, "stw": 12, "mar": 8, "int": 9, "lrn": 11, "prw": 5},
+		["Compassionate", "Patient"], "Zealous")
+	cast_rulers[pellar] = {"id": eithne.id, "title": "Queen"}
+	var ilyra := _cast_character("Ilyra", "House Vellian", true, 24, pellar, "human", "free_city",
+		{"dip": 11, "stw": 10, "mar": 5, "int": 10, "lrn": 17, "prw": 4},
+		["Methodical"], "Pragmatic")
+	ilyra.mother_id = eithne.id
+	eithne.children_ids.append(ilyra.id)
+	var vovel := _cast_character("Marek", "House Vovel", false, 71, pellar, "human", "free_city",
+		{"dip": 10, "stw": 12, "mar": 3, "int": 13, "lrn": 20, "prw": 2},
+		["Methodical", "Honest", "Academy-Sworn"], "Pragmatic")
+	# --- Halven: the merchant-democrat First Voice ---
+	var halven := _map_realm_named("Halven")
+	var ferren := _cast_character("Ferren", "House Crannock-Vey", false, 58, halven, "human", "halveni",
+		{"dip": 14, "stw": 16, "mar": 6, "int": 11, "lrn": 12, "prw": 5},
+		["Ambitious", "Gregarious"], "Pragmatic")
+	cast_rulers[halven] = {"id": ferren.id, "title": "First Voice"}
+	var selia := _cast_character("Selia", "House Crannock-Vey", true, 54, halven, "half_elf", "halveni",
+		{"dip": 13, "stw": 11, "mar": 4, "int": 9, "lrn": 14, "prw": 3},
+		["Patient"], "Pragmatic")
+	ferren.spouse_id = selia.id
+	selia.spouse_id = ferren.id
+	var mira := _cast_character("Mira", "House Crannock-Vey", true, 26, halven, "half_elf", "halveni",
+		{"dip": 10, "stw": 9, "mar": 6, "int": 15, "lrn": 12, "prw": 6},
+		["Deceitful"], "Opportunistic")
+	mira.father_id = ferren.id
+	mira.mother_id = selia.id
+	ferren.children_ids.append(mira.id)
+	selia.children_ids.append(mira.id)
+	# --- Vor-Grim: the compact-breaker clan ---
+	var vor_grim := _map_realm_named("Vor-Grim")
+	var grimkar := _cast_character("Grimkar", "House Vor-Grim", false, 50, vor_grim, "orc", "drevak",
+		{"dip": 4, "stw": 7, "mar": 15, "int": 8, "lrn": 4, "prw": 16},
+		["Wrathful", "Brave"], "Opportunistic")
+	cast_rulers[vor_grim] = {"id": grimkar.id, "title": "Chieftain"}
+	# --- Kharak-Dum: the last open hold ---
+	var kharak := _map_realm_named("Kharak-Dum")
+	var grimhold := _cast_character("Grimhold", "House Ironvault", false, 82, kharak, "dwarf", "kharak_dum",
+		{"dip": 10, "stw": 15, "mar": 12, "int": 8, "lrn": 12, "prw": 9},
+		["Patient", "Content", "Ailing"], "Pragmatic")
+	cast_rulers[kharak] = {"id": grimhold.id, "title": "King"}
+	var karth := _cast_character("Karth", "House Ironvault", false, 48, kharak, "dwarf", "kharak_dum",
+		{"dip": 9, "stw": 13, "mar": 8, "int": 9, "lrn": 22, "prw": 7},
+		["Methodical", "Shy"], "Pragmatic")
+	karth.father_id = grimhold.id
+	grimhold.children_ids.append(karth.id)
+	# --- the two Elven Great Houses: a 400-year rivalry ---
+	var veldarin := _map_realm_named("Veldarin")
+	var analinth := _cast_character("Analinth", "House Veldarin", true, 340, veldarin, "elf", "veldarin",
+		{"dip": 12, "stw": 14, "mar": 9, "int": 12, "lrn": 19, "prw": 8},
+		["Patient", "Content", "Purist"], "Pragmatic")
+	cast_rulers[veldarin] = {"id": analinth.id, "title": "Matriarch"}
+	var thaladris := _map_realm_named("Thaladris")
+	var ariorwe := _cast_character("Ariorwe", "House Thaladris", true, 285, thaladris, "elf", "thaladris",
+		{"dip": 18, "stw": 12, "mar": 7, "int": 11, "lrn": 16, "prw": 6},
+		["Gregarious", "Patient", "Song-Marked"], "Pragmatic")
+	ariorwe.names_carried = 120  # a century of corresponding with the Iron Library, and singing its dead
+	cast_rulers[thaladris] = {"id": ariorwe.id, "title": "Matriarch"}
+	# --- Saren-Vesh: the prepared ---
+	var saren := _map_realm_named("Saren-Vesh")
+	var vessa := _cast_character("Vessa", "House Korren", true, 47, saren, "human", "southern_reach",
+		{"dip": 13, "stw": 17, "mar": 5, "int": 14, "lrn": 12, "prw": 4},
+		["Ambitious", "Methodical"], "Opportunistic")
+	cast_rulers[saren] = {"id": vessa.id, "title": "First Councilor"}
+	_log("[b]The crowns of Khessar at Year Zero:[/b] Queen Eithne in Pellar, First Voice Ferren Crannock-Vey in Halven, Chieftain Grimkar Vor-Grim beyond the passes, King Grimhold Ironvault under Kharak-Dum, the Matriarchs Analinth Veldarin and Ariorwe Thaladris in their forests, and First Councilor Vessa Korren at Saren-Vesh. Every one of them woke to the same silent sky.")
+	_log("House Veldarin answers no letters — it has not for a hundred and eighty years, and a silent sky changes nothing.")
+
+
+func cast_ruler_of(map_realm_id: int) -> SimCharacter:
+	if not cast_rulers.has(map_realm_id):
+		return null
+	return characters.get(int(cast_rulers[map_realm_id]["id"]))
+
+
+func cast_title_of(char_id: int) -> String:
+	for rid in cast_rulers:
+		if int(cast_rulers[rid]["id"]) == char_id:
+			return "%s of %s" % [str(cast_rulers[rid]["title"]), map.realms[rid].name]
+	return ""
+
+
+func _cast_tick() -> void:
+	## The cast's scheduled canonical beats (Faction Map starting crises).
+	## Deterministic by tick — chronicle drama, not simulation, until the
+	## government modules bring these realms live.
+	if cast_rulers.is_empty():
+		return
+	match tick:
+		6:
+			_log("[b]Pellar refuses the Magistocracy.[/b] A Vael delegation arrives at the Iron Library to offer 'consultation on the archives' safety.' Queen Eithne has the gates opened, the delegates fed — and the offer declined in writing. The first crack between Vael and the Free Cities is on parchment now.")
+		10:
+			_log("[b]The grain fleets fail Halven.[/b] The sea-weather has not been right since the Night of the Third Hour, and the shipping contracts written for the old winds are worthless. First Voice Ferren Crannock-Vey convenes the six houses in emergency session.")
+		14:
+			_log("Saren-Vesh's warehouses stand full — First Councilor Vessa Korren began stockpiling months before the Silence, on the advice of anonymous correspondence she has never explained. The Trade Council does not ask twice about profitable foresight.")
+		24:
+			_log("[b]The ward-stones of Kharak-Dum are going dark[/b] — one by one, oldest first. King Grimhold Ironvault orders the deep galleries sealed and the ward-speakers doubled. The wards held through the Silence itself; whatever is eating them now is patient.")
+		30:
+			_log("[b]Chieftain Grimkar Vor-Grim spits on the border compact.[/b] Word crosses the passes: the Vor-Grim call the Karn-Vol arrangement with the lowlanders a leash, and Grimkar has begun asking other clans what an unleashed north might take.")
+		48:
+			var grimhold2 := cast_ruler_of(_map_realm_named("Kharak-Dum"))
+			if grimhold2 != null and grimhold2.alive:
+				_kill(grimhold2, "dies as the ward-lights gutter,")
+				var kharak2 := _map_realm_named("Kharak-Dum")
+				var karth2: SimCharacter = null
+				for cid in grimhold2.children_ids:
+					var kid: SimCharacter = characters.get(cid)
+					if kid != null and kid.alive:
+						karth2 = kid
+						break
+				if karth2 != null:
+					cast_rulers[kharak2] = {"id": karth2.id, "title": "King"}
+					_log("[b]The first Dwarven Interregnum of the Silence opens under Kharak-Dum.[/b] The succession councils sit in the dark of the sealed galleries — and rise, at last, with Karth Ironvault. A scholar-king, crowned while the ward-stones dim.")
+
+
 func province_of_character(c: SimCharacter):
 	## Where a life is actually lived: commanders in the field, lords on
 	## their land, everyone else at the realm's capital.
@@ -3426,7 +3606,7 @@ func _faith_tick() -> void:
 	if tick % 3 != 0:
 		return
 	for c in characters.values():
-		if not c.alive or not c.traits.has("Faith-Practicing"):
+		if not c.alive or not c.traits.has("Faith-Practicing") or is_cast(c):
 			continue
 		var p = province_of_character(c)
 		var rel := faith_reliability(c, p)
@@ -3475,12 +3655,12 @@ func _patron_tick() -> void:
 	if patron_network_broken:
 		return
 	for c in characters.values():
-		if c.alive and c.stress >= 180.0 and not c.traits.has("Patron-Bound") \
+		if c.alive and not is_cast(c) and c.stress >= 180.0 and not c.traits.has("Patron-Bound") \
 				and c.age_years(tick) >= ADULT_AGE and mrng.randf() < 0.06:
 			_raise_patron_offer(c)
 			break
 	for c in characters.values():
-		if c.alive and c.traits.has("Patron-Bound") and mrng.randf() < 0.04:
+		if c.alive and c.traits.has("Patron-Bound") and not is_cast(c) and mrng.randf() < 0.04:
 			_raise_patron_communication(c)
 			break
 
@@ -3557,7 +3737,7 @@ func _oath_tick() -> void:
 				best.oath_token_intact = true
 				_log("[b]%s swears the old oath[/b] — ring of witnesses, token forged, words said whole. Nothing ratifies it now. It holds anyway." % full_name(best))
 	for c in characters.values():
-		if c.alive and c.traits.has("Oath-Sworn") and mrng.randf() < 0.015:
+		if c.alive and c.traits.has("Oath-Sworn") and not is_cast(c) and mrng.randf() < 0.015:
 			_raise_oath_challenged(c)
 			break
 
@@ -4657,7 +4837,7 @@ func _auto_marriages() -> void:
 	## realm — the player brokers the strategic marriages while they're young.
 	var bachelors: Array = []
 	for c in characters.values():
-		if c.alive and not c.is_female and c.spouse_id < 0 and c.age_years(tick) >= 22:
+		if c.alive and not c.is_female and c.spouse_id < 0 and c.age_years(tick) >= 22 and not is_cast(c):
 			bachelors.append(c)
 	for m: SimCharacter in bachelors:
 		if m.spouse_id >= 0 or rng.randf() > 0.06:
@@ -4695,7 +4875,9 @@ func allied() -> bool:
 func eligible_singles(female: bool) -> Array:
 	var out: Array = []
 	for c in characters.values():
-		if c.alive and c.is_female == female and c.spouse_id < 0 and c.age_years(tick) >= ADULT_AGE:
+		# the cast courts do not answer marriage brokers yet (Faction Cast v1.0)
+		if c.alive and c.is_female == female and c.spouse_id < 0 \
+				and c.age_years(tick) >= ADULT_AGE and not is_cast(c):
 			out.append(c)
 	out.sort_custom(func(a: SimCharacter, b: SimCharacter) -> bool: return a.birth_tick < b.birth_tick)
 	return out
@@ -6064,7 +6246,7 @@ func _cadet_branch_tick() -> void:
 	## Ambitious younger sons strike out on their own without being asked.
 	## A man with a grievance against his own head splits in anger.
 	for c in characters.values():
-		if not c.alive or c.is_female:
+		if not c.alive or c.is_female or is_cast(c):
 			continue
 		if can_found_cadet(c) != "":
 			continue
