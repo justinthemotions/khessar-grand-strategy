@@ -126,6 +126,12 @@ static func _build() -> void:
 	_add(TraitData.make("Long-Reigned", "health", {"stw": -1, "dip": -1},
 		{"eulogy": "who outlived their own era",
 		"mods": {"court_opinion_baseline": -10.0}}))
+	# the apothecary's craft (Module 6): the Slow Weep mimics a natural
+	# consumption; mithridatization is bought with years of careful dosing
+	_add(TraitData.make("Wasting", "health", {"prw": -2, "mar": -1},
+		{"eulogy": "who faded before their time"}))
+	_add(TraitData.make("Mithridatic", "health", {},
+		{"eulogy": "whom no cup could kill"}))
 
 	# --- coping (stress scars) ---
 	_add(TraitData.make("Drunkard", "coping", {"stw": -2, "mar": -1}))

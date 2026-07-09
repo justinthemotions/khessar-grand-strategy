@@ -28,6 +28,7 @@ var disinherited: bool = false     # cast out of the line of succession by the d
 var denounced: bool = false        # branded a house criminal: shunned, unseatable, uncommandable
 var aggrieved: bool = false        # nurses a claim: refused a bequest or passed over — coup material
 var bought_off: bool = false       # accepted a bequest; will not rise at the coronation
+var slandered: bool = false        # Module 6: forged documents question this blood before the world
 
 # The Core Six (design doc Module 1). 0–30 scale; traits push them around.
 var diplomacy: int = 0     # negotiation, opinion gain, peacetime stability
