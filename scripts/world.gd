@@ -51,6 +51,13 @@ const LEGACIES := {
 	# on the blending the Silence made possible. Mutually exclusive.
 	"The Syncretic Charter": {"cost": 300.0, "blurb": "The house commits to cultural blending: syncretism ripens 25% faster in its marriages", "excludes": "The Preserving Line"},
 	"The Preserving Line":   {"cost": 250.0, "blurb": "The house keeps the old ways whole: no marriage of this blood will ever hybridize", "excludes": "The Syncretic Charter"},
+	# Magic Injection v1.0 (doc §7): what a bloodline does about the Silence
+	"The Patron's Bargain":    {"cost": 100.0, "blurb": "Power on credit: children of the blood are born +2 Martial, +2 Intrigue — and every one of them is born already owing on the ledger"},
+	"The Iron Library Compact": {"cost": 200.0, "blurb": "The Archive remembers the house's dead: every death of the blood is recorded, and recorded deeds are renown"},
+	"The Vael Compact":        {"cost": 250.0, "blurb": "The academies' tradition runs in the line: rulers of the blood administer one county further"},
+	"The Salt Road Concord":   {"cost": 300.0, "blurb": "The caravans know the house's seal: +6 gold monthly while a trade pact holds, and the roads raise 5% more levies"},
+	"The Brushgate Continuity": {"cost": 400.0, "blurb": "The discipline is kept at the family hearth: the whole blood carries its burdens lighter"},
+	"The Ward-Speaker Line":   {"cost": 450.0, "blurb": "The Kharak-Dum ward-craft was taught to this blood: Ward-Speaker retinues answer the house's muster anywhere"},
 }
 
 # Dynasty Head Powers: what the patriarch's word costs the house's Renown.
@@ -73,6 +80,12 @@ const MYTHOS := {
 	"Compact-Bound":       {"blurb": "A Human-Orc marriage runs in this blood: +20 opinion from the clans, -10 from Aelindran traditionalists"},
 	"Half-Blooded Line":   {"blurb": "Three cross-race marriages in the line: +10 opinion from the half-races, -5 from Purists"},
 	"Pure of Blood":       {"blurb": "The line has never married across race, and says so: +15 opinion from Purists, -10 from the half-races"},
+	# Magic Injection v1.0 (doc §7)
+	"Patron-Touched":      {"blurb": "The bargain is publicly known in this blood: -10 opinion from all outsiders, but their plots weave 20% faster"},
+	"Silence-Scarred":     {"blurb": "The house has buried its own marked by the Silence: grief the whole land recognizes"},
+	"Vael-Educated":       {"blurb": "Three of the blood have sworn the academies: the line thinks in ledgers and proofs"},
+	"Aelindran-Legitimate": {"blurb": "The old divine-right claim, now mechanically uncertain — kept alive by refusing to secularize (dormant until Module 9)"},
+	"Ward-Broken":         {"blurb": "The house's warded lands fell to the Silence: mourned by the Scarred, unforgiven by the ward-wrights (dormant until the ward layer)"},
 }
 const KIN_CRUELTY_THRESHOLD := 3   # disinherits/denouncements before the Kin-Eater stain
 const POISONINGS_THRESHOLD := 2
@@ -246,6 +259,13 @@ const SECRET_LABELS := {
 	"bastard blood": "bastard blood in the line",
 	"a murderer's hand": "a murder bought and paid for",
 	"a secret affair": "a bed shared in secret",
+	# Magic Injection v1.0 (doc §6)
+	"patron_bargain_signed": "a Patron's bargain, signed",
+	"silence_cause_complicity": "the Silence's cause, and their part in it",
+	"oath_object_broken": "an oath, broken at its object",
+	"corruption_marks_hidden": "Corruption marks, concealed",
+	"silence_encounter_witnessed": "present when the Silence broke through",
+	"arcane_manifestation_hidden": "the blood untaught",
 }
 const MINOR_SCHEME_LABELS := {
 	"seduce": "Seduction", "abduct": "Abduction",
@@ -271,6 +291,32 @@ const SCORCH_MONTHS := 60             # five years before scorched fields bear a
 const SCORCH_YIELD := 0.4             # what a burned county still renders
 const CHAMPION_COUNT := 3             # the named blades who ride with the main host
 const CHAMPION_LEAD_DIV := 6.0        # pooled champion prowess -> battle leadership
+
+# Magic Injection v1.0: the Corruption meter, the Silence Response, and
+# the eight practices. Design: Opus's Magic Injection doc, 2026-07-08.
+const SILENCE_RESPONSES: Array[String] = ["Zealous", "Broken", "Pragmatic", "Opportunistic"]
+const CORRUPTION_MARKS: Array[String] = ["Corruption Mark I", "Corruption Mark II", "Corruption Mark III"]
+const CORRUPTION_THRESHOLDS: Array[float] = [5.0, 10.0, 15.0]
+const MARK_FLAVOR := {
+	"Corruption Mark I": "the fingertips begin to darken",
+	"Corruption Mark II": "light catches wrong in one iris — the cold-gold gleam",
+	"Corruption Mark III": "they have become what they bargained with",
+}
+# How each Silence Response bends the Cleric's reliability (doc §4.3)
+const RESPONSE_FAITH_MULT := {"Zealous": 1.15, "Broken": 0.60, "Pragmatic": 0.85, "Opportunistic": 0.70}
+# silence_dampening_factor by ground (doc §4.3): the Ashfields smother,
+# the ward-stones and the Iron Library still hold a little of the sky up
+const FAITH_DAMPENING_BASE := 0.30
+const FAITH_DAMPENING_ASHFIELDS := 0.10
+const FAITH_DAMPENING_WARDSTONE := 0.60
+const FAITH_DAMPENING_LIBRARY := 0.80
+# Druid terrain effectiveness (doc §4.5): 0 = the primal channel is gone
+const PRIMAL_TERRAIN := {
+	"forest": 1.0, "wetland": 1.0, "river_valley": 1.0, "plains": 0.9,
+	"hills": 0.9, "coast": 0.8, "mountain": 0.6, "ashfields": 0.0, "ruined": 0.0,
+}
+const CORRUPTION_ASHFIELDS_MONTHLY := 0.05
+const CORRUPTION_RUINED_MONTHLY := 0.02
 
 var rng := RandomNumberGenerator.new()
 var tick: int = 0                  # months since Year Zero of the Silence
@@ -329,6 +375,15 @@ var sieges: Dictionary = {}           # province id -> {attacker, progress, thre
 var scorched: Dictionary = {}         # province id -> tick the fields bear again
 var partisans: Dictionary = {}        # province id -> defending realm id — night-raid cells
 var last_war_occupied: Array = []     # counties the winner held when the war ended — ceded first
+# Magic Injection v1.0: the world under the Silence. All magic randomness
+# runs on its own seeded RNG (like the map's) so the Year Zero founder
+# seeds — and the main emergent history — are never disturbed by it.
+var mrng := RandomNumberGenerator.new()
+var architect_id: int = -1            # Veril Ormand, the last surviving yes-vote
+var central_secret_state: String = "buried"  # buried|revealed|contained|destroyed|leveraged|suppressed
+var patron_network_broken: bool = false      # Ending 3: the anchor is ash
+var faith_failures: Dictionary = {}   # char id -> failed prayers this year (Faith Crisis at 3)
+var silence_mark_deaths: Dictionary = {}  # root house id -> members lost bearing Corruption Marks
 
 # The event framework: choice events with trait-weighted AI resolution.
 var pending_events: Array = []       # events awaiting the player's decision
@@ -457,6 +512,7 @@ func setup() -> void:
 	_ai_fill_council(0)
 	_ai_fill_council(1)
 	_log("[b]Year 0, Month 1 of the Silence.[/b] The gods have stopped answering — and every crown must learn anew what its legitimacy rests on.")
+	_seed_magic()  # the Night of the Third Hour answered by every living soul (Magic v1.0)
 
 
 func _seed_house(realm: Realm, house_name: String, ruling: bool) -> void:
@@ -563,6 +619,7 @@ func advance_month() -> void:
 	_laws_tick()
 	_plots_tick()
 	_intrigue_tick()
+	_magic_tick()
 	_diplomacy_tick()
 	_ai_diplomacy()
 	_economy()
@@ -620,6 +677,11 @@ func _make_child(father: SimCharacter, mother: SimCharacter) -> SimCharacter:
 	if has_legacy(root_house_id(father.dynasty_id), "Blood of the Wolf"):
 		child.martial = clampi(child.martial + 1, 1, 30)
 		child.prowess = clampi(child.prowess + 1, 1, 30)
+	if has_legacy(root_house_id(father.dynasty_id), "The Patron's Bargain"):
+		# power on credit (Magic v1.0): born sharper — and born owing
+		child.martial = clampi(child.martial + 2, 1, 30)
+		child.intrigue = clampi(child.intrigue + 2, 1, 30)
+		child.corruption = 2.0
 	child.father_id = father.id
 	child.mother_id = mother.id
 	father.children_ids.append(child.id)
@@ -724,6 +786,18 @@ func _kill(c: SimCharacter, cause: String) -> void:
 			if float(m["value"]) <= -40.0 and characters.has(int(m["subject"])) and characters[int(m["subject"])].alive:
 				add_memory(kid, "inherited grudge", int(m["subject"]), float(m["value"]) * 0.5, 2.0)
 	_log("%s %s at %d." % [full_name(c), cause, c.age_years(tick)])
+	# Magic Injection v1.0: the Bard asks for the name; the Archive
+	# records the deed; a house that buries its marked is marked itself
+	for b in characters.values():
+		if b.alive and b.id != c.id and b.realm_id == c.realm_id and b.traits.has("Song-Marked"):
+			b.names_carried += 1
+	var dead_root := root_house_id(c.dynasty_id)
+	if has_legacy(dead_root, "The Iron Library Compact"):
+		dynasties[dead_root].renown += 0.5
+	if c.corruption_marks >= 2:
+		silence_mark_deaths[dead_root] = int(silence_mark_deaths.get(dead_root, 0)) + 1
+		if int(silence_mark_deaths[dead_root]) >= 2:
+			_earn_mythos(dead_root, "Silence-Scarred")
 	_inherit_titles(c)  # Module 4: lordships are hereditary; no heir → escheat
 	_epitaph(c)
 	for realm in realms:
@@ -994,6 +1068,8 @@ func _economy() -> void:
 				income *= 1.10
 		if trade_pact:
 			income += 3.0
+			if realm.ruler_id >= 0 and has_legacy(root_house_id(characters[realm.ruler_id].dynasty_id), "The Salt Road Concord"):
+				income += 6.0  # the caravans know the house's seal (Magic v1.0)
 		if at_war:
 			income -= 4.0
 		if not realm.interregnum.is_empty():
@@ -1050,6 +1126,8 @@ func levy_capacity(realm_id: int) -> int:
 		var ruler: SimCharacter = characters[realm.ruler_id]
 		if has_legacy(root_house_id(ruler.dynasty_id), "Blood of the Wolf"):
 			cap *= 1.08
+		if has_legacy(root_house_id(ruler.dynasty_id), "The Salt Road Concord"):
+			cap *= 1.05  # the roads raise men as readily as coin (Magic v1.0)
 		if realm.government == "tribal":
 			cap += ruler.martial * 6.0 + dynasties[root_house_id(ruler.dynasty_id)].renown / 50.0
 	if not realm.interregnum.is_empty():
@@ -1146,6 +1224,12 @@ func recruit_gate(realm_id: int, kind: String) -> String:
 	## limits are checked at muster time, not here.
 	if kind != "levy" and int(demilitarized_until.get(realm_id, -1)) > tick:
 		return "The treaty of demilitarization bars professional muster — common levies only."
+	# The Ward-Speaker Line (Magic v1.0): the craft was taught to the
+	# blood itself — the retinues answer this house's muster anywhere
+	if kind == "ward_speaker_retinue":
+		var wr: Realm = realms[realm_id]
+		if wr.ruler_id >= 0 and has_legacy(root_house_id(characters[wr.ruler_id].dynasty_id), "The Ward-Speaker Line"):
+			return ""
 	var wanted := CultureData.recruit_culture(kind)
 	if wanted == "":
 		return ""  # the universal roster
@@ -1822,7 +1906,7 @@ func _site_name_at(target: Vector2) -> String:
 	return best_name
 
 
-func apply_battle_result(winner_side: int, loser_loss_fraction: float, charged: Array = [false, false]) -> void:
+func apply_battle_result(winner_side: int, loser_loss_fraction: float, charged: Array = [false, false], cmdr_corruption: Array = [0.0, 0.0]) -> void:
 	## Feeds a fought battle back into the war: the score swings, the
 	## beaten army retreats home, and either commander may not come back.
 	var site := battle_site_name()
@@ -1842,6 +1926,13 @@ func apply_battle_result(winner_side: int, loser_loss_fraction: float, charged: 
 		if loser_army != null and army_by_id(loser_army.id) != null:
 			loser_army.target = map.realm_centroid(loser_army.realm_id)
 			loser_army.has_target = true
+	# what the field cost each commander's ledger (Magic v1.0)
+	for i in 2:
+		var host: Army = pa if i == 0 else pb
+		if float(cmdr_corruption[i]) > 0.0 and host != null and host.commander_id >= 0:
+			var cmdr: SimCharacter = characters.get(host.commander_id)
+			if cmdr != null and cmdr.alive:
+				add_corruption(cmdr, float(cmdr_corruption[i]), "what was channeled at %s" % site)
 	_commander_fate(pa, pb, winner_side == 0, loser_loss_fraction, site, bool(charged[0]))
 	_commander_fate(pb, pa, winner_side == 1, loser_loss_fraction, site, bool(charged[1]))
 	_champion_fates(pa, pb, winner_side == 0, loser_loss_fraction, site)
@@ -2856,12 +2947,24 @@ func _can_add_trait(c: SimCharacter, t: String) -> bool:
 	if c.traits.has(t):
 		return false
 	var info := TraitDB.info(t)
-	if info.category == "personality":
-		if _count_cat(c, "personality") >= PERSONALITY_CAP:
-			return false
-		if info.opposite != "" and c.traits.has(info.opposite):
-			return false
+	# opposites exclude in every category — a soul is not both Zealous
+	# and Broken, nor Oath-Sworn and Oathbreaker (Magic Injection v1.0)
+	if info.opposite != "" and c.traits.has(info.opposite):
+		return false
+	if info.category == "personality" and _count_cat(c, "personality") >= PERSONALITY_CAP:
+		return false
 	return true
+
+
+func _remove_trait(c: SimCharacter, t: String) -> void:
+	## The mirror of _add_trait: the trait goes, and its stats go with it.
+	if not c.traits.has(t):
+		return
+	c.traits.erase(t)
+	var mods: Dictionary = TraitDB.info(t).stats
+	for k in mods:
+		var prop: String = STAT_PROPS[k]
+		c.set(prop, clampi(int(c.get(prop)) - int(mods[k]), 1, 30))
 
 
 func _add_trait(c: SimCharacter, t: String) -> void:
@@ -2943,6 +3046,10 @@ func trait_add(c: SimCharacter, key: String) -> float:
 # ---------------------------------------------------------------- stress & memory
 
 func add_stress(c: SimCharacter, amount: float, reason: String) -> void:
+	if amount > 0.0:
+		# Magic Injection v1.0: temperament shapes the load — the Broken
+		# carry it heavier, the Brushgate-Trained barely feel it
+		amount *= trait_mult(c, "stress_gain_mult")
 	c.stress = maxf(0.0, c.stress + amount)
 	if amount > 0.0 and c.stress >= (c.stress_level + 1) * 100.0 and c.stress_level < 3:
 		c.stress_level += 1
@@ -2983,9 +3090,622 @@ func _stress_relief_tick() -> void:
 			relief += 0.5
 		if has_legacy(root_house_id(c.dynasty_id), "Unbending Oaths"):
 			relief += 0.5
+		if has_legacy(root_house_id(c.dynasty_id), "The Brushgate Continuity"):
+			relief += 0.3  # the discipline kept at the family hearth
 		c.stress = maxf(0.0, c.stress - relief)
 		if c.stress < c.stress_level * 100.0 - 50.0 and c.stress_level > 0:
 			c.stress_level -= 1
+
+
+# ------------------------------------------- Magic Injection v1.0
+# The Corruption meter, the Silence Response, the eight practices, and
+# the Magistocracy's central secret. Every die here rolls on `mrng`
+# (own seed) so the founder seeds and the main history never feel it.
+
+func add_corruption(c: SimCharacter, amount: float, reason: String) -> void:
+	## The Patron's ledger: parallel to stress, but it never decays on
+	## its own — only active work (meditation, confession) reduces it.
+	if amount > 0.0:
+		if patron_network_broken:
+			return  # Ending 3: the anchor is ash — the ledger takes no new entries
+		amount *= trait_mult(c, "corruption_gain_mult")
+		amount += trait_add(c, "corruption_gain_baseline") * 0.1  # the Patron-Bound always owe a little more
+		if has_legacy(root_house_id(c.dynasty_id), "The Patron's Bargain"):
+			amount *= 1.10  # the blood was born owing
+	c.corruption = maxf(0.0, c.corruption + amount)
+	while c.corruption_marks < 3 and c.corruption >= CORRUPTION_THRESHOLDS[c.corruption_marks]:
+		c.corruption_marks += 1
+		var mark: String = CORRUPTION_MARKS[c.corruption_marks - 1]
+		_add_trait(c, mark)
+		_log("[b]%s bears the %s[/b] — %s (%s)." % [full_name(c), mark, MARK_FLAVOR[mark], reason])
+
+
+func _has_silence_response(c: SimCharacter) -> bool:
+	for r in SILENCE_RESPONSES:
+		if c.traits.has(r):
+			return true
+	return false
+
+
+func _swap_silence_response(c: SimCharacter, to: String) -> void:
+	for r in SILENCE_RESPONSES:
+		if r != to:
+			_remove_trait(c, r)
+	_add_trait(c, to)
+
+
+func _pick_silence_response(c: SimCharacter) -> String:
+	## Who you already were decides what the Night made of you (doc §3).
+	var w := {"Zealous": 10.0, "Broken": 10.0, "Pragmatic": 10.0, "Opportunistic": 10.0}
+	if c.traits.has("Methodical"):
+		w["Pragmatic"] += 15.0
+	if c.traits.has("Impulsive"):
+		w["Opportunistic"] += 10.0
+		w["Zealous"] += 10.0
+	if c.traits.has("Paranoid"):
+		w["Broken"] += 15.0
+		w["Opportunistic"] += 5.0
+	if c.traits.has("Compassionate"):
+		w["Zealous"] += 15.0
+		w["Pragmatic"] += 10.0
+	if c.traits.has("Cruel"):
+		w["Opportunistic"] += 20.0
+	if c.traits.has("Content"):
+		w["Pragmatic"] += 15.0
+	if c.traits.has("Ambitious"):
+		w["Opportunistic"] += 20.0
+	if c.traits.has("Genius"):
+		w["Pragmatic"] += 10.0  # they understood what had happened faster
+	var total := 0.0
+	for k in w:
+		total += float(w[k])
+	var roll := mrng.randf() * total
+	for k in w:
+		roll -= float(w[k])
+		if roll <= 0.0:
+			return str(k)
+	return "Pragmatic"
+
+
+func _seed_magic() -> void:
+	## Year Zero, Month 1: the gods stop answering, and everyone answers
+	## that. Runs once at setup, entirely on the magic RNG.
+	mrng.seed = 333
+	for c in characters.values():
+		if c.alive and not _has_silence_response(c):
+			_add_trait(c, _pick_silence_response(c))
+	# the practices, seeded from the founding cast (the named canonical
+	# practitioners — Marak, Selene, the Magisters — arrive with the
+	# Faction Cast pass; until then the courts keep their own)
+	var wizard := _best_unpracticed(0, "learning")
+	if wizard != null:
+		_add_trait(wizard, "Arcane-Blooded")
+		_add_trait(wizard, "Academy-Sworn")
+		_log("%s keeps the court's grimoires — academy-trained, and quietly indispensable." % full_name(wizard))
+	var cleric := _best_unpracticed(0, "diplomacy")
+	if cleric != null:
+		_add_trait(cleric, "Faith-Practicing")
+		_log("%s still lights the candles at the old altar. No one has told them to stop." % full_name(cleric))
+	var druid := _best_unpracticed(1, "learning")
+	if druid != null:
+		_add_trait(druid, "Primal-Practiced")
+		_log("%s keeps the clan's old ways with root and stone — the one craft the Silence never touched." % full_name(druid))
+	var monk := _best_unpracticed(1, "prowess")
+	if monk != null:
+		_add_trait(monk, "Brushgate-Trained")
+		_log("%s learned the Brushgate discipline in the passes. The body remembers what the gods forgot." % full_name(monk))
+	# The Architect of Silence: Veril Ormand, the last surviving yes-vote
+	# of Year 112. An old magister who keeps to his chambers — and keeps
+	# the only complete record of what the Council bought, and with what.
+	var house := Dynasty.new(dynasties.size(), "House Ormand")
+	dynasties[house.id] = house
+	var ormand := _create_character("Veril", false, tick - 71 * 12 - 5, house.id, 0)
+	ormand.learning = 18
+	ormand.intrigue = 13
+	ormand.stewardship = 10
+	ormand.diplomacy = 5
+	ormand.martial = 3
+	ormand.prowess = 2
+	ormand.genome = Genetics.founder(mrng)
+	_add_trait(ormand, "Academy-Sworn")
+	_add_trait(ormand, "Broken")
+	_add_trait(ormand, "Reclusive")
+	architect_id = ormand.id
+	_add_secret(ormand.id, "silence_cause_complicity")
+	add_corruption(ormand, 6.0, "what was signed in Year 112 of the Council")
+	_log("An old magister, Veril Ormand, keeps to his chambers in Vael and receives no one. The court has stopped asking why.")
+
+
+func _best_unpracticed(realm_id: int, stat: String) -> SimCharacter:
+	var best: SimCharacter = null
+	for c in characters.values():
+		if not c.alive or c.realm_id != realm_id or c.age_years(tick) < ADULT_AGE:
+			continue
+		if realms[realm_id].ruler_id == c.id:
+			continue  # crowns have realms to run
+		var practiced := false
+		for t in ["Arcane-Blooded", "Academy-Sworn", "Faith-Practicing", "Oath-Sworn",
+				"Primal-Practiced", "Patron-Bound", "Song-Marked", "Brushgate-Trained"]:
+			if c.traits.has(t):
+				practiced = true
+				break
+		if practiced:
+			continue
+		if best == null or int(c.get(stat)) > int(best.get(stat)):
+			best = c
+	return best
+
+
+func province_of_character(c: SimCharacter):
+	## Where a life is actually lived: commanders in the field, lords on
+	## their land, everyone else at the realm's capital.
+	for a: Army in armies:
+		if a.commander_id == c.id:
+			return _province_at(a.pos)
+	for pid in county_holders:
+		if int(county_holders[pid]) == c.id:
+			return map.provinces[pid]
+	if c.realm_id >= 0 and c.realm_id < map.realms.size():
+		var cap: int = map.realms[c.realm_id].capital_province_id
+		if cap >= 0 and cap < map.provinces.size():
+			return map.provinces[cap]
+	return null
+
+
+func faith_reliability(c: SimCharacter, p) -> float:
+	## The Cleric geography formula (doc §4.3): base × the ground's
+	## dampening × shared attention × the caster's answer to the Silence.
+	## The world's remaining faith works — sometimes, in specific places,
+	## when the right conditions align.
+	var damp := FAITH_DAMPENING_BASE
+	if p != null:
+		if p.silence_touched:
+			damp = FAITH_DAMPENING_ASHFIELDS
+		elif str(p.special_feature) == "iron_library":
+			damp = FAITH_DAMPENING_LIBRARY
+		elif str(p.special_feature) == "sealed_hold":
+			damp = FAITH_DAMPENING_WARDSTONE  # the Kharak-Dum wards still hold a little sky up
+	var r := trait_mult(c, "faith_channel_reliability_baseline") * damp
+	# shared attention: every ten faithful in the hall stand in for the sky
+	var crowd := 0
+	for o in characters.values():
+		if o.alive and o.realm_id == c.realm_id and o.id != c.id:
+			crowd += 1
+	r *= 1.0 + 0.01 * float(mini(crowd, 100))
+	for resp in RESPONSE_FAITH_MULT:
+		if c.traits.has(resp):
+			r *= float(RESPONSE_FAITH_MULT[resp])
+			break
+	return clampf(r, 0.0, 1.0)
+
+
+func _magic_tick() -> void:
+	## The monthly weave: coming-of-age answers, the land's slow marking,
+	## academies, prayers, patrons, oaths, songs, and the old man's door.
+	_responses_coming_of_age()
+	_regional_magic_tick()
+	_academy_tick()
+	_faith_tick()
+	_patron_tick()
+	_oath_tick()
+	_bard_tick()
+	_brushgate_tick()
+	_architect_tick()
+
+
+func _responses_coming_of_age() -> void:
+	## Children raised in the Silence answer it around fifteen — shaped
+	## by who they have already become (doc §3).
+	for c in characters.values():
+		if c.alive and c.age_years(tick) >= 15 and not _has_silence_response(c):
+			var resp := _pick_silence_response(c)
+			_add_trait(c, resp)
+			if is_heir_of_any(c.id):
+				_log("%s comes to their own answer to the Silence: %s." % [full_name(c), resp])
+
+
+func is_heir_of_any(char_id: int) -> bool:
+	for realm: Realm in realms:
+		var h := heir_of(realm.id)
+		if h != null and h.id == char_id:
+			return true
+	return false
+
+
+func _magic_residents() -> Array:
+	## The characters whose ground actually matters: crowned heads,
+	## landed lords, and commanders in the field.
+	var seen := {}
+	var out: Array = []
+	for realm: Realm in realms:
+		if realm.ruler_id >= 0:
+			seen[realm.ruler_id] = true
+	for pid in county_holders:
+		seen[int(county_holders[pid])] = true
+	for a: Army in armies:
+		if a.commander_id >= 0:
+			seen[a.commander_id] = true
+	for cid in seen:
+		var c: SimCharacter = characters.get(int(cid))
+		if c != null and c.alive:
+			out.append(c)
+	return out
+
+
+func _regional_magic_tick() -> void:
+	## The land under the Silence marks the people who live on it (doc §5).
+	for c: SimCharacter in _magic_residents():
+		var p = province_of_character(c)
+		if p == null:
+			continue
+		if p.silence_touched and trait_add(c, "silence_immunity") < 1.0:
+			add_corruption(c, CORRUPTION_ASHFIELDS_MONTHLY, "living under the Ashfields' sky")
+			add_stress(c, 1.5, "the Silence presses close")
+			if mrng.randf() < 0.03:
+				_silence_encounter(c, p)
+		elif p.ruined:
+			add_corruption(c, CORRUPTION_RUINED_MONTHLY, "the Aurath ruins do not sleep")
+
+
+func _silence_encounter(c: SimCharacter, p) -> void:
+	## A Hollow Shade, a Settled village, a thing that should not stand
+	## in daylight. Most souls break a little; the Brushgate sit with it.
+	_add_secret(c.id, "silence_encounter_witnessed")
+	if c.traits.has("Brushgate-Trained"):
+		add_stress(c, 10.0, "sitting with a manifestation")
+		_log("[b]Something manifests near %s[/b] — and %s sits with it until it passes. The Brushgate way." % [p.name, full_name(c)])
+	else:
+		add_stress(c, 40.0, "a Silence-touched manifestation")
+		add_corruption(c, 0.5, "what was witnessed at %s" % p.name)
+		_log("[b]Something manifests near %s.[/b] %s will not speak of what they saw — but their hands shake for weeks." % [p.name, full_name(c)])
+
+
+func _academy_tick() -> void:
+	## The Magistocracy's detection machinery — and everything it misses
+	## (doc §4.1–4.2). Missed aptitude grows up untrained: a Sorcerer.
+	for c in characters.values():
+		if not c.alive or c.traits.has("Arcane-Blooded"):
+			continue
+		var age: int = c.age_years(tick)
+		if age < 10 or age > 14:
+			continue
+		if c.learning < 12 and not c.traits.has("Genius"):
+			continue
+		if c.realm_id == 0 and mrng.randf() < 0.10:
+			_add_trait(c, "Arcane-Blooded")
+			_add_trait(c, "Academy-Sworn")
+			_log("[b]The academy examiners come for %s[/b] — and the blood answers. Twelve years of training begin." % full_name(c))
+			# three of the blood sworn to the academies marks the line
+			var root := root_house_id(c.dynasty_id)
+			var sworn := 0
+			for m in characters.values():
+				if m.alive and root_house_id(m.dynasty_id) == root and m.traits.has("Academy-Sworn"):
+					sworn += 1
+			if sworn >= 3:
+				_earn_mythos(root, "Vael-Educated")
+		elif c.realm_id != 0 and mrng.randf() < 0.04:
+			_add_trait(c, "Arcane-Blooded")
+			_add_secret(c.id, "arcane_manifestation_hidden")
+			_log("Beyond any academy's reach, something wakes in %s — sparks answer their moods, and the household says nothing." % full_name(c))
+	# Magistocracy recruitment: an untrained adult practitioner inside
+	# Vael's own borders is a question the crown must answer
+	for c in characters.values():
+		if not c.alive or c.realm_id != 0 or c.age_years(tick) < ADULT_AGE:
+			continue
+		if not c.traits.has("Arcane-Blooded") or c.traits.has("Academy-Sworn"):
+			continue
+		if mrng.randf() < 0.05:
+			_raise_recruitment(c)
+			break
+
+
+func _raise_recruitment(c: SimCharacter) -> void:
+	var who := c
+	raise_event(0, realms[0].ruler_id, "The Blood Untaught",
+		"%s carries the arcane blood and no academy's discipline — uncontained, uncounted, and inside the crown's own borders. The Magistocracy's way is to bring such people in. Or to keep a file on them." % full_name(c),
+		[
+			{"label": "Bring them into the fold — a late apprenticeship", "base": 4.0,
+				"ai": {"patience": 0.5},
+				"effect": func() -> void:
+					_add_trait(who, "Academy-Sworn")
+					_log("%s takes the academy oath — late, watched, and warily welcome." % full_name(who))},
+			{"label": "Open a file — leverage is cheaper than tuition", "base": 2.0,
+				"ai": {"scheming": 0.7},
+				"effect": func() -> void:
+					_add_secret(who.id, "arcane_manifestation_hidden")
+					for s in secrets:
+						if int(s["subject"]) == who.id and str(s["type"]) == "arcane_manifestation_hidden":
+							s["known"][0] = true
+					_gain_hook(0, who.id, "weak", "arcane_manifestation_hidden")},
+		], true)
+
+
+func _faith_tick() -> void:
+	## The quarterly devotions (doc §4.3): the candles are lit whether or
+	## not anything answers. Three failures in a year is a Faith Crisis.
+	if tick % 3 != 0:
+		return
+	for c in characters.values():
+		if not c.alive or not c.traits.has("Faith-Practicing"):
+			continue
+		var p = province_of_character(c)
+		var rel := faith_reliability(c, p)
+		if mrng.randf() < rel:
+			add_stress(c, -10.0, "a rite that held")
+			faith_failures.erase(c.id)
+			if rel < 0.25:
+				# an answer that mathematically should not have come —
+				# the pantheon is silent; something else picked up
+				add_corruption(c, 0.5, "a prayer answered by the wrong listener")
+				_log("[b]A prayer is answered where no answer should reach[/b] — and %s does not ask by whom." % full_name(c))
+		else:
+			add_stress(c, 5.0, "praying into the silence")
+			faith_failures[c.id] = int(faith_failures.get(c.id, 0)) + 1
+			if int(faith_failures[c.id]) >= 3:
+				faith_failures.erase(c.id)
+				_raise_faith_crisis(c)
+
+
+func _raise_faith_crisis(c: SimCharacter) -> void:
+	## Three unanswered years of candles. Something has to give (doc §4.3).
+	var who := c
+	raise_event(c.realm_id, c.id, "A Faith in Crisis",
+		"%s has prayed three times into nothing. The candles gutter, the altar is cold, and the question can no longer be put off: what is the practice *for* now?" % full_name(c),
+		[
+			{"label": "Intensify the practice — the rites must be kept regardless", "base": 3.0,
+				"ai": {"orthodoxy": 1.0, "patience": 0.3},
+				"effect": func() -> void:
+					_swap_silence_response(who, "Zealous")
+					_log("%s answers the empty sky with harder devotion. The rites will be kept — whether or not anyone keeps them company." % full_name(who))},
+			{"label": "Set down the candles — there is nothing there", "base": 2.0,
+				"ai": {"patience": -0.3},
+				"effect": func() -> void:
+					_remove_trait(who, "Faith-Practicing")
+					_swap_silence_response(who, "Broken")
+					_log("%s snuffs the altar candles and walks out. The office stands empty." % full_name(who))},
+			{"label": "Seek another listener — something answers, somewhere", "base": 1.0,
+				"ai": {"orthodoxy": -1.0, "scheming": 0.5},
+				"effect": func() -> void: _raise_patron_offer(who)},
+		], true)
+
+
+func _patron_tick() -> void:
+	## The Offer comes when you have nothing left; the Communication
+	## comes whenever it pleases (doc §4.6).
+	if patron_network_broken:
+		return
+	for c in characters.values():
+		if c.alive and c.stress >= 180.0 and not c.traits.has("Patron-Bound") \
+				and c.age_years(tick) >= ADULT_AGE and mrng.randf() < 0.06:
+			_raise_patron_offer(c)
+			break
+	for c in characters.values():
+		if c.alive and c.traits.has("Patron-Bound") and mrng.randf() < 0.04:
+			_raise_patron_communication(c)
+			break
+
+
+func _raise_patron_offer(c: SimCharacter) -> void:
+	if patron_network_broken or c.traits.has("Patron-Bound"):
+		return
+	var who := c
+	raise_event(c.realm_id, c.id, "The Patron's Offer",
+		"Something has noticed %s. It speaks without sound, from the corner of the room where the light does not quite reach. Its terms are simple. Its price is not itemized." % full_name(c),
+		[
+			{"label": "Refuse — whatever it is, it is not help", "base": 4.0,
+				"ai": {"orthodoxy": 1.0, "patience": 0.3},
+				"effect": func() -> void:
+					add_stress(who, -10.0, "the refusal itself was an answer")
+					_log("%s refuses the thing in the corner of the room. It does not seem offended. It seems patient." % full_name(who))},
+			{"label": "Accept the bargain", "base": 1.0,
+				"ai": {"orthodoxy": -1.2, "scheming": 0.6, "greed": 0.4},
+				"effect": func() -> void:
+					_add_trait(who, "Patron-Bound")
+					_add_secret(who.id, "patron_bargain_signed")
+					who.stress = maxf(0.0, who.stress - 120.0)
+					add_corruption(who, 2.5, "the bargain, signed")
+					_log("[b]%s accepts the bargain.[/b] The weight lifts at once — every part of it except the part that was added." % full_name(who))},
+		], true)
+
+
+func _raise_patron_communication(c: SimCharacter) -> void:
+	var who := c
+	raise_event(c.realm_id, c.id, "The Patron Speaks",
+		"The light goes wrong in the corner of %s's chamber, and the Patron has things to say — useful things, about people who believe themselves unwatched." % full_name(c),
+		[
+			{"label": "Listen", "base": 2.0, "ai": {"scheming": 0.8},
+				"effect": func() -> void:
+					add_corruption(who, 1.0, "listening to the Patron")
+					var unknown: Array = []
+					for s in secrets:
+						if str(s["type"]) == "silence_cause_complicity" or s["known"].has(who.realm_id):
+							continue
+						var subj: SimCharacter = characters.get(int(s["subject"]))
+						if subj != null and subj.alive and subj.id != realms[who.realm_id].ruler_id:
+							unknown.append(s)
+					if unknown.is_empty():
+						_log("The Patron speaks to %s of small things, testing. Nothing useful — this time." % full_name(who))
+						return
+					var s3: Dictionary = unknown[mrng.randi_range(0, unknown.size() - 1)]
+					s3["known"][who.realm_id] = true
+					_gain_hook(who.realm_id, int(s3["subject"]),
+						"weak" if str(s3["type"]) == "bastard blood" else "strong", str(s3["type"]))
+					_log("The Patron shows %s a secret no informant could have reached. The price goes on the ledger." % full_name(who))},
+			{"label": "Refuse to hear it", "base": 3.0, "ai": {"orthodoxy": 0.8},
+				"effect": func() -> void:
+					add_corruption(who, -0.5, "a door held shut")
+					_log("%s turns their face to the wall until the corner of the room is only a corner again." % full_name(who))},
+		], true)
+
+
+func _oath_tick() -> void:
+	## Oath-craft (doc §4.4): the ritual persists though the ratification
+	## is gone. Sworn rarely; tested rarely; broken at real cost.
+	if tick % 6 == 0:
+		for realm: Realm in realms:
+			var best: SimCharacter = null
+			for c in characters.values():
+				if not c.alive or c.realm_id != realm.id or c.age_years(tick) < ADULT_AGE:
+					continue
+				if c.prowess < 12 or c.traits.has("Oath-Sworn") or c.traits.has("Oathbreaker") \
+						or c.traits.has("Patron-Bound"):
+					continue
+				if best == null or c.prowess > best.prowess:
+					best = c
+			if best != null and mrng.randf() < 0.10:
+				_add_trait(best, "Oath-Sworn")
+				best.oath_token_intact = true
+				_log("[b]%s swears the old oath[/b] — ring of witnesses, token forged, words said whole. Nothing ratifies it now. It holds anyway." % full_name(best))
+	for c in characters.values():
+		if c.alive and c.traits.has("Oath-Sworn") and mrng.randf() < 0.015:
+			_raise_oath_challenged(c)
+			break
+
+
+func _raise_oath_challenged(c: SimCharacter) -> void:
+	var who := c
+	var realm: Realm = realms[c.realm_id]
+	raise_event(c.realm_id, c.id, "The Oath, Challenged",
+		"The moment arrives that every oath eventually buys: %s can profit handsomely by looking away — or keep the words, and pay for them." % full_name(c),
+		[
+			{"label": "Keep the oath, whatever it costs", "base": 3.0,
+				"ai": {"orthodoxy": 0.8, "patience": 0.5},
+				"effect": func() -> void:
+					add_stress(who, 10.0, "the price of kept words")
+					_log("%s keeps the oath. It costs what it costs — that was always the arrangement." % full_name(who))},
+			{"label": "Break it — the world stopped enforcing these", "base": 1.0,
+				"ai": {"scheming": 0.7, "greed": 0.8},
+				"effect": func() -> void:
+					_remove_trait(who, "Oath-Sworn")
+					_add_trait(who, "Oathbreaker")
+					realm.gold += 40.0
+					add_stress(who, 40.0, "the oath, broken")
+					add_corruption(who, 3.0, "what broke when the words did")
+					_log("[b]%s breaks the oath.[/b] The gold is real. So, it turns out, was the oath — and everyone who witnessed it can see what is missing now." % full_name(who))},
+		], true)
+
+
+func _bard_tick() -> void:
+	## Word-binding (doc §4.7): the names accumulate through the deaths
+	## the Bard attends (wired in _kill) and the fires they sing at.
+	if tick % 3 == 0:
+		for c in characters.values():
+			if not c.alive or not c.traits.has("Song-Marked"):
+				continue
+			var settlements := 0
+			for p in map.provinces:
+				if p.owner == c.realm_id:
+					settlements += 1
+			c.names_carried += 1 + settlements / 8
+			if mrng.randf() < 0.10:
+				_log("%s sings the dead of another village into the record — %d names carried now, and every one of them weight and power both." % [
+					full_name(c), c.names_carried])
+	# the calling finds the young whose words already carry — but the
+	# roads only hold so many singers per realm
+	var singers := [0, 0]
+	for c in characters.values():
+		if c.alive and c.traits.has("Song-Marked") and c.realm_id >= 0 and c.realm_id <= 1:
+			singers[c.realm_id] += 1
+	for c in characters.values():
+		if not c.alive or c.traits.has("Song-Marked"):
+			continue
+		if c.realm_id < 0 or c.realm_id > 1 or singers[c.realm_id] >= 2:
+			continue
+		var age: int = c.age_years(tick)
+		if age >= 15 and age <= 22 and c.diplomacy >= 12 and mrng.randf() < 0.03:
+			_add_trait(c, "Song-Marked")
+			_log("%s takes to the roads between fires, asking each village for the names of its dead. The asking is the craft." % full_name(c))
+			break
+
+
+func _brushgate_tick() -> void:
+	## The discipline (doc §4.8): stress converted, corruption sat with.
+	if tick % 3 != 0:
+		return
+	for c in characters.values():
+		if c.alive and c.traits.has("Brushgate-Trained") and (c.stress > 20.0 or c.corruption > 0.0):
+			add_stress(c, -20.0, "the morning forms")
+			add_corruption(c, -0.5, "the morning forms")
+
+
+func _architect_tick() -> void:
+	## The old man's door (doc §8). His death opens the chamber; before
+	## that, only the Aurath-Voss archives can give the truth up early —
+	## and a contained truth can always leak.
+	if central_secret_state == "contained" and mrng.randf() < 0.01:
+		_log("[b]The containment fails.[/b] A clerk talks, a page walks, a copy circulates — the truth the Council kept is loose.")
+		_ending_revealed()
+		return
+	if architect_id < 0 or central_secret_state != "buried":
+		return
+	var a: SimCharacter = characters.get(architect_id)
+	if a == null:
+		return
+	if not a.alive:
+		_raise_architect_chamber()
+		return
+	if tick >= 60 and mrng.randf() < 0.002:
+		_log("[b]Loose pages surface from the Aurath-Voss archives[/b] — fragments of a vote taken in Year 112 of the Council, and of what it purchased.")
+		_raise_architect_chamber()
+
+
+func _raise_architect_chamber() -> void:
+	## The complete record: seven signatures under a bargain with the
+	## Patron, and the Silence its price. Five ways to hold the truth.
+	central_secret_state = "opened"
+	for s in secrets:
+		if str(s["type"]) == "silence_cause_complicity":
+			s["known"][0] = true
+	raise_event(0, realms[0].ruler_id, "The Architect's Chamber",
+		"Veril Ormand's chamber stands open at last — and in it, the complete record. The Magistocracy's foundation transaction: seven signatures under a bargain with the Patron, dated Year 112 of the Council. Three dissenters, all dead within eighteen months. The Silence was the invoice. What the crown does with the truth decides the age.",
+		[
+			{"label": "Publish it all — the world deserves the truth", "base": 2.0,
+				"ai": {"orthodoxy": 1.0, "aggression": 0.4},
+				"effect": func() -> void: _ending_revealed()},
+			{"label": "Contain it within the council — reform quietly", "base": 3.0,
+				"ai": {"patience": 0.7},
+				"effect": func() -> void:
+					central_secret_state = "contained"
+					realms[0].tyranny = minf(100.0, realms[0].tyranny + 10.0)
+					_log("[b]The record is sealed inside the council chamber.[/b] The reformers take the pen; the traditionalists take notes. Contained truths have a way of finding doors.")},
+			{"label": "Destroy the anchor — end the Patron itself", "base": 2.0,
+				"ai": {"orthodoxy": 0.6, "aggression": 0.6},
+				"effect": func() -> void: _ending_destroyed()},
+			{"label": "Use it — every complicit house, on a hook", "base": 1.5,
+				"ai": {"scheming": 1.2},
+				"effect": func() -> void:
+					central_secret_state = "leveraged"
+					for lord: SimCharacter in landed_vassals(0):
+						_gain_hook(0, lord.id, "strong", "silence_cause_complicity")
+					_log("[b]The record becomes an instrument.[/b] Every house that profited from the Council's bargain now answers to whoever holds the pages.")},
+			{"label": "Bury it deeper — some truths end worlds", "base": 2.5,
+				"ai": {"scheming": 0.4, "patience": 0.6},
+				"effect": func() -> void:
+					central_secret_state = "suppressed"
+					_log("[b]The chamber is bricked shut.[/b] The Magistocracy survives whole — and the Silence continues, unexamined, toward whatever it was always building to.")},
+		], true)
+
+
+func _ending_revealed() -> void:
+	central_secret_state = "revealed"
+	realms[0].tyranny = minf(100.0, realms[0].tyranny + 30.0)
+	realms[0].prestige = maxf(-100.0, realms[0].prestige - 50.0)
+	realms[1].prestige = minf(100.0, realms[1].prestige + 15.0)
+	for lord: SimCharacter in landed_vassals(0):
+		if realms[0].ruler_id >= 0:
+			add_memory(lord, "their crowns knew", realms[0].ruler_id, -40.0, 1.0)
+	_log("[b]THE TRUTH IS PUBLISHED.[/b] The Magistocracy caused the Silence — bought it, signed for it, profited by it. Its legitimacy does not survive the reading. The old noble houses are suddenly the only authority anyone remembers trusting.")
+
+
+func _ending_destroyed() -> void:
+	central_secret_state = "destroyed"
+	patron_network_broken = true
+	var freed := 0
+	for c in characters.values():
+		if c.alive and c.traits.has("Patron-Bound"):
+			_remove_trait(c, "Patron-Bound")
+			freed += 1
+	_log("[b]THE ANCHOR BURNS.[/b] Across the land, bargains fall silent mid-sentence — %d bound souls wake owing nothing. The marks already paid for remain. No new ones will ever be made." % freed)
 
 
 func add_memory(c: SimCharacter, type: String, subject_id: int, value: float, decay_per_year: float = 4.0) -> void:
@@ -3296,6 +4016,8 @@ func _plots_tick() -> void:
 		pace /= trait_mult(t, "intrigue_defense_mult")  # the Paranoid sleep behind locked doors
 		if realm.ruler_id >= 0 and has_mythos(root_house_id(characters[realm.ruler_id].dynasty_id), "Whispered Poisoners"):
 			pace *= 1.15  # practice makes perfect
+		if realm.ruler_id >= 0 and has_mythos(root_house_id(characters[realm.ruler_id].dynasty_id), "Patron-Touched"):
+			pace *= 1.20  # something helps the work along (Magic v1.0)
 		var before := realm.plot_progress
 		realm.plot_progress += pace
 		# Phase 2: someone with a position near the target must be owned
@@ -3663,6 +4385,10 @@ func _ferret_tick() -> void:
 			for s in secrets:
 				if s["known"].has(rid):
 					continue
+				# the central secret is beyond tavern informants (Magic v1.0):
+				# it waits for the Architect's chamber or the family archives
+				if str(s["type"]) == "silence_cause_complicity":
+					continue
 				var subj: SimCharacter = characters.get(int(s["subject"]))
 				if subj != null and subj.alive and subj.id != realms[int(rid)].ruler_id:
 					unknown.append(s)
@@ -3674,6 +4400,11 @@ func _ferret_tick() -> void:
 			if str(s2["type"]) != "bastard blood":
 				strength = "strong"
 			_gain_hook(int(rid), int(s2["subject"]), strength, str(s2["type"]))
+			# a bargain dragged into daylight marks the whole blood (Magic v1.0)
+			if str(s2["type"]) == "patron_bargain_signed":
+				var subj2: SimCharacter = characters.get(int(s2["subject"]))
+				if subj2 != null:
+					_earn_mythos(root_house_id(subj2.dynasty_id), "Patron-Touched")
 			ferreting.erase(rid)
 		elif int(ferreting[rid]) >= FERRET_GIVE_UP_MONTHS:
 			ferreting.erase(rid)
@@ -3977,11 +4708,13 @@ func eligible_singles(female: bool) -> Array:
 # the spot by the decider's personality — the same trait AI weights
 # (aggression / scheming / greed / patience) score every option.
 
-func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array) -> void:
+func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array, magic: bool = false) -> void:
 	if options.is_empty():
 		return
+	# magic-born events resolve on the magic RNG (Magic v1.0) so the main
+	# history stream never feels the Silence's bookkeeping
 	var ev := {"id": next_event_id, "realm_id": realm_id, "decider": decider_id,
-		"title": title, "text": text, "options": options}
+		"title": title, "text": text, "options": options, "magic": magic}
 	next_event_id += 1
 	if realm_id != 0 or auto_resolve_events:
 		_ai_resolve_event(ev)
@@ -3994,11 +4727,12 @@ func _ai_resolve_event(ev: Dictionary) -> void:
 	## Personality picks: each option's axis weights are dotted with the
 	## decider's trait weights, plus a little human unpredictability.
 	var decider: SimCharacter = characters.get(int(ev["decider"]))
+	var jitter_rng: RandomNumberGenerator = mrng if bool(ev.get("magic", false)) else rng
 	var best := 0
 	var best_score := -INF
 	for i in ev["options"].size():
 		var opt: Dictionary = ev["options"][i]
-		var score: float = float(opt.get("base", 0.0)) + rng.randf() * 12.0
+		var score: float = float(opt.get("base", 0.0)) + jitter_rng.randf() * 12.0
 		if decider != null:
 			for axis in opt.get("ai", {}):
 				score += ai_weight(decider, axis) * float(opt["ai"][axis])
@@ -4056,6 +4790,8 @@ func realm_tax_eff(realm_id: int) -> float:
 	if realm.ruler_id >= 0:
 		admin_cap += int(characters[realm.ruler_id].stewardship / 5.0)
 		admin_cap += int(trait_add(characters[realm.ruler_id], "admin_cap_bonus"))  # Bureaucrats delegate on paper
+		if has_legacy(root_house_id(characters[realm.ruler_id].dynasty_id), "The Vael Compact"):
+			admin_cap += 1  # the line thinks in ledgers and proofs (Magic v1.0)
 	var total := 0.0
 	var crown_taxes: Array = []
 	for p in map.provinces:
