@@ -1365,9 +1365,14 @@ func _refresh_character() -> void:
 		stress_word = "Strained"
 	elif c.stress >= 50.0:
 		stress_word = "Uneasy"
-	var lines := "Age %d · %s\nDip %d · Mar %d · Stw %d\nInt %d · Lrn %d · Prw %d\n%s\nStress %d (%s)" % [
+	# race is shown when it isn't the realm's default blood — a Half-Orc
+	# heir at a Human court is worth a word (Cross-Cultural Marriage v1.0)
+	var blood := ""
+	if c.race != ("human" if c.realm_id == 0 else "orc"):
+		blood = " · %s" % CultureData.race_label(c.race)
+	var lines := "Age %d · %s%s\nDip %d · Mar %d · Stw %d\nInt %d · Lrn %d · Prw %d\n%s\nStress %d (%s)" % [
 		c.age_years(world.tick), str(world.realms[c.realm_id].name).trim_prefix("Kingdom of "),
-		c.diplomacy, c.martial, c.stewardship, c.intrigue, c.learning, c.prowess,
+		blood, c.diplomacy, c.martial, c.stewardship, c.intrigue, c.learning, c.prowess,
 		traits_line, int(c.stress), stress_word]
 	var liege_id: int = world.realms[c.realm_id].ruler_id
 	if liege_id >= 0 and liege_id != c.id:
