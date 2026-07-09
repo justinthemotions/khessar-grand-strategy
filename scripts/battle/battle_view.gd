@@ -40,6 +40,7 @@ var unit_name: Label
 var unit_status: Label
 var unit_stats: Label
 var end_box: CenterContainer
+var tactic_buttons: Dictionary = {}   # kind -> Button (the Battle Grid's command cards)
 
 
 func start(roster_a: Array, roster_b: Array, lead_a: int, lead_b: int,
@@ -114,6 +115,34 @@ func _ready() -> void:
 	unit_panel.visible = false
 	add_child(unit_panel)
 
+	# The command tent (Module 7): once-per-battle tactical orders, gated
+	# by who the commander is. Grey means the card cannot be played — the
+	# tooltip says why.
+	var orders := VBoxContainer.new()
+	orders.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	orders.offset_left = 12.0
+	orders.offset_top = 10.0
+	orders.offset_right = 210.0
+	orders.add_theme_constant_override("separation", 4)
+	for kind in BattleSim.TACTIC_LABELS:
+		var b2 := Button.new()
+		b2.text = BattleSim.TACTIC_LABELS[kind]
+		b2.add_theme_font_size_override("font_size", 13)
+		var k: String = kind
+		b2.pressed.connect(func() -> void:
+			var _e := sim.use_tactic(0, k))
+		orders.add_child(b2)
+		tactic_buttons[kind] = b2
+	add_child(orders)
+
+
+func _refresh_tactic_buttons() -> void:
+	for kind in tactic_buttons:
+		var b: Button = tactic_buttons[kind]
+		var gate: String = sim.tactic_gate(0, str(kind))
+		b.disabled = gate != ""
+		b.tooltip_text = gate if gate != "" else "Give the order."
+
 
 func _process(delta: float) -> void:
 	if not over and speed_scale > 0.0:
@@ -135,6 +164,7 @@ func _process(delta: float) -> void:
 				kept.append(a)
 		arrows = kept
 	_refresh_unit_panel()
+	_refresh_tactic_buttons()
 	queue_redraw()
 
 

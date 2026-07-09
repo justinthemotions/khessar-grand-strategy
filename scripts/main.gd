@@ -32,6 +32,12 @@ var capacity_label: Label
 var enemy_label: Label
 var mil_msg: Label
 var recruit_buttons: Dictionary = {}
+# Module 7: warfare readouts and the defender's last resort
+var supply_label: Label
+var war_label: Label
+var champions_label: Label
+var opt_scorch: OptionButton
+var btn_scorch: Button
 var tabs_container: TabContainer
 var opt_commander: OptionButton
 var council_opts: Dictionary = {}
@@ -139,7 +145,7 @@ func _ready() -> void:
 	# dev aids: `godot --path . -- --screenshot` (campaign UI) or
 	# `-- --battle-screenshot` (mid-battle) save a png to user:// and quit
 	if OS.get_cmdline_user_args().has("--screenshot"):
-		tabs_container.current_tab = 3  # show the Intrigue tab in the capture
+		tabs_container.current_tab = 1  # show the Military tab in the capture
 		# stage a sample choice event so the popup is in the shot
 		var demo_ruler: SimCharacter = world.characters[world.realms[0].ruler_id]
 		world.raise_event(0, demo_ruler.id, "The Homage Tour",
@@ -793,6 +799,12 @@ func _make_military_tab() -> VBoxContainer:
 	roster_box.add_theme_constant_override("separation", 2)
 	mil.add_child(roster_box)
 
+	supply_label = Label.new()
+	supply_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	supply_label.add_theme_font_size_override("font_size", 12)
+	supply_label.add_theme_color_override("font_color", MUTED)
+	mil.add_child(supply_label)
+
 	var split_row := HBoxContainer.new()
 	split_row.add_theme_constant_override("separation", 6)
 	btn_split = Button.new()
@@ -834,6 +846,35 @@ func _make_military_tab() -> VBoxContainer:
 	mil_msg.add_theme_font_size_override("font_size", 12)
 	mil_msg.add_theme_color_override("font_color", Color("d98a5f"))
 	mil.add_child(mil_msg)
+
+	mil.add_child(HSeparator.new())
+	mil.add_child(_header("The War in the Land"))
+	war_label = Label.new()
+	war_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	war_label.add_theme_font_size_override("font_size", 12)
+	mil.add_child(war_label)
+
+	champions_label = Label.new()
+	champions_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	champions_label.add_theme_font_size_override("font_size", 12)
+	champions_label.add_theme_color_override("font_color", MUTED)
+	mil.add_child(champions_label)
+
+	var scorch_row := HBoxContainer.new()
+	scorch_row.add_theme_constant_override("separation", 6)
+	opt_scorch = OptionButton.new()
+	opt_scorch.clip_text = true
+	opt_scorch.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scorch_row.add_child(opt_scorch)
+	btn_scorch = Button.new()
+	btn_scorch.text = "Scorch the Earth"
+	btn_scorch.tooltip_text = "Burn your own crops and foul your own wells: the county feeds no invader, and its peasants turn partisan. Defensive wars only — and the land takes five years to forgive you."
+	btn_scorch.pressed.connect(func() -> void:
+		if opt_scorch.selected >= 0:
+			mil_msg.text = world.scorch_earth(0, int(opt_scorch.get_item_metadata(opt_scorch.selected)))
+		_refresh())
+	scorch_row.add_child(btn_scorch)
+	mil.add_child(scorch_row)
 
 	mil.add_child(HSeparator.new())
 	enemy_label = Label.new()
@@ -1711,12 +1752,26 @@ func _refresh_military() -> void:
 			roster_box.add_child(row)
 		btn_split.disabled = sel.regiments.size() < 2 or own.size() >= 3
 		btn_merge.disabled = own.size() < 2
+		# Module 7: what the ground under the army can actually feed
+		var rep: Dictionary = world.army_supply_report(sel)
+		var p = rep["province"]
+		var supply_text := "Encamped at %s — supply for %d men" % [str(p.name), int(rep["limit"])]
+		if int(rep["over"]) > 0:
+			supply_text += "  ·  %d TOO MANY — the host is starving" % int(rep["over"])
+		if sel.train_active:
+			supply_text += "\nBaggage train on the road" + (
+				"  ·  SEVERED %d months — no food, no reinforcements" % sel.severed_months
+				if sel.severed_months > 0 else " — guard it, or the host starves")
+		supply_label.text = supply_text
+		supply_label.add_theme_color_override("font_color",
+			Color("d24a35") if (int(rep["over"]) > 0 or sel.severed_months > 0) else MUTED)
 	else:
 		commander_label.text = ""
 		opt_commander.clear()
 		opt_commander.disabled = true
 		btn_split.disabled = true
 		btn_merge.disabled = true
+		supply_label.text = ""
 
 	for kind in recruit_buttons:
 		var b2: Button = recruit_buttons[kind]
@@ -1724,6 +1779,43 @@ func _refresh_military() -> void:
 		var too_big: bool = world.army_size(0) + int(SimWorld.RECRUIT_SIZE[kind]) > world.levy_capacity(0)
 		b2.visible = world.recruit_gate(0, str(kind)) == ""
 		b2.disabled = world.realms[0].gold < cost or too_big
+
+	# Module 7: sieges, occupations, and the fires we set ourselves
+	var war_lines: Array = []
+	for pid in world.sieges:
+		var s: Dictionary = world.sieges[pid]
+		war_lines.append("%s besieges %s — %d%%" % [
+			str(world.realms[int(s["attacker"])].name).trim_prefix("Kingdom of "),
+			world.map.provinces[pid].name,
+			int(100.0 * float(s["progress"]) / maxf(float(s["threshold"]), 1.0))])
+	for pid in world.occupied:
+		war_lines.append("%s stands occupied by %s" % [world.map.provinces[pid].name,
+			str(world.realms[int(world.occupied[pid])].name).trim_prefix("Kingdom of ")])
+	for pid in world.scorched:
+		war_lines.append("%s lies scorched — %d months until the fields bear" % [
+			world.map.provinces[pid].name, maxi(0, int(world.scorched[pid]) - world.tick)])
+	if world.is_winter():
+		war_lines.append("It is WINTER — armies on foreign soil starve at twice the rate.")
+	war_label.text = "\n".join(war_lines) if not war_lines.is_empty() else "No sieges, no occupations, no burned fields."
+
+	var champs: Array = world.champions_of(0)
+	if champs.is_empty():
+		champions_label.text = "No champions ride with the host."
+	else:
+		var names: Array = []
+		for c3: SimCharacter in champs:
+			names.append("%s (Prowess %d)" % [world.full_name(c3), c3.prowess])
+		champions_label.text = "Champions with the main host: " + ", ".join(names)
+
+	# the scorch picker: your own rightful counties, not yet burned
+	opt_scorch.clear()
+	var can_scorch: bool = world.at_war and world.war_aggressor != 0
+	for p2 in world.map.provinces:
+		if p2.owner == 0 and p2.de_jure == 0 and int(world.scorched.get(p2.id, -1)) <= world.tick:
+			opt_scorch.add_item(str(p2.name))
+			opt_scorch.set_item_metadata(opt_scorch.item_count - 1, p2.id)
+	btn_scorch.disabled = not can_scorch or opt_scorch.item_count == 0
+	opt_scorch.disabled = btn_scorch.disabled
 
 	enemy_label.text = "Enemy muster: ~%d men in %d armies (strength %d)" % [
 		int(round(world.army_size(1) / 10.0) * 10), world.armies_of(1).size(), world.strength(1)]
@@ -1911,9 +2003,23 @@ func _pending_armies() -> Array:
 
 
 func _army_lead(a) -> int:
+	## Commander martial, plus what the campaign lends or starves away:
+	## champions riding with the host, hunger from a severed train, and
+	## the defender's ambush edge on chosen ground (Module 7).
+	var lead := 0
 	if a != null and a.commander_id >= 0:
-		return world.characters[a.commander_id].martial
-	return 0
+		lead = world.characters[a.commander_id].martial
+	return lead + world.battle_lead_mod(a)
+
+
+func _cmdr_info(a) -> Dictionary:
+	## What the commander brings to the map table — the Battle Grid's
+	## tactical orders are gated on who he actually is (Module 7).
+	if a == null or a.commander_id < 0:
+		return {}
+	var c: SimCharacter = world.characters[a.commander_id]
+	return {"martial": c.martial, "intrigue": c.intrigue, "prowess": c.prowess,
+		"traits": c.traits.duplicate()}
 
 
 func _army_traits(a) -> Array:
@@ -1937,6 +2043,8 @@ func _start_battle() -> void:
 		[Color("3f5f83"), Color("8c4a3f")],
 		"The Battle of %s" % world.battle_site_name(),
 		_army_traits(pair[0]), _army_traits(pair[1]), world.battle_site_terrain())
+	battle_layer.sim.set_commander_info(0, _cmdr_info(pair[0]))
+	battle_layer.sim.set_commander_info(1, _cmdr_info(pair[1]))
 	battle_layer.finished.connect(_on_battle_finished)
 	battle_layer.sim.event.connect(_on_event)
 	add_child(battle_layer)
@@ -1953,6 +2061,8 @@ func _auto_resolve() -> void:
 		[str(world.realms[0].name).trim_prefix("Kingdom of "),
 		str(world.realms[1].name).trim_prefix("Kingdom of ")],
 		_army_traits(pair[0]), _army_traits(pair[1]), world.battle_site_terrain())
+	sim.set_commander_info(0, _cmdr_info(pair[0]))
+	sim.set_commander_info(1, _cmdr_info(pair[1]))
 	sim.run_headless()
 	_apply_battle_sim_results(sim)
 	_refresh()
@@ -1982,4 +2092,4 @@ func _apply_battle_sim_results(sim: BattleSim) -> void:
 	var loss := 0.0
 	if winner >= 0:
 		loss = 1.0 - sim.survivors_fraction(1 - winner)
-	world.apply_battle_result(winner, loss)
+	world.apply_battle_result(winner, loss, sim.commander_charged)

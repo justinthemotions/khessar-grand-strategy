@@ -122,6 +122,10 @@ func _draw() -> void:
 		else:
 			col = UNCLAIMED_FILL.get(p.terrain, Color("4a4642")) * shade
 		col.a = 1.0
+		if int(world.scorched.get(p.id, -1)) > world.tick:
+			col = col.lerp(Color("2a1c12"), 0.55)  # burned fields under ash (Module 7)
+		elif int(world.occupied.get(p.id, -1)) >= 0:
+			col = col.lerp(REALM_FILL[int(world.occupied[p.id])], 0.45)  # the occupier's shadow
 		draw_colored_polygon(pts, col)
 		var outline := pts.duplicate()
 		outline.append(pts[0])
@@ -174,6 +178,27 @@ func _draw() -> void:
 		draw_circle(apos + Vector2(0, 6), 3.5, Color("2a1f14"))
 		draw_circle(apos + Vector2(0, 6), 2.2, REALM_INK[a.realm_id])
 		draw_string(font2, apos + Vector2(-30, 20), str(a.size()), HORIZONTAL_ALIGNMENT_CENTER, 60, 11, REALM_INK[a.realm_id])
+
+	# baggage trains (Module 7) — the wagons trailing an army on foreign
+	# soil: the campaign's softest target, drawn so it can be hunted
+	for a in world.armies:
+		if not a.train_active:
+			continue
+		var tpos := _to_screen(a.train_pos)
+		var wagon := Color("8a6a3c") if a.severed_months == 0 else Color("b3402a")
+		draw_line(_to_screen(a.pos), tpos, Color(wagon, 0.4), 1.5)
+		draw_rect(Rect2(tpos + Vector2(-4, -3), Vector2(8, 5)), wagon)
+		draw_rect(Rect2(tpos + Vector2(-4, -3), Vector2(8, 5)), Color("1c1410"), false, 1.0)
+		draw_circle(tpos + Vector2(-2.5, 3), 1.6, Color("2a1f14"))
+		draw_circle(tpos + Vector2(2.5, 3), 1.6, Color("2a1f14"))
+
+	# siege lines (Module 7) — a broken ring around the county seat
+	for pid in world.sieges:
+		var sp := _to_screen(world.map.provinces[pid].center)
+		var s: Dictionary = world.sieges[pid]
+		var frac: float = clampf(float(s["progress"]) / maxf(float(s["threshold"]), 1.0), 0.0, 1.0)
+		draw_arc(sp, 11.0, 0.0, TAU, 24, Color("1c1410"), 3.0)
+		draw_arc(sp, 11.0, -PI * 0.5, -PI * 0.5 + TAU * frac, 24, REALM_INK[int(s["attacker"])], 3.0)
 
 	# free companies — masterless swords under a black rag (Module 5)
 	for fc in world.free_companies:
