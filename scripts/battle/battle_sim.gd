@@ -33,6 +33,27 @@ const REAR_PENALTY := 40.0
 const DEPLETION := 70.0
 const LEADERSHIP_REGEN := 0.03
 
+# Battle Grid orders (Module 7): once-per-battle commander tactics, gated
+# by who the commander actually is. Deterministic — no dice on the field.
+const TACTIC_LABELS := {
+	"feigned_retreat": "Feigned Retreat",
+	"commit_reserve": "Commit the Reserve",
+	"chivalric_charge": "Chivalric Charge",
+}
+const LURE_TICKS := 12           # how long a feigned retreat drags its victim out of line
+const LURE_CENTER_SHOCK := 15.0  # the exposed center feels the line come apart
+const RESERVE_HEART := 25.0      # shock lifted from the line the reserve reinforces
+const RESERVE_COHESION := 15.0   # the reserve fights above itself
+const CHARGE_WS_MULT := 1.3      # a chivalric charge hits like a hammer...
+const CHARGE_TAKEN_MULT := 1.25  # ...and bleeds for riding into the press
+
+# Levy morale cascade (Module 7): when a formation breaks and runs, the
+# conscripts near it look over their shoulders. Professional squads hold.
+const CASCADE_RANGE := 170.0     # px — panic is contagious only up close
+const CASCADE_SHOCK := 30.0      # base fear, before the commander steadies them
+const CASCADE_LEAD_DAMP := 0.8   # each point of commander martial calms the line
+const CASCADE_MIN := 8.0
+
 # Ranged fire: deterministic expected-value volleys, one per combat tick.
 const RANGED_RATE := 0.06        # shots landing per shooter per tick
 const RANGED_HIT := 0.35
@@ -131,6 +152,7 @@ class Regiment:
 	var face_dir := Vector2.RIGHT
 	var hold_facing := false     # ordered facing persists until a new order
 	var shock := 0.0
+	var lure_ticks := 0          # feigned retreat: dragged out of formation (Module 7)
 	var flank_penalty := 0.0     # standing penalty, recomputed each combat tick
 	var routed := false
 	var fled := false
@@ -167,6 +189,12 @@ var field := Vector2(1200, 640)
 var ended := false
 var winner := -1
 var volleys: Array = []   # [{from, to}] arrows fired this tick; the view consumes these
+# Module 7: the Battle Grid's command layer
+var side_lead := [0, 0]              # commander lead bonus per side (cascade dampening)
+var commanders: Array = [{}, {}]     # per side: {martial, intrigue, prowess, traits[]} — empty = no orders
+var tactics_used: Array = [{}, {}]   # per side: tactic kind -> true (each plays once)
+var commander_charged := [false, false]  # a chivalric charge was sounded — the fate rolls remember
+var combat_ticks := 0                # rounds fought — the AI times its cards by it
 
 
 func setup_from_rosters(roster_a: Array, roster_b: Array, lead_bonus_a: int, lead_bonus_b: int, side_names: Array,
@@ -177,6 +205,7 @@ func setup_from_rosters(roster_a: Array, roster_b: Array, lead_bonus_a: int, lea
 	## `terrain` is the battle province's terrain — forest and coast
 	## activate the cultural units' terrain bonuses (Roster v1.0).
 	regiments.clear()
+	side_lead = [lead_bonus_a, lead_bonus_b]
 	for side in 2:
 		var roster: Array = roster_a if side == 0 else roster_b
 		var lead_bonus := lead_bonus_a if side == 0 else lead_bonus_b
@@ -264,6 +293,211 @@ func run_headless(max_frames: int = 30000) -> void:
 		battle_ended.emit(winner)
 
 
+# --------------------------------------- the Battle Grid's orders (Module 7)
+
+func set_commander_info(side: int, info: Dictionary) -> void:
+	## {martial, intrigue, prowess, traits[]} — what the commander brings to
+	## the command tent. Without it, no tactical orders can be given.
+	commanders[side] = info
+
+
+func tactic_gate(side: int, kind: String) -> String:
+	## "" = the order can be given. Otherwise, why it cannot.
+	if ended:
+		return "The field is decided."
+	var cmdr: Dictionary = commanders[side]
+	if cmdr.is_empty():
+		return "No commander stands at the map table."
+	if tactics_used[side].has(kind):
+		return "That card has been played."
+	var traits: Array = cmdr.get("traits", [])
+	match kind:
+		"feigned_retreat":
+			if not (traits.has("Deceitful") or int(cmdr.get("intrigue", 0)) >= 12):
+				return "It takes a Deceitful mind (or Intrigue 12+) to sell a false rout."
+		"commit_reserve":
+			if not (traits.has("Patient") or int(cmdr.get("martial", 0)) >= 12):
+				return "Only a Patient hand (or Martial 12+) holds a reserve this long."
+			if _rearmost_own(side) == null:
+				return "There is no reserve left to commit."
+		"chivalric_charge":
+			if not (traits.has("Wrathful") or int(cmdr.get("prowess", 0)) >= 12):
+				return "It takes Wrathful blood (or Prowess 12+) to lead the charge yourself."
+			if _charge_regiment(side) == null:
+				return "No formation fit to carry the charge."
+	return ""
+
+
+func use_tactic(side: int, kind: String) -> String:
+	var gate := tactic_gate(side, kind)
+	if gate != "":
+		return gate
+	tactics_used[side][kind] = true
+	match kind:
+		"feigned_retreat":
+			_do_feigned_retreat(side)
+		"commit_reserve":
+			_do_commit_reserve(side)
+		"chivalric_charge":
+			_do_chivalric_charge(side)
+	return ""
+
+
+func _do_feigned_retreat(side: int) -> void:
+	## The opposing flank is baited out of the line; the center it was
+	## guarding stands exposed while the lure lasts.
+	var bait := _flankmost_enemy(side)
+	if bait == null:
+		return
+	bait.lure_ticks = LURE_TICKS
+	bait.engaged_id = -1
+	bait.has_move_order = true
+	var toward_x := 140.0 if side == 0 else field.x - 140.0
+	bait.move_target = Vector2(toward_x, bait.pos.y).clamp(Vector2(30, 30), field - Vector2(30, 30))
+	var center := _centermost(1 - side, bait)
+	if center != null:
+		center.shock += LURE_CENTER_SHOCK * center.shock_mult
+	event.emit("A feigned retreat! %s break formation to give chase — and the line behind them opens." % bait.label)
+
+
+func _do_commit_reserve(side: int) -> void:
+	## Fresh men into the worst of it: the rearguard marches for the
+	## regiment closest to breaking, and the sight of banners steadies it.
+	var reserve := _rearmost_own(side)
+	if reserve == null:
+		return
+	var weakest := _worst_morale_own(side, reserve)
+	reserve.shock = 0.0
+	reserve.morale_bonus += RESERVE_COHESION
+	reserve.charge_spent = false
+	if weakest != null:
+		reserve.has_move_order = true
+		reserve.move_target = weakest.pos
+		weakest.shock = maxf(0.0, weakest.shock - RESERVE_HEART)
+		event.emit("The reserve is committed! %s march for %s's wavering line." % [reserve.label, weakest.label])
+	else:
+		event.emit("The reserve is committed! %s advance." % reserve.label)
+
+
+func _do_chivalric_charge(side: int) -> void:
+	## The commander couches his own lance. Massive output, paid for in
+	## exposure — his fate rolls remember the charge after the battle.
+	var spear := _charge_regiment(side)
+	if spear == null:
+		return
+	spear.charging_ticks = CHARGE_DURATION * 2
+	spear.charge_spent = true
+	spear.ws *= CHARGE_WS_MULT
+	spear.dmg_taken_mult *= CHARGE_TAKEN_MULT
+	var prey := _centermost(1 - side, null)
+	if prey != null:
+		spear.has_move_order = true
+		spear.move_target = prey.pos
+		prey.shock += CHARGE_SHOCK
+	commander_charged[side] = true
+	event.emit("A chivalric charge! The commander rides at the head of %s." % spear.label)
+
+
+func _flankmost_enemy(side: int) -> Regiment:
+	## The enemy regiment farthest from the battle line's center — the
+	## flank a false rout is most likely to peel loose. Melee only; a
+	## skirmish screen chasing shadows costs its side nothing.
+	var best: Regiment = null
+	var best_off := -1.0
+	for r: Regiment in regiments:
+		if r.side == side or not r.active() or r.lure_ticks > 0 or r.rng_range > 0.0:
+			continue
+		var off := absf(r.pos.y - field.y * 0.5)
+		if off > best_off:
+			best_off = off
+			best = r
+	return best
+
+
+func _centermost(side: int, excluding: Regiment) -> Regiment:
+	var best: Regiment = null
+	var best_off := INF
+	for r: Regiment in regiments:
+		if r.side != side or not r.active() or r == excluding:
+			continue
+		var off := absf(r.pos.y - field.y * 0.5)
+		if off < best_off:
+			best_off = off
+			best = r
+	return best
+
+
+func _rearmost_own(side: int) -> Regiment:
+	## The unengaged regiment deepest in its own half — the rearguard.
+	var best: Regiment = null
+	var best_x := 0.0
+	for r: Regiment in regiments:
+		if r.side != side or not r.active() or r.engaged_id >= 0:
+			continue
+		var depth := field.x - r.pos.x if side == 0 else r.pos.x
+		if best == null or depth > best_x:
+			best_x = depth
+			best = r
+	return best
+
+
+func _worst_morale_own(side: int, excluding: Regiment) -> Regiment:
+	var best: Regiment = null
+	for r: Regiment in regiments:
+		if r.side != side or not r.active() or r == excluding:
+			continue
+		if best == null or r.morale() < best.morale():
+			best = r
+	return best
+
+
+func _charge_regiment(side: int) -> Regiment:
+	## Cavalry carries the charge if any still rides; else the hardest
+	## hitters afoot.
+	var best: Regiment = null
+	for r: Regiment in regiments:
+		if r.side != side or not r.active() or r.rng_range > 0.0:
+			continue
+		if best == null or (r.is_cav and not best.is_cav) \
+				or (r.is_cav == best.is_cav and r.ws * float(r.soldiers) > best.ws * float(best.soldiers)):
+			best = r
+	return best
+
+
+func _ai_tactics(side: int) -> void:
+	## The AI plays its cards on simple, deterministic cues: bait early,
+	## charge once the lines are locked, commit the reserve when a line
+	## wavers. A commander without the temperament simply never does.
+	if commanders[side].is_empty():
+		return
+	if combat_ticks == 6 and tactic_gate(side, "feigned_retreat") == "":
+		var _e := use_tactic(side, "feigned_retreat")
+	if combat_ticks >= 10 and tactic_gate(side, "chivalric_charge") == "":
+		var _e2 := use_tactic(side, "chivalric_charge")
+	if tactic_gate(side, "commit_reserve") == "":
+		for r: Regiment in regiments:
+			if r.side == side and r.active() and r.morale() < 30.0:
+				var _e3 := use_tactic(side, "commit_reserve")
+				break
+
+
+func _cascade_panic(router: Regiment) -> void:
+	## The Cascade Panic Matrix: a breaking formation runs back through
+	## its own lines, and the conscripts near it check their own courage.
+	## Base fear, dampened by the commander's presence; professionals hold.
+	var fear := maxf(CASCADE_MIN, CASCADE_SHOCK - float(side_lead[router.side]) * CASCADE_LEAD_DAMP)
+	var spread := false
+	for f: Regiment in regiments:
+		if f.side != router.side or not f.active() or f == router or f.kind != "levy":
+			continue
+		if f.pos.distance_to(router.pos) > CASCADE_RANGE:
+			continue
+		f.shock += fear * f.shock_mult
+		spread = true
+	if spread:
+		event.emit("Panic ripples through the levies as %s stream back through their own lines!" % router.label)
+
+
 # ---------------------------------------------------------------- per-frame
 
 func move_step(delta: float) -> void:
@@ -280,6 +514,16 @@ func move_step(delta: float) -> void:
 				r.fled = true
 				_check_end()
 			continue
+
+		# a lured regiment chases the false rout — deaf to everything else
+		if r.lure_ticks > 0 and r.has_move_order:
+			var to_lure := r.move_target - r.pos
+			if to_lure.length() >= 6.0:
+				var lure_dir := to_lure.normalized()
+				r.pos += lure_dir * r.speed * delta
+				r.facing = lure_dir
+				r.was_moving = true
+				continue
 
 		# sticky engagement: keep fighting the current foe while in contact,
 		# so a unit pinned frontally can be struck in the rear by a second one
@@ -358,12 +602,15 @@ func _separate() -> void:
 func ai_step(control_side_0: bool) -> void:
 	## Simple AI: unengaged regiments march at the nearest enemy.
 	## Side 0 is normally the player; pass true to automate both sides.
+	_ai_tactics(1)
+	if control_side_0:
+		_ai_tactics(0)
 	for r: Regiment in regiments:
 		if not r.active():
 			continue
 		if r.side == 0 and not control_side_0:
 			continue
-		if r.engaged_id >= 0:
+		if r.engaged_id >= 0 or r.lure_ticks > 0:
 			continue
 		if r.rng_range > 0.0 and r.ammo > 0:
 			# archers skirmish: keep the range open, kite anything that closes
@@ -416,11 +663,16 @@ func _flank_target(r: Regiment) -> Regiment:
 func combat_tick() -> void:
 	if ended:
 		return
+	combat_ticks += 1
 	var dmg := {}
 	for r: Regiment in regiments:
 		r.flank_penalty = 0.0
+		if r.lure_ticks > 0:
+			r.lure_ticks -= 1
+			# out of formation: anyone striking the lured takes them in the flank
+			r.flank_penalty = maxf(r.flank_penalty, FLANKED_PENALTY)
 	for r: Regiment in regiments:
-		if not r.active() or r.engaged_id < 0:
+		if not r.active() or r.engaged_id < 0 or r.lure_ticks > 0:
 			continue
 		var t: Regiment = regiments[r.engaged_id]
 		if not t.alive():
@@ -445,6 +697,8 @@ func combat_tick() -> void:
 			2:
 				mult *= REAR_MULT
 				t.flank_penalty = maxf(t.flank_penalty, REAR_PENALTY)
+		if t.lure_ticks > 0:
+			mult *= FLANK_MULT  # a formation chasing shadows has no line to hold
 		var hit := clampf(BASE_HIT + (ma - t.md) * HIT_PER_POINT, HIT_MIN, HIT_MAX)
 		var per_hit := maxf(ws * (ARMOUR_PIVOT / (ARMOUR_PIVOT + t.armour)), ws * CHIP_FRACTION)
 		dmg[t.id] = dmg.get(t.id, 0.0) + float(engaged_count) * ATTACKS_PER_TICK * hit * per_hit * mult
@@ -471,6 +725,7 @@ func combat_tick() -> void:
 				continue  # the Berserker oath holds while a quarter of them stand
 			r.routed = true
 			event.emit("%s breaks and runs!" % r.label)
+			_cascade_panic(r)
 	_check_end()
 
 
