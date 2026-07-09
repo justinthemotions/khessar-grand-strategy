@@ -51,9 +51,12 @@ Permanent bloodline-wide perks: **Chronicled Deeds** (150r, +25% renown gain),
 **Golden Ledgers** (250r, +10% realm income while the dynasty holds the crown),
 **Blood of the Wolf** (350r, children born +1 Martial/+1 Prowess, +8% levy capacity
 while ruling), **Unbending Oaths** (500r, +15 opinion between all dynasty members,
-+0.5 monthly stress relief). Effects are wired inline at their point of effect
-(`_economy`, `levy_capacity`, `_make_child`, `opinion_of`, `_stress_relief_tick`).
-Sarova's ruling dynasty buys its own (`_ai_dynasty`).
++0.5 monthly stress relief), and the mutually exclusive marriage pair (§11):
+**The Syncretic Charter** (300r, syncretism thresholds ×0.75) and **The Preserving
+Line** (250r, blocks syncretism entirely; grants Pure of Blood if the line is clean).
+Effects are wired inline at their point of effect (`_economy`, `levy_capacity`,
+`_make_child`, `opinion_of`, `_stress_relief_tick`, `_syncretism_tick`).
+The AI's ruling dynasty buys its own (`_ai_dynasty`).
 
 ## 5. Dynasty Head Powers (`POWER_COST`, spend root renown)
 
@@ -77,6 +80,12 @@ Permanent reputational tags on the root (`mythos[]`), earned by counters:
   plotting realm: −10 opinion from foreigners, but plots progress ×1.15.
 - **Blood of Kings** — 480 consecutive months with a member on a throne: +5 opinion
   from all, +1 renown/month.
+- **Compact-Bound** — a Human-Orc marriage in the line (the Karn-Vol precedent): +20
+  opinion from Karn-Vol/Drevak-cultured characters, −10 from Aelindran ones.
+- **Half-Blooded Line** — 3 cross-race marriages under this blood: +10 opinion from
+  half-races, −5 from Purists.
+- **Pure of Blood** — granted on buying The Preserving Line with zero cross-race
+  marriages: +15 opinion from Purists, −10 from half-races.
 All are checked in `opinion_of` / `_plots_tick` / `renown_gain`; tags never expire and
 apply to every member of the bloodline, including the unborn.
 
@@ -121,3 +130,39 @@ Renown ticker + gain rate; mythos & blood-feud lines; house list with charters a
 heads; legacy purchase buttons; the four Head's Word powers with candidate dropdowns
 (disabled unless the player ruler *is* the dynasty head); bequest section; cadet
 founding with a charter picker. `_player_root()` = root of the player ruler's house.
+The character sheet notes off-realm blood ("· Half-Orc") when a character's race
+isn't the court's default.
+
+## 11. Cross-cultural marriage (v1.0)
+
+Marriage is two-layered: **biology** (races combine) and **culture** (households
+negotiate). Implemented per the Cross-Cultural Marriage doc:
+
+- **Races** (`SimCharacter.race`, `CultureData.RACES`): the Vael court is Human, the
+  clan Orc; `child_race` produces Half-Orcs (and the other half demographics as data).
+  Racial stat baselines apply at creation; mortality curves scale to racial lifespan
+  (`_death_chance`); a life 20% past its span gains **Long-Reigned** (health, −10
+  court opinion) — the long-reign fatigue pressure against elf-heir strategies.
+- **Household paths** (`_household_path` at the wedding): two Purists → *parallelism*
+  (+1 monthly stress each, no blending); one Purist or a cold match → *imposition*
+  (the bride's −20 "traditions kept to private rooms" memory); otherwise *syncretism*
+  (+10 mutual memories). Records live in `world.cross_marriages`.
+- **The syncretism engine** (`_syncretism_tick`): monthly gain = 1 base ± the
+  spouses' Syncretist/Purist (`syncretism_gain` hook +2/−3), +1 for holding land of
+  both cultures, +1 per living Bicultural child, −5 at war with the other culture's
+  realm. Thresholds come from the Roster affinities (`CultureData.SYNCRETISM_MONTHS`,
+  120–960 months; ×0.75 with The Syncretic Charter; frozen by The Preserving Line).
+- **Cultural Hybridization** — a choice event (Adopt / Delay 240 months / Reject).
+  Adopt: both spouses and their Bicultural children take the hybrid culture
+  (`CultureData.hybrid_of`, named Roster hybrids or runtime-registered new ones); the
+  realm's provinces of either parent culture drift 1%/month (`culture_drift`) and on
+  conversion muster **both parents' unit rosters** (`CultureData.satisfies` recurses
+  through hybrid parents). Reject: reverts to imposition, may scar Bicultural
+  children with **Cross-Sworn** (coping; −15 opinion of other Biculturals) and turn
+  the decider Purist.
+- **Traits**: Syncretist/Purist (personality axis; ±25/−30 opinion of a cross-culture
+  spouse), Bicultural (congenital, raised not rolled: +5 Diplomacy, assigned to
+  children of syncretism households).
+- Deferred: Reverse Imposition (needs a prestige system), proposal-time acceptance
+  AI (`marriage_acceptance_score` exists as the basis), pantheon-era fertility
+  depression (pre-Year-Zero flavor only).
