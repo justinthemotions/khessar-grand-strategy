@@ -7,7 +7,8 @@ The multi-generational layer of the Khessar Grand Strategy prototype. All in
 
 `SimWorld.Dynasty` is one **House**: `{id, name, parent_id, founder_id, charter,
 renown, legacies[], mythos[], kin_cruelty, poisonings, crown_months}`.
-- `parent_id == -1` → a founding house (Varen, Coldwell, Drace, Mirel at start).
+- `parent_id == -1` → a founding house (Halvenard-Veil, Aurath-Voss, Karn-Vol,
+  Vor-Grathkaz at Year Zero).
 - Cadet branches keep `parent_id` pointing at the house they split from.
 - `root_house_id(house_id)` walks up the tree **but stops at co-equal/schismatic
   charters** — those branches are their own dynasty. The whole loyalist tree pools
