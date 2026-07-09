@@ -19,6 +19,7 @@ var father_id: int = -1
 var mother_id: int = -1
 var children_ids: Array[int] = []
 var last_birth_tick: int = -999    # mothers only: cooldown between children
+var culture: String = ""           # martial tradition practiced (Cultural Roster v1.0) — set by SimWorld
 
 # Module 2 flags — the dynasty layer's levers on a single life.
 var is_bastard: bool = false       # born outside wedlock; barred from succession until legitimized

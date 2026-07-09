@@ -36,6 +36,7 @@ class Province:
 	var silence_touched: bool = false   # the Ashfields — inhabited, but under the Silence
 	var ruined: bool = false            # the Aurath Sovereignty ruins
 	var special_feature: String = ""    # "iron_library", "durn_caeris_seat", ...
+	var culture: String = ""            # majority culture (Cultural Roster v1.0) — see CultureData
 
 
 class Duchy:
@@ -109,6 +110,7 @@ func generate(seed_value: int) -> void:
 			p.silence_touched = bool(cell.get("silence", false))
 			p.ruined = bool(cell.get("ruined", false))
 			p.special_feature = str(cell.get("special", ""))
+			p.culture = CultureData.province_culture(p.cultural_region, p.owner, p.id)
 			p.name = str(cell["name"])
 			if p.name == "":
 				p.name = ProvinceNamePools.make_name(rng, p.cultural_region, used)
