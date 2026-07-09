@@ -39,7 +39,12 @@ const TACTIC_LABELS := {
 	"feigned_retreat": "Feigned Retreat",
 	"commit_reserve": "Commit the Reserve",
 	"chivalric_charge": "Chivalric Charge",
+	# Magic Injection v1.0: the desperate-caster cards
+	"uncontrolled_channel": "Uncontrolled Channel",
+	"reap_the_bargain": "Reap the Bargain",
 }
+const REAP_SHOCK := 25.0         # the Patron collects from every enemy line at once
+const CHANNEL_MISSILE_MULT := 1.6  # untrained arcana, poured out raw
 const LURE_TICKS := 12           # how long a feigned retreat drags its victim out of line
 const LURE_CENTER_SHOCK := 15.0  # the exposed center feels the line come apart
 const RESERVE_HEART := 25.0      # shock lifted from the line the reserve reinforces
@@ -194,7 +199,9 @@ var side_lead := [0, 0]              # commander lead bonus per side (cascade da
 var commanders: Array = [{}, {}]     # per side: {martial, intrigue, prowess, traits[]} — empty = no orders
 var tactics_used: Array = [{}, {}]   # per side: tactic kind -> true (each plays once)
 var commander_charged := [false, false]  # a chivalric charge was sounded — the fate rolls remember
+var commander_corruption := [0.0, 0.0]   # what the field cost each commander's ledger (Magic v1.0)
 var combat_ticks := 0                # rounds fought — the AI times its cards by it
+var battle_terrain := "plains"       # the province's ground — primal magic reads it
 
 
 func setup_from_rosters(roster_a: Array, roster_b: Array, lead_bonus_a: int, lead_bonus_b: int, side_names: Array,
@@ -206,6 +213,7 @@ func setup_from_rosters(roster_a: Array, roster_b: Array, lead_bonus_a: int, lea
 	## activate the cultural units' terrain bonuses (Roster v1.0).
 	regiments.clear()
 	side_lead = [lead_bonus_a, lead_bonus_b]
+	battle_terrain = terrain
 	for side in 2:
 		var roster: Array = roster_a if side == 0 else roster_b
 		var lead_bonus := lead_bonus_a if side == 0 else lead_bonus_b
@@ -296,9 +304,57 @@ func run_headless(max_frames: int = 30000) -> void:
 # --------------------------------------- the Battle Grid's orders (Module 7)
 
 func set_commander_info(side: int, info: Dictionary) -> void:
-	## {martial, intrigue, prowess, traits[]} — what the commander brings to
-	## the command tent. Without it, no tactical orders can be given.
+	## {martial, intrigue, prowess, traits[], names} — what the commander
+	## brings to the command tent. Without it, no tactical orders can be
+	## given — and no craft reaches the field (Magic Injection v1.0).
 	commanders[side] = info
+	# the commander's magical practice, read from the same trait database
+	var arcane := 1.0
+	var primal := 1.0
+	var corrupt := 1.0
+	var song := 0.0
+	var discipline := 1.0
+	for tname in info.get("traits", []):
+		if not TraitDB.has_trait(str(tname)):
+			continue
+		var mods: Dictionary = TraitDB.info(str(tname)).mods
+		arcane *= float(mods.get("arcane_channel_mult", 1.0))
+		primal *= float(mods.get("primal_channel_mult", 1.0))
+		corrupt *= float(mods.get("corruption_channel_mult", 1.0))
+		song += float(mods.get("song_aura_baseline", 0.0))
+		discipline *= float(mods.get("discipline_binding_mult", 1.0))
+	var primal_ground: float = 0.0
+	match battle_terrain:
+		"forest", "wetland", "river_valley":
+			primal_ground = 1.0
+		"plains", "hills":
+			primal_ground = 0.9
+		"coast":
+			primal_ground = 0.8
+		"mountain":
+			primal_ground = 0.6
+		_:
+			primal_ground = 0.0  # ashfields and ruins: the channel is gone
+	for r: Regiment in regiments:
+		if r.side == side:
+			# a Wizard's wards ride with the arcane retinues' volleys
+			if arcane > 1.0 and r.ward_shield:
+				r.missile *= arcane
+			# the primal channel steadies footsoldiers on living ground
+			if primal > 1.0 and primal_ground > 0.0 and not r.is_cav and r.rng_range <= 0.0:
+				r.ma += 6.0 * (primal - 1.0) * primal_ground / 0.3
+			# the song of the carried names steadies every line that hears it
+			if song > 0.0:
+				var names := int(info.get("names", 0))
+				r.morale_bonus += 100.0 * song * clampf(1.0 + float(names) / 200.0, 1.0, 2.0)
+			# the Brushgate stillness spreads from the command tent
+			if discipline > 1.0:
+				r.shock_mult *= 0.90
+		elif corrupt > 1.0 and not r.silence_immune:
+			# something rides with the enemy commander, and the lines feel it
+			r.shock += 10.0 * (corrupt - 1.0) / 0.4 * r.shock_mult
+	if corrupt > 1.0:
+		commander_corruption[side] += 1.5  # commanding with the Patron's help goes on the ledger
 
 
 func tactic_gate(side: int, kind: String) -> String:
@@ -325,7 +381,24 @@ func tactic_gate(side: int, kind: String) -> String:
 				return "It takes Wrathful blood (or Prowess 12+) to lead the charge yourself."
 			if _charge_regiment(side) == null:
 				return "No formation fit to carry the charge."
+		"uncontrolled_channel":
+			if not traits.has("Arcane-Blooded"):
+				return "There is no arcane blood at the map table."
+			if traits.has("Academy-Sworn"):
+				return "Academy discipline forbids exactly this — that is what the discipline is."
+			if not _has_ranged(side):
+				return "Nothing on the field can carry the channel."
+		"reap_the_bargain":
+			if not traits.has("Patron-Bound"):
+				return "There is no bargain here to reap."
 	return ""
+
+
+func _has_ranged(side: int) -> bool:
+	for r: Regiment in regiments:
+		if r.side == side and r.active() and r.rng_range > 0.0:
+			return true
+	return false
 
 
 func use_tactic(side: int, kind: String) -> String:
@@ -340,7 +413,32 @@ func use_tactic(side: int, kind: String) -> String:
 			_do_commit_reserve(side)
 		"chivalric_charge":
 			_do_chivalric_charge(side)
+		"uncontrolled_channel":
+			_do_uncontrolled_channel(side)
+		"reap_the_bargain":
+			_do_reap_the_bargain(side)
 	return ""
+
+
+func _do_uncontrolled_channel(side: int) -> void:
+	## The desperate untrained-caster move (Magic v1.0): raw arcana poured
+	## through every volley on the field — and straight onto the ledger.
+	for r: Regiment in regiments:
+		if r.side == side and r.rng_range > 0.0:
+			r.missile *= CHANNEL_MISSILE_MULT
+			r.ammo += 10
+	commander_corruption[side] += 2.0
+	event.emit("The commander opens an uncontrolled channel! Every volley burns brighter — and something takes note.")
+
+
+func _do_reap_the_bargain(side: int) -> void:
+	## The Patron collects (Magic v1.0): every enemy line feels it at
+	## once. The price is immediate, personal, and not negotiable.
+	for r: Regiment in regiments:
+		if r.side != side and r.active() and not r.silence_immune:
+			r.shock += REAP_SHOCK * r.shock_mult
+	commander_corruption[side] += 5.0
+	event.emit("The commander reaps the bargain! A wrongness sweeps the enemy lines — and the ledger turns another page.")
 
 
 func _do_feigned_retreat(side: int) -> void:
@@ -474,6 +572,10 @@ func _ai_tactics(side: int) -> void:
 		var _e := use_tactic(side, "feigned_retreat")
 	if combat_ticks >= 10 and tactic_gate(side, "chivalric_charge") == "":
 		var _e2 := use_tactic(side, "chivalric_charge")
+	if combat_ticks >= 8 and tactic_gate(side, "uncontrolled_channel") == "":
+		var _e4 := use_tactic(side, "uncontrolled_channel")
+	if combat_ticks >= 14 and tactic_gate(side, "reap_the_bargain") == "":
+		var _e5 := use_tactic(side, "reap_the_bargain")
 	if tactic_gate(side, "commit_reserve") == "":
 		for r: Regiment in regiments:
 			if r.side == side and r.active() and r.morale() < 30.0:

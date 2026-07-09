@@ -1869,6 +1869,11 @@ func _refresh_character() -> void:
 		c.age_years(world.tick), str(world.realms[c.realm_id].name).trim_prefix("Kingdom of "),
 		blood, c.diplomacy, c.martial, c.stewardship, c.intrigue, c.learning, c.prowess,
 		traits_line, int(c.stress), stress_word]
+	# the Patron's ledger, shown only once it has an entry (Magic v1.0)
+	if c.corruption > 0.0:
+		lines += "\nCorruption %.1f" % c.corruption
+	if c.names_carried > 0:
+		lines += "\nNames carried: %d" % c.names_carried
 	var liege_id: int = world.realms[c.realm_id].ruler_id
 	if liege_id >= 0 and liege_id != c.id:
 		lines += "\nOpinion of liege: %+d" % world.opinion_of(c.id, liege_id)
@@ -2019,7 +2024,7 @@ func _cmdr_info(a) -> Dictionary:
 		return {}
 	var c: SimCharacter = world.characters[a.commander_id]
 	return {"martial": c.martial, "intrigue": c.intrigue, "prowess": c.prowess,
-		"traits": c.traits.duplicate()}
+		"traits": c.traits.duplicate(), "names": c.names_carried}
 
 
 func _army_traits(a) -> Array:
@@ -2092,4 +2097,4 @@ func _apply_battle_sim_results(sim: BattleSim) -> void:
 	var loss := 0.0
 	if winner >= 0:
 		loss = 1.0 - sim.survivors_fraction(1 - winner)
-	world.apply_battle_result(winner, loss, sim.commander_charged)
+	world.apply_battle_result(winner, loss, sim.commander_charged, sim.commander_corruption)
