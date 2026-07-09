@@ -577,7 +577,14 @@ func _make_military_tab() -> VBoxContainer:
 
 	mil.add_child(HSeparator.new())
 	mil.add_child(_header("Muster"))
-	for kind in ["levy", "archer", "sword", "cav"]:
+	# The universal roster first, then every cultural specialty kind —
+	# buttons for kinds the realm's provinces cannot culturally muster
+	# stay hidden (Roster v1.0, Design Decision A: identity is geography).
+	var muster_kinds: Array = ["levy", "archer", "sword", "cav"]
+	for kind in SimWorld.UNIT_LABELS:
+		if not muster_kinds.has(kind):
+			muster_kinds.append(kind)
+	for kind in muster_kinds:
 		var b := Button.new()
 		b.text = "%s — %dg" % [SimWorld.UNIT_LABELS[kind], int(SimWorld.RECRUIT_COST[kind])]
 		var k: String = kind
@@ -1312,6 +1319,7 @@ func _refresh_military() -> void:
 		var b2: Button = recruit_buttons[kind]
 		var cost: float = SimWorld.RECRUIT_COST[kind]
 		var too_big: bool = world.army_size(0) + int(SimWorld.RECRUIT_SIZE[kind]) > world.levy_capacity(0)
+		b2.visible = world.recruit_gate(0, str(kind)) == ""
 		b2.disabled = world.realms[0].gold < cost or too_big
 
 	enemy_label.text = "Enemy muster: ~%d men in %d armies (strength %d)" % [
@@ -1520,7 +1528,7 @@ func _start_battle() -> void:
 		str(world.realms[1].name).trim_prefix("Kingdom of ")],
 		[Color("3f5f83"), Color("8c4a3f")],
 		"The Battle of %s" % world.battle_site_name(),
-		_army_traits(pair[0]), _army_traits(pair[1]))
+		_army_traits(pair[0]), _army_traits(pair[1]), world.battle_site_terrain())
 	battle_layer.finished.connect(_on_battle_finished)
 	battle_layer.sim.event.connect(_on_event)
 	add_child(battle_layer)
@@ -1536,7 +1544,7 @@ func _auto_resolve() -> void:
 	sim.setup_from_rosters(pair[0].regiments, pair[1].regiments, _army_lead(pair[0]), _army_lead(pair[1]),
 		[str(world.realms[0].name).trim_prefix("Kingdom of "),
 		str(world.realms[1].name).trim_prefix("Kingdom of ")],
-		_army_traits(pair[0]), _army_traits(pair[1]))
+		_army_traits(pair[0]), _army_traits(pair[1]), world.battle_site_terrain())
 	sim.run_headless()
 	_apply_battle_sim_results(sim)
 	_refresh()
