@@ -229,6 +229,30 @@ const PRESTIGE_DECAY := 0.2           # the world forgets, slowly
 const DEMOB_BOUNTY_PER_MAN := 0.5
 const FREE_COMPANY_MIN_MEN := 60      # smaller bands melt away on their own
 
+# Module 6: intrigue — secrets, hooks, schemes, and poison
+const FERRET_COST := 30.0
+const FERRET_GIVE_UP_MONTHS := 18     # even the best spymaster admits a dry well
+const MINOR_SCHEME_COST := 60.0
+const APOTHECARY_COST := 80.0
+const ASSET_BRIBE := 40.0             # what a cupbearer's loyalty costs in coin
+const MITHRIDATIC_MONTHS := 24        # micro-doses, patiently, for two years
+const ASSET_ROLES := ["cupbearer", "food taster", "chamberlain", "stable master", "captain of the night watch"]
+const VECTOR_LABELS := {
+	"nightshade": "Nightshade",       # the classic: quick, quiet, whispered about
+	"slow_weep": "The Slow Weep",     # five patient years that look like consumption
+	"mad_mind": "The Mad Mind",       # the target survives; their sanity does not
+}
+const SECRET_LABELS := {
+	"bastard blood": "bastard blood in the line",
+	"a murderer's hand": "a murder bought and paid for",
+	"a secret affair": "a bed shared in secret",
+}
+const MINOR_SCHEME_LABELS := {
+	"seduce": "Seduction", "abduct": "Abduction",
+	"slander_lineage": "Slander: the False Lineage",
+	"slander_vice": "Slander: the Manufactured Vice",
+}
+
 var rng := RandomNumberGenerator.new()
 var tick: int = 0                  # months since Year Zero of the Silence
 var characters: Dictionary = {}    # id -> SimCharacter
@@ -271,6 +295,13 @@ var demilitarized_until: Dictionary = {} # realm id -> tick professional muster 
 var salted: Dictionary = {}           # province id -> tick the scars heal
 var dispossessed: Dictionary = {}     # root house id -> {home, host, since} — courts-in-exile
 var free_companies: Array = []        # Army objects with realm_id -1, paid in plunder
+# Module 6: the web — what is known, who is owned, and what is brewing.
+var secrets: Array = []               # [{subject, type, known: {realm id: true}}]
+var hooks: Array = []                 # [{realm, target, strength weak|strong, source, spent}]
+var ferreting: Dictionary = {}        # realm id -> months spent digging for secrets
+var plot_details: Dictionary = {}     # realm id -> {vector, asset_id, asset_role, double_agent, waiting}
+var minor_schemes: Array = []         # [{realm, kind, target, progress}] — seduce/abduct/slander
+var mithridatism: Dictionary = {}     # char id -> months of micro-doses endured
 
 # The event framework: choice events with trait-weighted AI resolution.
 var pending_events: Array = []       # events awaiting the player's decision
@@ -320,6 +351,9 @@ class Realm:
 	var plot_warned: bool = false        # the victim's court has caught wind of it
 	var tyranny: float = 0.0             # Module 4: remembered injustice — revocations, harsh terms, bad verdicts
 	var prestige: float = 0.0            # Module 5: international standing — unjust wars and broken truces bleed it
+	var apothecary: bool = false         # Module 6: a hidden lab beneath the estate
+	var alchemist_id: int = -1           # the unlanded courtier who tends the stills
+	var plot_vector_pref: String = "nightshade"  # what the lab brews for the next strike
 	# The Interregnum (Module 2): between death and coronation the realm
 	# holds its breath. {heir, stage 0..4, legitimacy 0..100}
 	var interregnum: Dictionary = {}
@@ -497,6 +531,7 @@ func advance_month() -> void:
 	_council_tick()
 	_laws_tick()
 	_plots_tick()
+	_intrigue_tick()
 	_diplomacy_tick()
 	_ai_diplomacy()
 	_economy()
@@ -597,6 +632,7 @@ func _bastards_tick() -> void:
 			add_stress(wife, 10.0, "a husband's betrayal")
 		_log("%s acknowledges a bastard %s, %s." % [full_name(c),
 			"daughter" if child.is_female else "son", child.name])
+		_add_secret(c.id, "bastard blood")  # acknowledged at home; leverage abroad
 		return  # at most one scandal a month — the chronicle can only take so much
 
 
@@ -606,7 +642,10 @@ func _deaths() -> void:
 		if not c.alive:
 			continue
 		var age: int = c.age_years(tick)
-		if rng.randf() < _death_chance(age, c.race):
+		var chance := _death_chance(age, c.race)
+		if c.traits.has("Wasting"):
+			chance *= 4.0  # the Slow Weep does its patient, deniable work
+		if rng.randf() < chance:
 			doomed.append(c)
 		# long-reign fatigue (Cross-Cultural Marriage v1.0): a life run
 		# 20% past its race's span has outlived its own political era
@@ -730,6 +769,8 @@ func _begin_interregnum(realm: Realm, heir: SimCharacter, rescue: bool) -> void:
 		legit += 5
 	if rescue:
 		legit -= 10
+	if heir.slandered:
+		legit -= 25  # the False Lineage (Module 6): forged pages, remembered now
 	realm.interregnum = {"heir": heir.id, "stage": 0, "legitimacy": clampi(legit, 5, 95)}
 	var rival_note := ""
 	if not rivals.is_empty():
@@ -1258,7 +1299,7 @@ func available_cbs(realm_id: int) -> Array:
 	var ruler_id: int = realms[realm_id].ruler_id
 	if ruler_id >= 0:
 		for m in characters[ruler_id].memories:
-			if str(m["type"]) == "invaded my realm" or str(m["type"]) == "took my land":
+			if str(m["type"]) in ["invaded my realm", "took my land", "plotted my death", "plotted against my court"]:
 				out.append("revenge")
 				break
 	if fabricated_claims.get(realm_id, false):
@@ -2829,9 +2870,14 @@ func abandon_plot(realm_id: int) -> void:
 	realms[realm_id].plot_progress = -1.0
 	realms[realm_id].plot_target_id = -1
 	realms[realm_id].plot_warned = false
+	plot_details.erase(realm_id)
 
 
 func _plots_tick() -> void:
+	## The Anatomy of a Trap (Module 6): a murder is no longer one progress
+	## bar. Phase 1 infiltrates the household, Phase 2 subverts an inside
+	## asset (at 33), Phase 3 secures the vector (at 66), and Phase 4 is
+	## the strike — at once, or held for an open window.
 	for realm: Realm in realms:
 		if realm.plot_progress < 0.0:
 			continue
@@ -2845,13 +2891,32 @@ func _plots_tick() -> void:
 				_log("The plot withers for want of gold.")
 			continue
 		realm.gold -= 5.0
+		var details: Dictionary = plot_details.get(realm.id, {})
+		# Phase 4: components secured — strike, or hold for the window
+		if realm.plot_progress >= 100.0:
+			if bool(details.get("waiting", false)):
+				details["waited"] = int(details.get("waited", 0)) + 1
+				plot_details[realm.id] = details
+				if realms[t.realm_id].interregnum.is_empty() and int(details["waited"]) < 24:
+					continue  # patience: the couriers watch for chaos
+				if realm.id == 0:
+					_log("The window opens. The order goes out.")
+			_plot_strike(realm, t)
+			continue
 		var own := council_stat(realm.id, "Spymaster")
 		var their := council_stat(t.realm_id, "Spymaster")
 		var pace := maxf(1.0, 3.0 + own * 0.5 - their * 0.35)
 		pace /= trait_mult(t, "intrigue_defense_mult")  # the Paranoid sleep behind locked doors
 		if realm.ruler_id >= 0 and has_mythos(root_house_id(characters[realm.ruler_id].dynasty_id), "Whispered Poisoners"):
 			pace *= 1.15  # practice makes perfect
+		var before := realm.plot_progress
 		realm.plot_progress += pace
+		# Phase 2: someone with a position near the target must be owned
+		if before < 33.0 and realm.plot_progress >= 33.0:
+			_plot_subvert_asset(realm, t)
+		# Phase 3: what the lab — or the knife-seller — provides
+		if before < 66.0 and realm.plot_progress >= 66.0:
+			_plot_secure_vector(realm)
 		# past the halfway mark, the victim's court may catch wind of it
 		if not realm.plot_warned and realm.plot_progress >= 50.0:
 			realm.plot_warned = true
@@ -2863,38 +2928,11 @@ func _plots_tick() -> void:
 				+ _intrigue_detection_bonus(t.realm_id)) * 0.015) * trait_mult(t, "intrigue_defense_mult")
 			if rng.randf() < detect:
 				_raise_plot_warning(realm, t)
-		if realm.plot_progress < 100.0:
-			continue
-		var succeed := clampf(0.30 + (own - their) * 0.02, 0.10, 0.75)
-		var victim_name := full_name(t)
-		var plotter_ruler_id: int = realm.ruler_id
-		if rng.randf() < succeed:
-			# the family suspects a foreign hand, even without proof
-			var kin_ids: Array = [t.spouse_id, t.father_id, t.mother_id]
-			kin_ids.append_array(t.children_ids)
-			if plotter_ruler_id >= 0:
-				var proot := root_house_id(characters[plotter_ruler_id].dynasty_id)
-				dynasties[proot].poisonings += 1
-				if dynasties[proot].poisonings >= POISONINGS_THRESHOLD:
-					_earn_mythos(proot, "Whispered Poisoners")
-			_kill(t, "died suddenly in the night")
-			_log("[i]There are whispers of poison in %s...[/i]" % realms[t.realm_id].name)
-			for kid in kin_ids:
-				if kid >= 0 and characters.has(kid) and characters[kid].alive and plotter_ruler_id >= 0:
-					add_memory(characters[kid], "suspects poison", plotter_ruler_id, -40.0, 1.5)
-			if plotter_ruler_id >= 0:
-				var pr: SimCharacter = characters[plotter_ruler_id]
-				if pr.traits.has("Compassionate") or pr.traits.has("Honest"):
-					add_stress(pr, 20.0, "the deed is done")
-		else:
-			realm.gold = maxf(0.0, realm.gold - 150.0)
-			_log("[b]A plot against %s is uncovered![/b] Agents of %s hang in the square." % [victim_name, realm.name])
-			if plotter_ruler_id >= 0:
-				add_memory(t, "plotted my death", plotter_ruler_id, -60.0, 1.0)
-				var t_ruler: int = realms[t.realm_id].ruler_id
-				if t_ruler >= 0 and t_ruler != t.id:
-					add_memory(characters[t_ruler], "plotted against my court", plotter_ruler_id, -30.0, 2.0)
-		abandon_plot(realm.id)
+		if realm.plot_progress >= 100.0:
+			realm.plot_progress = 100.0
+			# the player picks the moment; everyone else strikes next tick
+			if realm.id == 0 and not auto_resolve_events:
+				_raise_strike_window(realm, t)
 	# Sarova's spymaster is never idle for long — schemers doubly so
 	var plot_chance := 0.01
 	if realms[1].ruler_id >= 0:
@@ -2912,6 +2950,183 @@ func _plots_tick() -> void:
 				target = pool[rng.randi_range(0, pool.size() - 1)]
 		if target != null and realms[1].gold >= 100.0:
 			var _e := start_plot(1, target.id)
+
+
+func _plot_subvert_asset(realm: Realm, t: SimCharacter) -> void:
+	## Phase 2 (Module 6): the Asset. The sharpest mind with a position
+	## near the target — bought with coin, or owned outright by a hook.
+	var details: Dictionary = plot_details.get(realm.id, {})
+	var asset: SimCharacter = null
+	for c in characters.values():
+		if c.alive and c.realm_id == t.realm_id and c.id != t.id \
+				and c.id != realms[t.realm_id].ruler_id and c.age_years(tick) >= ADULT_AGE:
+			if asset == null or c.intrigue > asset.intrigue:
+				asset = c
+	if asset == null:
+		return  # a lonely court — the plot leans on outsiders, and suffers for it
+	var role: String = ASSET_ROLES[rng.randi_range(0, ASSET_ROLES.size() - 1)]
+	if _spend_hook(realm.id, asset.id):
+		details["asset_id"] = asset.id
+		details["asset_role"] = role
+		if realm.id == 0:
+			_log("Your hook sinks deep: %s — the target's %s — is yours without a coin spent." % [full_name(asset), role])
+	elif realm.gold >= ASSET_BRIBE:
+		realm.gold -= ASSET_BRIBE
+		details["asset_id"] = asset.id
+		details["asset_role"] = role
+		if realm.id == 0:
+			_log("The target's %s takes the purse. There is a knife inside the walls now." % role)
+	plot_details[realm.id] = details
+
+
+func _plot_secure_vector(realm: Realm) -> void:
+	## Phase 3 (Module 6): the Vector. Nightshade from the market — or
+	## whatever the hidden lab has been asked to brew.
+	var details: Dictionary = plot_details.get(realm.id, {})
+	var v := "nightshade"
+	if realm.apothecary and realm.alchemist_id >= 0:
+		var alch: SimCharacter = characters.get(realm.alchemist_id)
+		if alch != null and alch.alive and VECTOR_LABELS.has(realm.plot_vector_pref):
+			v = realm.plot_vector_pref
+	details["vector"] = v
+	plot_details[realm.id] = details
+	if realm.id == 0:
+		_log("The vector is secured: %s." % VECTOR_LABELS[v])
+
+
+func _raise_strike_window(realm: Realm, t: SimCharacter) -> void:
+	## Phase 4 (Module 6): the trigger is the player's to pull.
+	var details: Dictionary = plot_details.get(realm.id, {})
+	if details.has("window_raised"):
+		return
+	details["window_raised"] = true
+	details["waiting"] = true  # hold until the crown decides
+	plot_details[realm.id] = details
+	var realm_ref := realm
+	var t_ref := t
+	raise_event(realm.id, realm.ruler_id, "The Trap Is Set",
+		"Every component is in place against %s: the routine mapped, the %s bought, the %s ready. Strike now — or wait for an open window, when their court is in chaos and the kitchens unguarded." % [
+			full_name(t), str(details.get("asset_role", "asset")),
+			VECTOR_LABELS[str(details.get("vector", "nightshade"))]],
+		[
+			{"label": "Strike now", "base": 4.0, "ai": {"aggression": 0.5},
+				"effect": func() -> void:
+					if realm_ref.plot_progress >= 0.0 and t_ref.alive:
+						_plot_strike(realm_ref, t_ref)},
+			{"label": "Wait for an open window (interregnum, or 24 months)", "base": 2.0, "ai": {"patience": 0.6},
+				"effect": func() -> void:
+					if realm_ref.id == 0:
+						_log("The knife stays sheathed. The couriers watch for chaos.")},
+		])
+
+
+func _plot_strike(realm: Realm, t: SimCharacter) -> void:
+	## Phase 4 lands. A turned asset serves the other master; otherwise the
+	## components decide the odds, and the vector decides what "success" means.
+	var details: Dictionary = plot_details.get(realm.id, {})
+	if bool(details.get("double_agent", false)):
+		_raise_switcheroo(realm, t)
+		return
+	var own := council_stat(realm.id, "Spymaster")
+	var their := council_stat(t.realm_id, "Spymaster")
+	var v := str(details.get("vector", "nightshade"))
+	var succeed := clampf(0.30 + (own - their) * 0.02, 0.10, 0.75)
+	if details.has("asset_id"):
+		succeed += 0.10  # a knife already inside the walls
+	if not realms[t.realm_id].interregnum.is_empty():
+		succeed += 0.20  # chaos is a ladder — and an unguarded kitchen door
+	if t.traits.has("Mithridatic"):
+		succeed *= 0.2   # a thousand small deaths answer for the wine
+	succeed = clampf(succeed, 0.05, 0.90)
+	var victim_name := full_name(t)
+	var plotter_ruler_id: int = realm.ruler_id
+	if rng.randf() < succeed:
+		match v:
+			"slow_weep":
+				# the perfect crime: no corpse, no whispers, no suspicion
+				_add_trait(t, "Wasting")
+				add_stress(t, 15.0, "a weakness the physicians cannot name")
+				_log("[i]%s grows pale and tired. The physicians speak of consumption.[/i]" % victim_name)
+			"mad_mind":
+				_add_trait(t, "Paranoid")
+				add_stress(t, 100.0, "voices where there are none")
+				_log("[i]%s wakes screaming of faces in the walls. The court begins to look away.[/i]" % victim_name)
+			_:
+				# the family suspects a foreign hand, even without proof
+				var kin_ids: Array = [t.spouse_id, t.father_id, t.mother_id]
+				kin_ids.append_array(t.children_ids)
+				if plotter_ruler_id >= 0:
+					var proot := root_house_id(characters[plotter_ruler_id].dynasty_id)
+					dynasties[proot].poisonings += 1
+					if dynasties[proot].poisonings >= POISONINGS_THRESHOLD:
+						_earn_mythos(proot, "Whispered Poisoners")
+					_add_secret(plotter_ruler_id, "a murderer's hand")
+				_kill(t, "died suddenly in the night")
+				_log("[i]There are whispers of poison in %s...[/i]" % realms[t.realm_id].name)
+				for kid in kin_ids:
+					if kid >= 0 and characters.has(kid) and characters[kid].alive and plotter_ruler_id >= 0:
+						add_memory(characters[kid], "suspects poison", plotter_ruler_id, -40.0, 1.5)
+		if plotter_ruler_id >= 0:
+			var pr: SimCharacter = characters[plotter_ruler_id]
+			if pr.traits.has("Compassionate") or pr.traits.has("Honest"):
+				add_stress(pr, 20.0, "the deed is done")
+	else:
+		realm.gold = maxf(0.0, realm.gold - 150.0)
+		realm.prestige = maxf(-100.0, realm.prestige - 20.0)
+		_log("[b]A plot against %s is uncovered![/b] Agents of %s hang in the square." % [victim_name, realm.name])
+		if plotter_ruler_id >= 0:
+			add_memory(t, "plotted my death", plotter_ruler_id, -60.0, 1.0)
+			# caught red-handed: the proof itself becomes leverage
+			_gain_hook(t.realm_id, plotter_ruler_id, "strong", "a murderer's hand")
+			var t_ruler: int = realms[t.realm_id].ruler_id
+			if t_ruler >= 0 and t_ruler != t.id:
+				add_memory(characters[t_ruler], "plotted against my court", plotter_ruler_id, -30.0, 2.0)
+	abandon_plot(realm.id)
+
+
+func _raise_switcheroo(realm: Realm, t: SimCharacter) -> void:
+	## The Subversion Matrix pays off: the plotter's own asset serves the
+	## defender now, and the defender chooses how the trap closes.
+	var details: Dictionary = plot_details.get(realm.id, {})
+	var v := str(details.get("vector", "nightshade"))
+	var role := str(details.get("asset_role", "agent"))
+	var plotter_ruler: SimCharacter = characters.get(realm.ruler_id)
+	var defender: Realm = realms[t.realm_id]
+	abandon_plot(realm.id)  # the plot is spent either way; only the ending differs
+	if plotter_ruler == null or not plotter_ruler.alive or defender.ruler_id < 0:
+		return
+	var realm_ref := realm
+	var t_ref := t
+	var pr_ref := plotter_ruler
+	raise_event(defender.id, defender.ruler_id, "The Double Game Closes",
+		"%s's plot against %s is ready to strike — but their %s has served your Spymaster for months. Choose the ending." % [
+			realm.name, full_name(t), role],
+		[
+			{"label": "The Switcheroo — let them drink their own vintage", "base": 3.0, "ai": {"scheming": 0.8},
+				"effect": func() -> void:
+					if not pr_ref.alive:
+						return
+					match v:
+						"slow_weep":
+							_add_trait(pr_ref, "Wasting")
+							_log("[b]The cup returns to the sender.[/b] %s grows pale within the month — the physicians speak of consumption." % full_name(pr_ref))
+						"mad_mind":
+							_add_trait(pr_ref, "Paranoid")
+							add_stress(pr_ref, 100.0, "the walls have faces")
+							_log("[b]The cup returns to the sender.[/b] %s wakes screaming — the brew was their own commission." % full_name(pr_ref))
+						_:
+							_kill(pr_ref, "died suddenly at their own feast")
+							_log("[b]The cup returns to the sender.[/b] %s toasts %s's health — and drinks the vintage they paid for." % [
+								full_name(pr_ref), full_name(t_ref)])
+					realms[t_ref.realm_id].prestige = minf(100.0, realms[t_ref.realm_id].prestige + 10.0)},
+			{"label": "Expose the plot before the world", "base": 3.0, "ai": {"patience": 0.4, "aggression": -0.2},
+				"effect": func() -> void:
+					realm_ref.prestige = maxf(-100.0, realm_ref.prestige - 30.0)
+					_gain_hook(t_ref.realm_id, pr_ref.id, "strong", "a murderer's hand")
+					if realms[t_ref.realm_id].ruler_id >= 0:
+						add_memory(characters[realms[t_ref.realm_id].ruler_id], "sent knives after my kin", pr_ref.id, -40.0, 2.0)
+					_log("[b]The plot is read aloud before both courts.[/b] %s stands naked before the world — and the proof stays locked in your archive." % realm_ref.name)},
+		])
 
 
 func _raise_plot_warning(plotter: Realm, victim: SimCharacter) -> void:
@@ -2945,9 +3160,378 @@ func _raise_plot_warning(plotter: Realm, victim: SimCharacter) -> void:
 			"effect": func() -> void:
 				_log("The whispers are dismissed as courtly noise. Perhaps they are.")},
 	]
+	# Counter-Intrigue Subversion (Module 6): if their inside agent is
+	# already placed, he can be bought twice — and the plot walks on, ours.
+	var p_details: Dictionary = plot_details.get(plotter.id, {})
+	if p_details.has("asset_id"):
+		var role := str(p_details.get("asset_role", "agent"))
+		options.append({"label": "Turn their %s — play the double game" % role,
+			"base": 2.0, "ai": {"scheming": 0.8},
+			"effect": func() -> void:
+				var own_i := council_stat(victim.realm_id, "Spymaster")
+				var their_i := council_stat(plotter_ref.id, "Spymaster")
+				if rng.randf() < clampf(0.40 + (own_i - their_i) * 0.02, 0.15, 0.80):
+					var d2: Dictionary = plot_details.get(plotter_ref.id, {})
+					d2["double_agent"] = true
+					plot_details[plotter_ref.id] = d2
+					_log("[b]The %s is turned.[/b] The plot walks on — wearing your colors under theirs." % role)
+				else:
+					_log("The approach is rebuffed — the %s stays bought. The plot walks on." % role)})
 	raise_event(victim.realm_id, target_realm.ruler_id, "Whispers of a Plot",
 		"Your Spymaster brings grave word: a foreign hand weaves a plot against %s. The web is half-spun — there is still time to act." % victim_name,
 		options)
+
+
+# ---------------------------------------------------------------- secrets & hooks (Module 6)
+
+func _add_secret(subject_id: int, type: String) -> void:
+	## The world accumulates leverage: every sin leaves a record somewhere.
+	for s in secrets:
+		if int(s["subject"]) == subject_id and str(s["type"]) == type:
+			return
+	secrets.append({"subject": subject_id, "type": type, "known": {}})
+
+
+func _gain_hook(realm_id: int, target_id: int, strength: String, source: String) -> void:
+	for h in hooks:
+		if int(h["realm"]) == realm_id and int(h["target"]) == target_id and not bool(h["spent"]):
+			if strength == "strong" and str(h["strength"]) == "weak":
+				h["strength"] = strength
+				h["source"] = source
+			return
+	hooks.append({"realm": realm_id, "target": target_id, "strength": strength,
+		"source": source, "spent": false})
+	var t: SimCharacter = characters.get(target_id)
+	if t != null and realm_id == 0:
+		_log("[b]A hook sinks into %s[/b] — %s. Leverage, whenever the crown wants it." % [
+			full_name(t), SECRET_LABELS.get(source, source)])
+
+
+func has_hook(realm_id: int, target_id: int) -> bool:
+	for h in hooks:
+		if int(h["realm"]) == realm_id and int(h["target"]) == target_id and not bool(h["spent"]):
+			return true
+	return false
+
+
+func hooks_of(realm_id: int) -> Array:
+	var out: Array = []
+	for h in hooks:
+		if int(h["realm"]) == realm_id and not bool(h["spent"]):
+			var t: SimCharacter = characters.get(int(h["target"]))
+			if t != null and t.alive:
+				out.append(h)
+	return out
+
+
+func _spend_hook(realm_id: int, target_id: int) -> bool:
+	## Weak hooks buy one favor; a strong hook is a lifetime of leverage.
+	for h in hooks:
+		if int(h["realm"]) == realm_id and int(h["target"]) == target_id and not bool(h["spent"]):
+			if str(h["strength"]) == "weak":
+				h["spent"] = true
+			return true
+	return false
+
+
+func hook_force_contract(realm_id: int, lord_id: int, part: String, rate: String) -> String:
+	## The doc's programmatic leverage: blackmail mandates contract changes
+	## with no tyranny gained and no grudge taken.
+	if not characters.has(lord_id) or not vassal_contracts.has(lord_id):
+		return "No such vassal."
+	if not has_hook(realm_id, lord_id):
+		return "The crown holds no hook on them."
+	if not (part == "tax" or part == "levy") or not CONTRACT_RATES.has(rate):
+		return "No such term."
+	contract_of(lord_id)[part] = rate
+	var _s := _spend_hook(realm_id, lord_id)
+	_log("%s signs the new terms without a word — what the crown knows sits across the table." % full_name(characters[lord_id]))
+	return ""
+
+
+func start_ferreting(realm_id: int) -> String:
+	## The Spymaster's task: dig for secrets — in every hall, including our own.
+	if ferreting.has(realm_id):
+		return "The Spymaster is already digging."
+	if council_member(realm_id, "Spymaster") == null:
+		return "Ferreting out secrets needs a Spymaster."
+	var realm: Realm = realms[realm_id]
+	if realm.gold < FERRET_COST:
+		return "Informants cost %d gold." % int(FERRET_COST)
+	realm.gold -= FERRET_COST
+	ferreting[realm_id] = 0
+	if realm_id == 0:
+		_log("The Spymaster's informants spread through halls and taverns, listening.")
+	return ""
+
+
+func _ferret_tick() -> void:
+	if ferreting.is_empty():
+		return
+	for rid in ferreting.keys():
+		ferreting[rid] = int(ferreting[rid]) + 1
+		var chance := 0.10 + council_stat(int(rid), "Spymaster") * 0.012
+		if rng.randf() < chance:
+			var unknown: Array = []
+			for s in secrets:
+				if s["known"].has(rid):
+					continue
+				var subj: SimCharacter = characters.get(int(s["subject"]))
+				if subj != null and subj.alive and subj.id != realms[int(rid)].ruler_id:
+					unknown.append(s)
+			if unknown.is_empty():
+				continue  # keep listening — the well may yet fill
+			var s2: Dictionary = unknown[rng.randi_range(0, unknown.size() - 1)]
+			s2["known"][rid] = true
+			var strength := "weak"
+			if str(s2["type"]) != "bastard blood":
+				strength = "strong"
+			_gain_hook(int(rid), int(s2["subject"]), strength, str(s2["type"]))
+			ferreting.erase(rid)
+		elif int(ferreting[rid]) >= FERRET_GIVE_UP_MONTHS:
+			ferreting.erase(rid)
+			if int(rid) == 0:
+				_log("The informants come back with tavern songs and nothing else. The purse is spent.")
+
+
+# ---------------------------------------------------------------- minor schemes (Module 6)
+
+func start_minor_scheme(realm_id: int, kind: String, target_id: int) -> String:
+	if not MINOR_SCHEME_LABELS.has(kind):
+		return "No such scheme."
+	for s in minor_schemes:
+		if int(s["realm"]) == realm_id:
+			return "The web can hold one such scheme at a time."
+	if council_member(realm_id, "Spymaster") == null:
+		return "Schemes need a Spymaster."
+	if not characters.has(target_id):
+		return "No such target."
+	var t: SimCharacter = characters[target_id]
+	if not t.alive:
+		return "%s is dead." % t.name
+	if t.realm_id == realm_id:
+		return "The target must live at a foreign court."
+	if kind == "seduce":
+		if t.age_years(tick) < ADULT_AGE:
+			return "Seduction waits on adulthood."
+		var r: SimCharacter = characters.get(realms[realm_id].ruler_id)
+		if r == null:
+			return "No ruler to do the seducing."
+		if _close_kin(r, t):
+			return "Too close in blood."
+	if kind.begins_with("slander") and t.age_years(tick) < ADULT_AGE:
+		return "Slander wants a reputation to ruin — children have none."
+	var realm: Realm = realms[realm_id]
+	if realm.gold < MINOR_SCHEME_COST:
+		return "Schemes need %d gold." % int(MINOR_SCHEME_COST)
+	realm.gold -= MINOR_SCHEME_COST
+	minor_schemes.append({"realm": realm_id, "kind": kind, "target": target_id,
+		"progress": 0.0, "checked": false})
+	if realm_id == 0:
+		_log("A quiet scheme begins: %s, against %s." % [MINOR_SCHEME_LABELS[kind], full_name(t)])
+	return ""
+
+
+func _minor_schemes_tick() -> void:
+	for s in minor_schemes.duplicate():
+		var rid := int(s["realm"])
+		var t: SimCharacter = characters.get(int(s["target"]))
+		if t == null or not t.alive or t.realm_id == rid:
+			minor_schemes.erase(s)
+			continue
+		var own := council_stat(rid, "Spymaster")
+		var their := council_stat(t.realm_id, "Spymaster")
+		s["progress"] = float(s["progress"]) + maxf(1.0, 4.0 + own * 0.4 - their * 0.25)
+		# a half-woven web can be found
+		if not bool(s["checked"]) and float(s["progress"]) >= 50.0:
+			s["checked"] = true
+			var detect := (0.20 + (their + _intrigue_detection_bonus(t.realm_id)) * 0.012) \
+				* trait_mult(t, "intrigue_defense_mult")
+			if rng.randf() < detect:
+				minor_schemes.erase(s)
+				realms[rid].prestige = maxf(-100.0, realms[rid].prestige - 20.0)
+				var t_ruler: int = realms[t.realm_id].ruler_id
+				if t_ruler >= 0 and realms[rid].ruler_id >= 0:
+					add_memory(characters[t_ruler], "plotted against my court", realms[rid].ruler_id, -30.0, 2.0)
+				_log("[b]A scheme is dragged into daylight![/b] %s's agents are caught weaving %s against %s." % [
+					realms[rid].name, MINOR_SCHEME_LABELS[str(s["kind"])], full_name(t)])
+				continue
+		if float(s["progress"]) >= 100.0:
+			minor_schemes.erase(s)
+			_resolve_minor_scheme(s, t)
+	# Sarova's court weaves its own smaller webs — a slandered heir is
+	# cheaper than a war, and safer than poison
+	var s_ruler_id: int = realms[1].ruler_id
+	if s_ruler_id < 0 or council_member(1, "Spymaster") == null or realms[1].gold < MINOR_SCHEME_COST:
+		return
+	for s in minor_schemes:
+		if int(s["realm"]) == 1:
+			return
+	var chance := clampf(0.003 + ai_weight(characters[s_ruler_id], "scheming") * 0.0002, 0.001, 0.02)
+	if rng.randf() < chance:
+		var heir := heir_of(0)
+		if heir != null and not heir.slandered and heir.age_years(tick) >= ADULT_AGE:
+			var _e := start_minor_scheme(1, "slander_lineage", heir.id)
+
+
+func _resolve_minor_scheme(s: Dictionary, t: SimCharacter) -> void:
+	var rid := int(s["realm"])
+	var realm: Realm = realms[rid]
+	match str(s["kind"]):
+		"seduce":
+			var r: SimCharacter = characters.get(realm.ruler_id)
+			if r == null or not r.alive:
+				return
+			add_memory(t, "a secret love", r.id, 40.0, 1.0)
+			add_memory(r, "a conquest abroad", t.id, 15.0, 1.0)
+			_add_secret(t.id, "a secret affair")
+			for sec in secrets:
+				if int(sec["subject"]) == t.id and str(sec["type"]) == "a secret affair":
+					sec["known"][rid] = true
+			_gain_hook(rid, t.id, "strong", "a secret affair")
+			_log("[i]Letters begin to cross the border in unmarked hands.[/i]")
+		"abduct":
+			var old_home := t.realm_id
+			wards[t.id] = {"home": old_home, "host": rid, "guardian": realm.ruler_id,
+				"hostage": true, "since": tick, "of_age": t.age_years(tick) >= ADULT_AGE}
+			t.realm_id = rid
+			var h_ruler: int = realms[old_home].ruler_id
+			if h_ruler >= 0 and realm.ruler_id >= 0:
+				add_memory(characters[h_ruler], "stole my blood from my hall", realm.ruler_id, -50.0, 2.0)
+			_log("[b]%s vanishes from %s[/b] — and reappears, under guard, at the court of %s." % [
+				full_name(t), realms[old_home].name, realm.name])
+		"slander_lineage":
+			t.slandered = true
+			for lord: SimCharacter in landed_vassals(t.realm_id):
+				add_memory(lord, "whispers of bastardy", t.id, -15.0, 2.0)
+			_log("[b]Forged pages surface in a monastery archive:[/b] they name %s bastard-born. True or not, the ink is aged and the seals are good." % full_name(t))
+		"slander_vice":
+			_raise_vice_trial(rid, t)
+
+
+func _raise_vice_trial(slanderer_rid: int, t: SimCharacter) -> void:
+	## The Manufactured Vice: planted evidence forces a public trial in the
+	## target's own court — and the crown must judge one of its own.
+	var court: Realm = realms[t.realm_id]
+	if court.ruler_id < 0:
+		return
+	var t_ref := t
+	var s_realm: Realm = realms[slanderer_rid]
+	raise_event(court.id, court.ruler_id, "A Trial of Vice",
+		"Evidence surfaces that %s keeps forbidden practices — witnesses paid, letters planted, all of it damning and none of it checkable. The court demands a trial." % full_name(t),
+		[
+			{"label": "Condemn them — the evidence is damning", "base": 3.0, "ai": {"patience": 0.3, "scheming": 0.2},
+				"effect": func() -> void:
+					t_ref.slandered = true
+					for seat in COUNCIL_SEATS:
+						if int(realms[t_ref.realm_id].council.get(seat, -1)) == t_ref.id:
+							realms[t_ref.realm_id].council.erase(seat)
+					if realms[t_ref.realm_id].ruler_id >= 0:
+						add_memory(t_ref, "condemned on forged evidence", realms[t_ref.realm_id].ruler_id, -60.0, 1.0)
+					for lord: SimCharacter in landed_vassals(t_ref.realm_id):
+						add_memory(lord, "convicted of secret vice", t_ref.id, -10.0, 2.0)
+					_log("[b]%s is condemned[/b] — stripped of office and standing. The evidence is never questioned again." % full_name(t_ref))},
+			{"label": "Stand by them — burn the forgeries (50 gold)", "base": 2.0, "ai": {"greed": -0.4, "aggression": 0.2},
+				"effect": func() -> void:
+					court.gold = maxf(0.0, court.gold - 50.0)
+					if rng.randf() < 0.5:
+						s_realm.prestige = maxf(-100.0, s_realm.prestige - 20.0)
+						if court.ruler_id >= 0 and s_realm.ruler_id >= 0:
+							add_memory(characters[court.ruler_id], "forged sins against my kin", s_realm.ruler_id, -40.0, 2.0)
+						_log("[b]The forgeries burn — and the forgers are named.[/b] %s stands shamed before both courts." % s_realm.name)
+					else:
+						_log("The evidence is burned and the matter closed. Where it came from, no one can prove.")},
+		])
+
+
+# ---------------------------------------------------------------- the apothecary (Module 6)
+
+func establish_apothecary(realm_id: int) -> String:
+	## A hidden room beneath the estate, and an unlanded courtier with the
+	## learning to tend it — officially, a physician.
+	var realm: Realm = realms[realm_id]
+	if realm.apothecary:
+		return "The hidden lab already bubbles beneath the estate."
+	if realm.gold < APOTHECARY_COST:
+		return "Masons who can keep secrets cost %d gold." % int(APOTHECARY_COST)
+	var alch: SimCharacter = null
+	for c in characters.values():
+		if c.alive and c.realm_id == realm_id and c.age_years(tick) >= ADULT_AGE \
+				and c.id != realm.ruler_id and counties_of(c.id).is_empty() \
+				and c.learning >= 10 and not _on_council(realm_id, c.id):
+			if alch == null or c.learning > alch.learning:
+				alch = c
+	if alch == null:
+		return "No unlanded courtier has the learning for the stills (10+)."
+	realm.gold -= APOTHECARY_COST
+	realm.apothecary = true
+	realm.alchemist_id = alch.id
+	_log("[b]A hidden room takes shape beneath the estate.[/b] %s tends the stills — officially, a physician." % full_name(alch))
+	return ""
+
+
+func _on_council(realm_id: int, char_id: int) -> bool:
+	for seat in COUNCIL_SEATS:
+		if int(realms[realm_id].council.get(seat, -1)) == char_id:
+			return true
+	return false
+
+
+func set_plot_vector(realm_id: int, v: String) -> String:
+	if not VECTOR_LABELS.has(v):
+		return "The lab knows no such brew."
+	if v != "nightshade" and not realms[realm_id].apothecary:
+		return "Custom toxins need an Apothecary Lab."
+	realms[realm_id].plot_vector_pref = v
+	return ""
+
+
+func toggle_mithridatism(realm_id: int) -> String:
+	## The defensive discipline: a drop of poison with every dawn meal,
+	## for two years — and then no cup can kill you.
+	var realm: Realm = realms[realm_id]
+	if realm.ruler_id < 0:
+		return "No ruler to guard."
+	var r: SimCharacter = characters[realm.ruler_id]
+	if r.traits.has("Mithridatic"):
+		return "The work is done — no cup can kill them now."
+	if mithridatism.has(r.id):
+		mithridatism.erase(r.id)
+		_log("%s abandons the bitter morning draughts." % full_name(r))
+		return ""
+	if not realm.apothecary:
+		return "Micro-dosing needs an Apothecary Lab."
+	mithridatism[r.id] = 0
+	_log("%s begins the old discipline: a drop of poison with every dawn meal." % full_name(r))
+	return ""
+
+
+func _mithridatism_tick() -> void:
+	if mithridatism.is_empty():
+		return
+	for cid in mithridatism.keys():
+		var c: SimCharacter = characters.get(int(cid))
+		if c == null or not c.alive:
+			mithridatism.erase(cid)
+			continue
+		var realm: Realm = realms[c.realm_id]
+		if realm.gold < 2.0:
+			continue  # the draught waits for coin
+		realm.gold -= 2.0
+		mithridatism[cid] = int(mithridatism[cid]) + 1
+		if int(mithridatism[cid]) >= MITHRIDATIC_MONTHS:
+			mithridatism.erase(cid)
+			_add_trait(c, "Mithridatic")
+			_log("[b]%s has drunk a thousand small deaths[/b] — and no cup can kill them now." % full_name(c))
+
+
+func _intrigue_tick() -> void:
+	## Module 6's slow machinery between the plots: informants digging,
+	## minor schemes weaving, the lab's patient disciplines. Every
+	## subsystem returns before touching the dice when it has no work.
+	_ferret_tick()
+	_minor_schemes_tick()
+	_mithridatism_tick()
 
 
 func _auto_marriages() -> void:
@@ -3427,6 +4011,10 @@ func curia_vote(realm_id: int, matter: String) -> Dictionary:
 			stance += 1  # loyalty bends ideology
 		elif regard <= FACTION_JOIN_OPINION:
 			stance -= 1  # spite does too
+		# a hook is a vote in the crown's pocket (Module 6: the Hook system)
+		if stance <= 0 and has_hook(realm_id, c.id):
+			var _spent := _spend_hook(realm_id, c.id)
+			stance = 1
 		if stance > 0:
 			votes_for += weight
 		elif stance < 0:
