@@ -85,12 +85,82 @@ const FOREIGN_LAND_YIELD := 0.6       # tax/levy of land you hold but do not rig
 const CROWN_ADMIN_BASE := 4           # counties the crown runs well without lords (+ stewardship/5)
 const OVERREACH_YIELD := 0.75         # tax of crown counties beyond that
 
-# The standing-army model: regiments persist between battles.
-const UNIT_LABELS := {"levy": "Levy Spears", "sword": "Sword Infantry", "cav": "Heavy Cavalry", "archer": "Archers"}
-const UNIT_WEIGHTS := {"levy": 1.0, "sword": 1.4, "cav": 2.2, "archer": 1.2}
-const RECRUIT_COST := {"levy": 120.0, "sword": 240.0, "cav": 450.0, "archer": 200.0}
-const RECRUIT_SIZE := {"levy": 48, "sword": 36, "cav": 16, "archer": 24}
-const UPKEEP_PER_MAN := 0.05
+# The standing-army model: regiments persist between battles. The
+# universal roster (levy/sword/cav/archer) is open to every realm;
+# cultural specialty kinds (Cultural Roster v1.0) need a province of
+# their culture — see recruit_gate() and CultureData.KIND_CULTURE.
+const UNIT_LABELS := {
+	"levy": "Levy Spears", "sword": "Sword Infantry", "cav": "Heavy Cavalry", "archer": "Archers",
+	"vael_arcane_retinue": "Arcane Retinue", "vael_court_company": "Court Company",
+	"aelindran_household_cavalry": "Household Cavalry", "aelindran_sworn_sword": "Sworn Swords",
+	"city_watch": "City Watch", "contract_militia": "Contract Militia",
+	"harbor_guard": "Harbor Guard", "coin_sworn": "Coin-Sworn Retainers",
+	"drevak_berserker": "Berserkers", "drevak_war_column": "War-Column",
+	"compact_sworn": "Compact-Sworn",
+	"dwarven_ironside": "Ironsides", "ward_speaker_retinue": "Ward-Speakers",
+	"brushgate_column": "Brushgate Column",
+	"veldarin_forest_sworn": "Forest-Sworn Archers", "veldarin_elder_guard": "Elder-Guard (Veldarin)",
+	"thaladris_song_bound": "Song-Bound Skirmishers", "thaladris_elder_guard": "Elder-Guard (Thaladris)",
+	"southern_marine": "Marines", "trade_guard": "Trade-Guard",
+}
+# strength weighting for the war AI: roughly cost / 200
+const UNIT_WEIGHTS := {
+	"levy": 1.0, "sword": 1.4, "cav": 2.2, "archer": 1.2,
+	"vael_arcane_retinue": 2.2, "vael_court_company": 1.4,
+	"aelindran_household_cavalry": 1.9, "aelindran_sworn_sword": 1.4,
+	"city_watch": 1.2, "contract_militia": 1.1,
+	"harbor_guard": 1.2, "coin_sworn": 1.6,
+	"drevak_berserker": 1.9, "drevak_war_column": 1.5,
+	"compact_sworn": 1.7,
+	"dwarven_ironside": 1.9, "ward_speaker_retinue": 2.1,
+	"brushgate_column": 2.0,
+	"veldarin_forest_sworn": 1.7, "veldarin_elder_guard": 2.1,
+	"thaladris_song_bound": 1.6, "thaladris_elder_guard": 2.1,
+	"southern_marine": 1.3, "trade_guard": 1.4,
+}
+# gold costs per the Roster's stat blocks
+const RECRUIT_COST := {
+	"levy": 120.0, "sword": 240.0, "cav": 450.0, "archer": 200.0,
+	"vael_arcane_retinue": 450.0, "vael_court_company": 260.0,
+	"aelindran_household_cavalry": 380.0, "aelindran_sworn_sword": 280.0,
+	"city_watch": 220.0, "contract_militia": 200.0,
+	"harbor_guard": 240.0, "coin_sworn": 320.0,
+	"drevak_berserker": 380.0, "drevak_war_column": 300.0,
+	"compact_sworn": 350.0,
+	"dwarven_ironside": 380.0, "ward_speaker_retinue": 420.0,
+	"brushgate_column": 400.0,
+	"veldarin_forest_sworn": 340.0, "veldarin_elder_guard": 420.0,
+	"thaladris_song_bound": 320.0, "thaladris_elder_guard": 420.0,
+	"southern_marine": 260.0, "trade_guard": 280.0,
+}
+const RECRUIT_SIZE := {
+	"levy": 48, "sword": 36, "cav": 16, "archer": 24,
+	"vael_arcane_retinue": 24, "vael_court_company": 40,
+	"aelindran_household_cavalry": 18, "aelindran_sworn_sword": 32,
+	"city_watch": 32, "contract_militia": 36,
+	"harbor_guard": 32, "coin_sworn": 24,
+	"drevak_berserker": 20, "drevak_war_column": 32,
+	"compact_sworn": 28,
+	"dwarven_ironside": 24, "ward_speaker_retinue": 16,
+	"brushgate_column": 18,
+	"veldarin_forest_sworn": 20, "veldarin_elder_guard": 16,
+	"thaladris_song_bound": 22, "thaladris_elder_guard": 16,
+	"southern_marine": 32, "trade_guard": 24,
+}
+const UPKEEP_PER_MAN := 0.05     # the universal roster's rate
+# per-man monthly upkeep where the Roster departs from the universal rate
+const UNIT_UPKEEP := {
+	"vael_arcane_retinue": 0.15, "vael_court_company": 0.06,
+	"aelindran_household_cavalry": 0.10,
+	"coin_sworn": 0.09, "contract_militia": 0.04, "harbor_guard": 0.05,
+	"drevak_berserker": 0.11, "drevak_war_column": 0.06,
+	"compact_sworn": 0.08,
+	"dwarven_ironside": 0.10, "ward_speaker_retinue": 0.14,
+	"brushgate_column": 0.12,
+	"veldarin_forest_sworn": 0.08, "veldarin_elder_guard": 0.13,
+	"thaladris_song_bound": 0.08, "thaladris_elder_guard": 0.13,
+	"southern_marine": 0.05, "trade_guard": 0.07,
+}
 const REPLENISH_COST_PER_MAN := 0.3
 
 var rng := RandomNumberGenerator.new()
@@ -276,6 +346,11 @@ func _create_character(p_name: String, female: bool, birth: int, dyn_id: int, re
 	c.birth_tick = birth
 	c.dynasty_id = dyn_id
 	c.realm_id = realm_id
+	# Culture is martial tradition, not blood (Cultural Roster v1.0). The
+	# simulated Vael court is the two great noble houses — Aelindran-
+	# cultured per the Roster ("their loyalty is political; their culture
+	# is older"); the border clan practices the Karn-Vol subvariant.
+	c.culture = "aelindran" if realm_id == 0 else "karn_vol"
 	characters[c.id] = c
 	return c
 
@@ -855,8 +930,35 @@ func muster_army(realm_id: int) -> Army:
 	return best
 
 
+func realm_cultures(realm_id: int) -> Dictionary:
+	## The set of province cultures the realm holds — the geography its
+	## military identity is anchored to (Roster Design Decision A).
+	var out := {}
+	for p in map.provinces:
+		if p.owner == realm_id:
+			out[p.culture] = true
+	return out
+
+
+func recruit_gate(realm_id: int, kind: String) -> String:
+	## Cultural availability only ("" = may recruit). Gold and levy
+	## limits are checked at muster time, not here.
+	var wanted := CultureData.recruit_culture(kind)
+	if wanted == "":
+		return ""  # the universal roster
+	if kind == "compact_sworn" and at_war:
+		return "The Compact-Sworn muster only while the border compact holds."
+	for culture in realm_cultures(realm_id):
+		if CultureData.satisfies(str(culture), wanted):
+			return ""
+	return "No province of %s culture answers the muster." % CultureData.culture_label(wanted)
+
+
 func recruit(realm_id: int, kind: String) -> String:
 	var realm: Realm = realms[realm_id]
+	var gate := recruit_gate(realm_id, kind)
+	if gate != "":
+		return gate
 	var cost: float = RECRUIT_COST[kind]
 	if realm.gold < cost:
 		return "Not enough gold — %d needed." % int(cost)
@@ -917,11 +1019,15 @@ func merge_army(army_id: int) -> String:
 
 func _military_upkeep() -> void:
 	for a: Army in armies:
-		# a Methodical commander wastes nothing on the march
-		var supply := UPKEEP_PER_MAN
+		# a Methodical commander wastes nothing on the march; elite
+		# cultural units cost more per man (Roster stat blocks)
+		var mult := 1.0
 		if a.commander_id >= 0:
-			supply *= trait_mult(characters.get(a.commander_id), "supply_consumption_mult")
-		realms[a.realm_id].gold -= a.size() * supply
+			mult = trait_mult(characters.get(a.commander_id), "supply_consumption_mult")
+		var cost_total := 0.0
+		for reg in a.regiments:
+			cost_total += float(int(reg["soldiers"])) * float(UNIT_UPKEEP.get(reg["kind"], UPKEEP_PER_MAN))
+		realms[a.realm_id].gold -= cost_total * mult
 	for a: Army in armies:
 		if battle_ready and pending_battle.has(a.id):
 			continue  # no reinforcements reach an army standing on the field
@@ -1028,7 +1134,25 @@ func declare_war(by_realm: int = 0) -> String:
 		if r.traits.has("Content"):
 			add_stress(r, 10.0, "the burden of ambition")
 	_log("[b]WAR![/b] %s declares war on %s." % [aggressor.name, defender.name])
+	_dissolve_compact_sworn()
 	return ""
+
+
+func _dissolve_compact_sworn() -> void:
+	## The Compact-Sworn are the border compact's practical arm — mixed
+	## Drevak/Human companies that disintegrate the moment the compact
+	## formally breaks (Cultural Roster v1.0, Karn-Vol entry).
+	var dissolved := false
+	for a: Army in armies:
+		var kept: Array = []
+		for reg in a.regiments:
+			if str(reg["kind"]) == "compact_sworn":
+				dissolved = true
+			else:
+				kept.append(reg)
+		a.regiments = kept
+	if dissolved:
+		_log("The Compact-Sworn lay down their arms and scatter — the compact they embodied is broken.")
 
 
 func _ai_diplomacy() -> void:
@@ -1158,6 +1282,16 @@ func _ai_army_orders() -> void:
 			a.has_target = a.pos.distance_to(a.target) > 0.02
 
 
+func _intrigue_detection_bonus(realm_id: int) -> int:
+	for a: Army in armies:
+		if a.realm_id != realm_id:
+			continue
+		for reg in a.regiments:
+			if str(reg["kind"]) == "trade_guard":
+				return 15
+	return 0
+
+
 func battle_site_name() -> String:
 	var target: Vector2 = map.frontier_midpoint()
 	if pending_battle.size() == 2:
@@ -1166,6 +1300,25 @@ func battle_site_name() -> String:
 		if a != null and b != null:
 			target = (a.pos + b.pos) * 0.5
 	return _site_name_at(target)
+
+
+func battle_site_terrain() -> String:
+	## Terrain of the province the pending battle is fought in — forest
+	## and coast wake the cultural units' terrain bonuses (Roster v1.0).
+	var target: Vector2 = map.frontier_midpoint()
+	if pending_battle.size() == 2:
+		var a := army_by_id(pending_battle[0])
+		var b := army_by_id(pending_battle[1])
+		if a != null and b != null:
+			target = (a.pos + b.pos) * 0.5
+	var best_terrain := "plains"
+	var best_d := INF
+	for p in map.provinces:
+		var d: float = p.center.distance_squared_to(target)
+		if d < best_d:
+			best_d = d
+			best_terrain = p.terrain
+	return best_terrain
 
 
 func _site_name_at(target: Vector2) -> String:
@@ -1291,6 +1444,14 @@ func marry(groom_id: int, bride_id: int) -> String:
 	add_memory(b, "wedding", g.id, 40.0, 1.0)
 	add_stress(g, -10.0, "wedded")
 	add_stress(b, -10.0, "wedded")
+	# Cross-culture matches carry their cultures' mutual regard into the
+	# marriage (Cultural Roster v1.0 acceptance tables) — the couple's
+	# opinion of each other starts warmer or colder for it.
+	if g.culture != b.culture:
+		var acc := float(CultureData.marriage_acceptance(g.culture, b.culture))
+		if acc != 0.0:
+			add_memory(g, "a match across cultures", b.id, acc, 2.0)
+			add_memory(b, "a match across cultures", g.id, acc, 2.0)
 	_log("[b]Wedding bells:[/b] %s weds %s." % [full_name(g), full_name(b)])
 	if cross_realm:
 		marriage_alliances.append([g.id, b.id])
@@ -1679,7 +1840,12 @@ func _plots_tick() -> void:
 		# past the halfway mark, the victim's court may catch wind of it
 		if not realm.plot_warned and realm.plot_progress >= 50.0:
 			realm.plot_warned = true
-			var detect := (0.30 + council_stat(t.realm_id, "Spymaster") * 0.015) * trait_mult(t, "intrigue_defense_mult")
+			# Trade-Guard companies watch the roads and counting-houses:
+			# +15 to the target realm's detection while any are mustered
+			# (Roster v1.0 — a province-stationing refinement can follow
+			# when garrisons exist; armies are the stations for now).
+			var detect := (0.30 + (council_stat(t.realm_id, "Spymaster")
+				+ _intrigue_detection_bonus(t.realm_id)) * 0.015) * trait_mult(t, "intrigue_defense_mult")
 			if rng.randf() < detect:
 				_raise_plot_warning(realm, t)
 		if realm.plot_progress < 100.0:
