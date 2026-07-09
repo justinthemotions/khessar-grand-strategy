@@ -109,6 +109,11 @@ var msg_label: Label
 var btn_war: Button
 var btn_peace: Button
 var btn_trade: Button
+var diplo_label: Label          # Module 5: prestige, truce, CBs, treaty burdens
+var btn_fabricate: Button
+var opt_ward: OptionButton
+var btn_ward: Button
+var btn_ransom: Button
 
 
 func _ready() -> void:
@@ -501,6 +506,46 @@ func _make_diplomacy_tab() -> VBoxContainer:
 		msg_label.text = world.toggle_trade_pact()
 		_refresh())
 	actions.add_child(btn_trade)
+
+	# --- Module 5: the state of the world between crowns ---
+	diplo_label = Label.new()
+	diplo_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	diplo_label.add_theme_font_size_override("font_size", 12)
+	diplo_label.add_theme_color_override("font_color", MUTED)
+	actions.add_child(diplo_label)
+
+	btn_fabricate = Button.new()
+	btn_fabricate.text = "Fabricate a Claim (%d gold)" % int(SimWorld.FABRICATE_COST)
+	btn_fabricate.pressed.connect(func() -> void:
+		msg_label.text = world.fabricate_claim(0)
+		_refresh())
+	actions.add_child(btn_fabricate)
+
+	actions.add_child(HSeparator.new())
+	actions.add_child(_header("Wards & Hostages"))
+	opt_ward = OptionButton.new()
+	opt_ward.clip_text = true
+	opt_ward.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(opt_ward)
+	var ward_row := HBoxContainer.new()
+	ward_row.add_theme_constant_override("separation", 6)
+	btn_ward = Button.new()
+	btn_ward.text = "Send as Ward"
+	btn_ward.pressed.connect(func() -> void:
+		var idx := opt_ward.selected
+		if idx >= 0:
+			msg_label.text = world.send_ward(int(opt_ward.get_item_metadata(idx)), 1)
+		_refresh())
+	ward_row.add_child(btn_ward)
+	btn_ransom = Button.new()
+	btn_ransom.text = "Ransom Home (%d gold)" % int(SimWorld.RANSOM_COST)
+	btn_ransom.pressed.connect(func() -> void:
+		var idx := opt_ward.selected
+		if idx >= 0:
+			msg_label.text = world.ransom_ward(int(opt_ward.get_item_metadata(idx)))
+		_refresh())
+	ward_row.add_child(btn_ransom)
+	actions.add_child(ward_row)
 
 	actions.add_child(HSeparator.new())
 	actions.add_child(_header("Arrange a Marriage"))
@@ -1247,6 +1292,7 @@ func _refresh() -> void:
 	btn_peace.disabled = not world.at_war or world.battle_ready
 	btn_trade.disabled = world.at_war
 	btn_trade.text = "Dissolve Trade Pact" if world.trade_pact else "Sign Trade Pact"
+	_refresh_diplomacy()
 
 	battle_panel.visible = world.at_war and world.battle_ready and battle_layer == null
 	if battle_panel.visible:
@@ -1262,6 +1308,71 @@ func _refresh() -> void:
 	_refresh_dynasty()
 	_refresh_realm_tab()
 	map_view.queue_redraw()
+
+
+func _refresh_diplomacy() -> void:
+	## Module 5: prestige, truce, casus belli, treaty burdens, and the wards list.
+	var lines: Array = []
+	lines.append("Prestige: %s %+d · %s %+d" % [
+		str(world.realms[0].name).trim_prefix("Kingdom of "), int(world.realms[0].prestige),
+		str(world.realms[1].name).trim_prefix("Kingdom of "), int(world.realms[1].prestige)])
+	if world.tick < world.truce_until:
+		lines.append("A truce holds for %d more months — breaking it stains the crown." % (world.truce_until - world.tick))
+	var cbs: Array = world.available_cbs(0)
+	if cbs.is_empty():
+		lines.append("No casus belli — war now would be unjust (−40 prestige, +15 tyranny).")
+	else:
+		var labels: Array = []
+		for cb in cbs:
+			labels.append(SimWorld.CB_LABELS[cb])
+		lines.append("Casus belli in hand: %s." % ", ".join(labels))
+	if not world.fabrication.is_empty():
+		lines.append("The Lawspeaker's forgers need %d more months." % int(world.fabrication["months_left"]))
+	if not world.reparations.is_empty():
+		var to_us: bool = int(world.reparations["to"]) == 0
+		lines.append("Reparations %s for %d more months." % [
+			"flow to the crown" if to_us else "bleed the treasury", int(world.reparations["months_left"])])
+	if int(world.demilitarized_until.get(0, -1)) > world.tick:
+		lines.append("Demilitarized by treaty — levies only, %d months remain." % (int(world.demilitarized_until[0]) - world.tick))
+	var hostage := world.hostage_heir_of(0)
+	if hostage != null:
+		lines.append("Your heir %s is a hostage abroad — no war while they are held." % world.full_name(hostage))
+	if not world.free_companies.is_empty():
+		var loose := 0
+		for fc in world.free_companies:
+			loose += fc.size()
+		lines.append("%d masterless swords roam the roads — free companies pillage until an army answers." % loose)
+	for root in world.dispossessed:
+		var d: Dictionary = world.dispossessed[root]
+		lines.append("The %s plot from exile in %s." % [world.dynasties[root].name,
+			str(world.realms[int(d["host"])].name).trim_prefix("Kingdom of ")])
+	diplo_label.text = "\n".join(lines)
+
+	btn_fabricate.disabled = not world.fabrication.is_empty() \
+		or bool(world.fabricated_claims.get(0, false)) or world.at_war
+
+	# ward candidates: the crown's children young enough to foster, plus anyone already abroad
+	var picks: Array = []
+	for c in world.characters.values():
+		if not c.alive:
+			continue
+		if world.wards.has(c.id) and int(world.wards[c.id]["home"]) == 0:
+			picks.append(c)
+		elif c.realm_id == 0 and c.age_years(world.tick) < 16 and c.age_years(world.tick) >= 4:
+			picks.append(c)
+	picks.sort_custom(func(a, b) -> bool: return a.birth_tick < b.birth_tick)
+	var keep_id := -1
+	if opt_ward.selected >= 0 and opt_ward.selected < opt_ward.item_count:
+		keep_id = int(opt_ward.get_item_metadata(opt_ward.selected))
+	opt_ward.clear()
+	for c in picks:
+		var tag := ""
+		if world.wards.has(c.id):
+			tag = " — hostage abroad" if bool(world.wards[c.id]["hostage"]) else " — fostered abroad"
+		opt_ward.add_item("%s (%d)%s" % [world.full_name(c), c.age_years(world.tick), tag])
+		opt_ward.set_item_metadata(opt_ward.item_count - 1, c.id)
+		if c.id == keep_id:
+			opt_ward.select(opt_ward.item_count - 1)
 
 
 const STAT_ABBR := {"diplomacy": "D", "martial": "M", "stewardship": "St",
