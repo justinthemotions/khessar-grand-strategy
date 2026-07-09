@@ -149,13 +149,78 @@ const DORMANT_UNITS := ["draconic_breath_sworn", "sovereignty_guard", "song_ward
 # Hybrid cultures that syncretism can produce (Roster v1.0 reference
 # section). Designer data — full entries are authored if/when one emerges.
 const HYBRIDS := {
-	"vael_aristocratic": {"parents": ["vael", "aelindran"], "years": 30},
-	"vael_ironvault": {"parents": ["vael", "kharak_dum"], "years": 40},
-	"brushgate_ironvault": {"parents": ["brushgate", "kharak_dum"], "years": 20},
-	"drevak_compact": {"parents": ["drevak", "karn_vol"], "years": 10},  # effectively already blended
-	"border_compact_aristocratic": {"parents": ["karn_vol", "aelindran"], "years": 60},  # once in canonical history
-	"commercial_compact": {"parents": ["southern_reach", "halveni"], "years": 20},
-	"high_court_elven": {"parents": ["aelindran", "veldarin"], "years": 30},
+	"vael_aristocratic": {"label": "Vael-Aristocratic", "parents": ["vael", "aelindran"], "years": 30},
+	"vael_ironvault": {"label": "Vael-Ironvault", "parents": ["vael", "kharak_dum"], "years": 40},
+	"vael_halveni_banking": {"label": "Vael-Halveni-Banking", "parents": ["vael", "halveni"], "years": 30},
+	"brushgate_ironvault": {"label": "Brushgate-Ironvault", "parents": ["brushgate", "kharak_dum"], "years": 20},
+	"drevak_compact": {"label": "Drevak-Compact", "parents": ["drevak", "karn_vol"], "years": 10},  # effectively already blended
+	"border_compact_aristocratic": {"label": "Border-Compact-Aristocratic", "parents": ["karn_vol", "aelindran"], "years": 60},  # once in canonical history
+	"commercial_compact": {"label": "Commercial-Compact", "parents": ["southern_reach", "halveni"], "years": 20},
+	"coastal_commercial": {"label": "Coastal-Commercial", "parents": ["free_city", "southern_reach"], "years": 25},
+	"free_city_merchant_democrat": {"label": "Free-City-Merchant-Democrat", "parents": ["free_city", "halveni"], "years": 20},
+	"high_court_elven": {"label": "High-Court-Elven", "parents": ["aelindran", "veldarin"], "years": 30},
+}
+
+# Hybrids born in play between parents with no named hybrid above are
+# registered here at Cultural Hybridization time (Cross-Cultural Marriage
+# v1.0 — e.g. Scenario 1's Compact-Free-City). Runtime state, not const.
+static var runtime_hybrids: Dictionary = {}
+
+# ---------------------------------------------------------------- syncretism
+# Months of shared household before Cultural Hybridization can fire, from
+# the Roster's affinity grades via the Marriage doc's tier table (VERY
+# HIGH 240 / HIGH 360 / MODERATE 480 / LOW-MODERATE 540 / LOW 720 / VERY
+# LOW 960); where the Roster names an explicit timeline, that wins.
+# Keys are "a|b" with the two culture ids sorted. Unlisted pairs default
+# to 480 (MODERATE). The dead Sovereignty never blends.
+const SYNCRETISM_MONTHS := {
+	"aelindran|vael": 360, "free_city|vael": 360, "halveni|vael": 360,
+	"drevak|vael": 600, "karn_vol|vael": 480, "kharak_dum|vael": 480,
+	"brushgate|vael": 420, "vael|veldarin": 660, "thaladris|vael": 660,
+	"southern_reach|vael": 420,
+	"aelindran|free_city": 480, "aelindran|halveni": 720, "aelindran|drevak": 720,
+	"aelindran|karn_vol": 720, "aelindran|kharak_dum": 420, "aelindran|brushgate": 420,
+	"aelindran|veldarin": 360, "aelindran|thaladris": 420, "aelindran|southern_reach": 540,
+	"free_city|halveni": 240, "drevak|free_city": 540, "free_city|karn_vol": 540,
+	"free_city|kharak_dum": 420, "brushgate|free_city": 420, "free_city|veldarin": 420,
+	"free_city|thaladris": 420, "free_city|southern_reach": 300,
+	"drevak|halveni": 720, "halveni|karn_vol": 720, "halveni|kharak_dum": 360,
+	"brushgate|halveni": 420, "halveni|veldarin": 420, "halveni|thaladris": 420,
+	"halveni|southern_reach": 240,
+	"drevak|karn_vol": 120, "drevak|kharak_dum": 420, "brushgate|drevak": 420,
+	"drevak|veldarin": 960, "drevak|thaladris": 960, "drevak|southern_reach": 540,
+	"karn_vol|kharak_dum": 420, "brushgate|karn_vol": 420, "karn_vol|veldarin": 960,
+	"karn_vol|thaladris": 960, "karn_vol|southern_reach": 540,
+	"brushgate|kharak_dum": 240, "kharak_dum|veldarin": 600, "kharak_dum|thaladris": 600,
+	"kharak_dum|southern_reach": 480,
+	"brushgate|veldarin": 420, "brushgate|thaladris": 420, "brushgate|southern_reach": 420,
+	"thaladris|veldarin": 540, "southern_reach|veldarin": 540,
+	"southern_reach|thaladris": 540,
+}
+
+# ---------------------------------------------------------------- races
+# The biology layer (Cross-Cultural Marriage v1.0 §2). Lifespans are the
+# doc's canon; full Orc span is unspecified there — 70 chosen to sit
+# beside the Human 70-80 band (flag for Justin). Only human/orc/half_orc
+# are reachable in the two simulated courts today; the rest are data for
+# when more realms come online. `prowess` is the racial stat baseline
+# from the Roster ("Half-Orcs +2 Prowess" etc.).
+const RACES := {
+	"human":         {"label": "Human",         "lifespan": 78,   "stats": {}},
+	"orc":           {"label": "Orc",           "lifespan": 70,   "stats": {"prw": 2}},
+	"half_orc":      {"label": "Half-Orc",      "lifespan": 90,   "stats": {"prw": 2}},
+	"dwarf":         {"label": "Dwarf",         "lifespan": 350,  "stats": {"stw": 2}},
+	"half_dwarf":    {"label": "Half-Dwarf",    "lifespan": 150,  "stats": {"stw": 1}},
+	"elf":           {"label": "Elf",           "lifespan": 1000, "stats": {"lrn": 2}},
+	"half_elf":      {"label": "Half-Elf",      "lifespan": 200,  "stats": {"lrn": 1}},
+	"tiefling":      {"label": "Tiefling",      "lifespan": 90,   "stats": {"int": 1}},
+	"half_tiefling": {"label": "Half-Tiefling", "lifespan": 85,   "stats": {}},
+}
+
+# one parent of each base race -> the half demographic
+const HALF_OF := {
+	"human|orc": "half_orc", "dwarf|human": "half_dwarf",
+	"elf|human": "half_elf", "human|tiefling": "half_tiefling",
 }
 
 # ---------------------------------------------------------------- units
@@ -217,7 +282,97 @@ static func recruit_culture(kind: String) -> String:
 static func satisfies(province_culture: String, wanted: String) -> bool:
 	if province_culture == wanted:
 		return true
-	return CULTURE_SATISFIES.get(province_culture, []).has(wanted)
+	if CULTURE_SATISFIES.get(province_culture, []).has(wanted):
+		return true
+	# a hybrid culture inherits both parents' martial rosters ("Access to
+	# both Arcane Retinue and Household Cavalry" — Roster hybrid reference);
+	# recursion carries subvariant rights through (Karn-Vol hybrids still
+	# muster the parent Drevak doctrine)
+	for parent in hybrid_parents(province_culture):
+		if satisfies(str(parent), wanted):
+			return true
+	return false
+
+
+# ---------------------------------------------------------------- syncretism / hybrids
+
+static func syncretism_months(a: String, b: String) -> int:
+	## Months of syncretism-path marriage before Cultural Hybridization
+	## can fire; -1 = these cultures never blend (the dead Sovereignty).
+	if a == b or a == "" or b == "":
+		return -1
+	if a == "sovereignty" or b == "sovereignty":
+		return -1
+	var key := ("%s|%s" % [a, b]) if a < b else ("%s|%s" % [b, a])
+	return int(SYNCRETISM_MONTHS.get(key, 480))
+
+
+static func hybrid_of(a: String, b: String) -> String:
+	## The hybrid culture id two parents produce — a named Roster hybrid
+	## when one exists, else a runtime id registered on first use (new
+	## hybrids "the world has not seen before" are part of the design).
+	for hid in HYBRIDS:
+		var parents: Array = HYBRIDS[hid]["parents"]
+		if parents.has(a) and parents.has(b):
+			return hid
+	for hid in runtime_hybrids:
+		var parents: Array = runtime_hybrids[hid]["parents"]
+		if parents.has(a) and parents.has(b):
+			return hid
+	var lo: String = a if a < b else b
+	var hi: String = b if a < b else a
+	var hid := "%s_%s_hybrid" % [lo, hi]
+	runtime_hybrids[hid] = {"label": "%s-%s" % [culture_label(lo), culture_label(hi)],
+		"parents": [lo, hi]}
+	return hid
+
+
+static func hybrid_parents(culture: String) -> Array:
+	if HYBRIDS.has(culture):
+		return HYBRIDS[culture]["parents"]
+	if runtime_hybrids.has(culture):
+		return runtime_hybrids[culture]["parents"]
+	return []
+
+
+static func hybrid_label(culture: String) -> String:
+	if HYBRIDS.has(culture):
+		return str(HYBRIDS[culture]["label"])
+	if runtime_hybrids.has(culture):
+		return str(runtime_hybrids[culture]["label"])
+	return culture_label(culture)
+
+
+# ---------------------------------------------------------------- races
+
+static func race_label(race: String) -> String:
+	if not RACES.has(race):
+		return race.capitalize()
+	return str(RACES[race]["label"])
+
+
+static func race_lifespan(race: String) -> int:
+	if not RACES.has(race):
+		return 78
+	return int(RACES[race]["lifespan"])
+
+
+static func child_race(father: String, mother: String) -> String:
+	## Biology layer: one parent of each base race makes the half
+	## demographic; half-race + half-race breeds true; half-race + base
+	## race children are described by their dominant heritage (§2).
+	if father == mother:
+		return father
+	var key := ("%s|%s" % [father, mother]) if father < mother else ("%s|%s" % [mother, father])
+	if HALF_OF.has(key):
+		return HALF_OF[key]
+	# a half-race parent: the child takes the non-half parent's race
+	# (quarter heritage is a description, not a demographic)
+	if father.begins_with("half_"):
+		return mother if not mother.begins_with("half_") else father
+	if mother.begins_with("half_"):
+		return father
+	return father  # exotic base-race pairings default to the father's line
 
 
 static func province_culture(region: String, owner: int, province_id: int) -> String:
