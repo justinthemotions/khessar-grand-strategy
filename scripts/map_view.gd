@@ -175,6 +175,17 @@ func _draw() -> void:
 		draw_circle(apos + Vector2(0, 6), 2.2, REALM_INK[a.realm_id])
 		draw_string(font2, apos + Vector2(-30, 20), str(a.size()), HORIZONTAL_ALIGNMENT_CENTER, 60, 11, REALM_INK[a.realm_id])
 
+	# free companies — masterless swords under a black rag (Module 5)
+	for fc in world.free_companies:
+		var fpos := _to_screen(fc.pos)
+		draw_line(fpos + Vector2(0, 6), fpos + Vector2(0, -16), Color("2a1f14"), 2.0)
+		var rag := Rect2(fpos + Vector2(1, -16), Vector2(13, 8))
+		draw_rect(rag, Color("1c1410"))
+		draw_rect(rag, Color("b3402a"), false, 1.0)
+		draw_circle(fpos + Vector2(0, 6), 3.5, Color("2a1f14"))
+		draw_circle(fpos + Vector2(0, 6), 2.2, Color("b3402a"))
+		draw_string(font2, fpos + Vector2(-30, 20), str(fc.size()), HORIZONTAL_ALIGNMENT_CENTER, 60, 11, Color("b3402a"))
+
 	# crossed swords where a battle waits to be fought
 	if world.battle_ready and world.pending_battle.size() == 2:
 		var pa = world.army_by_id(world.pending_battle[0])
