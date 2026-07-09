@@ -209,6 +209,26 @@ const UNIT_UPKEEP := {
 }
 const REPLENISH_COST_PER_MAN := 0.3
 
+# Module 5: diplomacy between crowns
+const TRUCE_MONTHS := 60              # a sworn peace binds for five years
+const CB_LABELS := {
+	"de_jure": "De Jure Reclamation",    # they hold land the maps call yours
+	"restoration": "Restoration",        # you shelter the rightful lords they cast out
+	"revenge": "Redress of Grievances",  # they invaded, or took what was yours
+	"fabricated": "a Fabricated Claim",  # the Lawspeaker's forgeries, sworn as truth
+	"subjugation": "Subjugation",        # the tribal way: strength is its own law
+}
+const FABRICATE_COST := 50.0
+const REPARATIONS_RATE := 0.15        # of the loser's tax yield, monthly
+const REPARATIONS_MONTHS := 120
+const DEMILITARIZED_MONTHS := 120     # professional muster barred by treaty
+const SALT_MONTHS := 240              # a generation before salted land recovers
+const SALT_YIELD := 0.4
+const RANSOM_COST := 100.0
+const PRESTIGE_DECAY := 0.2           # the world forgets, slowly
+const DEMOB_BOUNTY_PER_MAN := 0.5
+const FREE_COMPANY_MIN_MEN := 60      # smaller bands melt away on their own
+
 var rng := RandomNumberGenerator.new()
 var tick: int = 0                  # months since Year Zero of the Silence
 var characters: Dictionary = {}    # id -> SimCharacter
@@ -238,6 +258,19 @@ var vassal_contracts: Dictionary = {} # char id -> {tax, levy, privileges[]}
 var factions: Array = []              # [{realm, type, members[], provinces[], covert, discovered, claimant}]
 var council_snubbed: Dictionary = {}  # char id -> true (the grievance is voiced only once)
 var last_trial_tick: int = -999       # the liege's court hears one great feud at a time
+# Module 5: diplomacy between crowns — justifications, treaties, wards,
+# and what all the swords do when the fighting stops.
+var truce_until: int = -999           # no honorable war before this tick
+var war_cb: String = ""               # the justification the current war marches under
+var war_battles_won: Array = [0, 0]   # field battles carried per realm this war
+var fabrication: Dictionary = {}      # {realm, months_left} — a claim being forged
+var fabricated_claims: Dictionary = {} # realm id -> true: a forged claim, sealed and ready
+var wards: Dictionary = {}            # child id -> {home, host, guardian, hostage, since, of_age}
+var reparations: Dictionary = {}      # {from, to, months_left} — the yoke of a lost war
+var demilitarized_until: Dictionary = {} # realm id -> tick professional muster resumes
+var salted: Dictionary = {}           # province id -> tick the scars heal
+var dispossessed: Dictionary = {}     # root house id -> {home, host, since} — courts-in-exile
+var free_companies: Array = []        # Army objects with realm_id -1, paid in plunder
 
 # The event framework: choice events with trait-weighted AI resolution.
 var pending_events: Array = []       # events awaiting the player's decision
@@ -286,6 +319,7 @@ class Realm:
 	var plot_progress: float = -1.0      # < 0 = no plot in motion
 	var plot_warned: bool = false        # the victim's court has caught wind of it
 	var tyranny: float = 0.0             # Module 4: remembered injustice — revocations, harsh terms, bad verdicts
+	var prestige: float = 0.0            # Module 5: international standing — unjust wars and broken truces bleed it
 	# The Interregnum (Module 2): between death and coronation the realm
 	# holds its breath. {heir, stage 0..4, legitimacy 0..100}
 	var interregnum: Dictionary = {}
@@ -463,6 +497,7 @@ func advance_month() -> void:
 	_council_tick()
 	_laws_tick()
 	_plots_tick()
+	_diplomacy_tick()
 	_ai_diplomacy()
 	_economy()
 	_military_upkeep()
@@ -1036,6 +1071,8 @@ func realm_cultures(realm_id: int) -> Dictionary:
 func recruit_gate(realm_id: int, kind: String) -> String:
 	## Cultural availability only ("" = may recruit). Gold and levy
 	## limits are checked at muster time, not here.
+	if kind != "levy" and int(demilitarized_until.get(realm_id, -1)) > tick:
+		return "The treaty of demilitarization bars professional muster — common levies only."
 	var wanted := CultureData.recruit_culture(kind)
 	if wanted == "":
 		return ""  # the universal roster
@@ -1203,26 +1240,84 @@ func _skirmish_death(realm: Realm) -> void:
 	_kill(men[rng.randi_range(0, men.size() - 1)], "fell in a border skirmish")
 
 
+func available_cbs(realm_id: int) -> Array:
+	## The Casus Belli system (Module 5): every justification the realm
+	## could march under today, best first. Tribal realms always carry
+	## Subjugation — raiding needs no lawyers.
+	var out: Array = []
+	var enemy := 1 - realm_id
+	for p in map.provinces:
+		if p.owner == enemy and p.de_jure == realm_id:
+			out.append("de_jure")
+			break
+	for root in dispossessed:
+		var d: Dictionary = dispossessed[root]
+		if int(d["host"]) == realm_id and int(d["home"]) == enemy:
+			out.append("restoration")
+			break
+	var ruler_id: int = realms[realm_id].ruler_id
+	if ruler_id >= 0:
+		for m in characters[ruler_id].memories:
+			if str(m["type"]) == "invaded my realm" or str(m["type"]) == "took my land":
+				out.append("revenge")
+				break
+	if fabricated_claims.get(realm_id, false):
+		out.append("fabricated")
+	if realms[realm_id].government == "tribal":
+		out.append("subjugation")
+	return out
+
+
+func hostage_heir_of(realm_id: int) -> SimCharacter:
+	## The realm's heir, if a foreign court holds them as collateral.
+	var heir := heir_of(realm_id)
+	if heir != null and wards.has(heir.id) and bool(wards[heir.id]["hostage"]) \
+			and int(wards[heir.id]["home"]) == realm_id:
+		return heir
+	return null
+
+
 func declare_war(by_realm: int = 0) -> String:
 	if at_war:
 		return "The realms are already at war."
 	if allied():
 		return "A marriage alliance binds the realms. It holds while the couple lives."
+	# Collateral hostages (Module 5): an heir in their keep is the whole point
+	if not wards.is_empty() and hostage_heir_of(by_realm) != null:
+		return "Your heir is a hostage in their court — the sword stays sheathed."
 	# The Estate Curia (Module 4): an offensive war needs the landed
 	# lords' assent — tribal war-making stays personal.
 	if realms[by_realm].government != "tribal":
 		var vote := curia_vote(by_realm, "war")
 		if not bool(vote["passed"]):
 			return "The Curia votes the war down — %s. Sway the lords, or rule without them." % vote["detail"]
+	var aggressor: Realm = realms[by_realm]
+	var defender: Realm = realms[1 - by_realm]
+	# The Casus Belli (Module 5): a war wants a justification. Marching
+	# without one — or over a standing truce — is remembered everywhere.
+	var cbs := available_cbs(by_realm)
+	war_cb = "" if cbs.is_empty() else str(cbs[0])
+	if war_cb == "fabricated":
+		fabricated_claims.erase(by_realm)  # the forgery is spent when it is sworn
+	if war_cb == "":
+		aggressor.prestige = maxf(-100.0, aggressor.prestige - 40.0)
+		if aggressor.government != "tribal":
+			aggressor.tyranny = minf(100.0, aggressor.tyranny + 15.0)
+		if defender.ruler_id >= 0 and aggressor.ruler_id >= 0:
+			add_memory(characters[defender.ruler_id], "invaded without cause", aggressor.ruler_id, -30.0, 2.0)
+	if tick < truce_until:
+		aggressor.prestige = maxf(-100.0, aggressor.prestige - 30.0)
+		if aggressor.government != "tribal":
+			aggressor.tyranny = minf(100.0, aggressor.tyranny + 10.0)
+		_log("The ink of the truce is not yet dry — %s breaks its sworn word." % aggressor.name)
 	at_war = true
 	war_score = 0.0
+	war_battles_won = [0, 0]
 	battle_ready = false
 	pending_battle = []
 	if trade_pact:
 		trade_pact = false
 		_log("The trade pact is torn up.")
-	var aggressor: Realm = realms[by_realm]
-	var defender: Realm = realms[1 - by_realm]
 	if aggressor.ruler_id >= 0 and defender.ruler_id >= 0:
 		add_memory(characters[defender.ruler_id], "invaded my realm", aggressor.ruler_id, -40.0, 3.0)
 		add_memory(characters[aggressor.ruler_id], "my enemy", defender.ruler_id, -20.0, 3.0)
@@ -1232,9 +1327,40 @@ func declare_war(by_realm: int = 0) -> String:
 			add_stress(r, 15.0, "marching others' sons to die")
 		if r.traits.has("Content"):
 			add_stress(r, 10.0, "the burden of ambition")
-	_log("[b]WAR![/b] %s declares war on %s." % [aggressor.name, defender.name])
+	if war_cb == "":
+		_log("[b]WAR![/b] %s declares war on %s — without claim or cause, and the world takes note." % [
+			aggressor.name, defender.name])
+	else:
+		_log("[b]WAR![/b] %s declares war on %s, claiming %s." % [
+			aggressor.name, defender.name, CB_LABELS[war_cb]])
 	_dissolve_compact_sworn()
 	return ""
+
+
+func fabricate_claim(realm_id: int) -> String:
+	## The Lawspeaker's clerks forge the paperwork a clean war needs.
+	if not fabrication.is_empty():
+		return "The forgers are already at work."
+	if fabricated_claims.get(realm_id, false):
+		return "A claim already sits sealed in the archive."
+	var realm: Realm = realms[realm_id]
+	if realm.gold < FABRICATE_COST:
+		return "Forgery is skilled work — %d gold." % int(FABRICATE_COST)
+	realm.gold -= FABRICATE_COST
+	var months := maxi(3, 12 - int(council_stat(realm_id, "Lawspeaker") / 3.0))
+	fabrication = {"realm": realm_id, "months_left": months}
+	_log("[b]The Lawspeaker's clerks begin their quiet work[/b] — old maps, older seals, and ink aged in smoke.")
+	return ""
+
+
+func _fabricate_tick() -> void:
+	if fabrication.is_empty():
+		return
+	fabrication["months_left"] = int(fabrication["months_left"]) - 1
+	if int(fabrication["months_left"]) <= 0:
+		fabricated_claims[int(fabrication["realm"])] = true
+		fabrication = {}
+		_log("[b]The claim is ready[/b] — parchment old enough to pass, and witnesses paid enough to swear.")
 
 
 func _dissolve_compact_sworn() -> void:
@@ -1267,9 +1393,14 @@ func _ai_diplomacy() -> void:
 	if not at_war:
 		if allied() or trade_pact:
 			return
+		if tick < truce_until:
+			return  # even Karn-Vol honors sworn iron — mostly
+		if not wards.is_empty() and hostage_heir_of(1) != null:
+			return  # their heir in Vael's keeping stays the axe
 		if strength(1) < int(strength(0) * 0.9):
 			return  # even the Wrathful wait until the odds are fair
-		var chance := clampf(0.004 + aggression * 0.0002, 0.0, 0.03)
+		# a prestigious crown is a daunting target (Module 5)
+		var chance := clampf(0.004 + aggression * 0.0002 - realms[0].prestige * 0.0002, 0.0, 0.03)
 		if rng.randf() < chance:
 			var _e := declare_war(1)
 	elif war_score > 55.0 and not battle_ready:
@@ -1284,21 +1415,155 @@ func negotiate_peace() -> String:
 	if absf(war_score) > 40.0:
 		var winner: Realm = realms[0] if war_score > 0.0 else realms[1]
 		var loser: Realm = realms[1] if war_score > 0.0 else realms[0]
-		var tribute := minf(80.0, maxf(loser.gold, 0.0))
-		loser.gold -= tribute
-		winner.gold += tribute
-		_log("[b]Peace.[/b] %s yields — %d gold in tribute flows to %s." % [loser.name, int(tribute), winner.name])
-		_cede_border_province(winner, loser)
+		# War Leverage (Module 5): the score, the battles carried, and the
+		# winner's standing set what can be dictated at the table.
+		var leverage := absf(war_score) + 10.0 * float(war_battles_won[winner.id]) + winner.prestige * 0.2
+		winner.prestige = minf(100.0, winner.prestige + 15.0)
+		loser.prestige = maxf(-100.0, loser.prestige - 10.0)
+		_log("[b]Peace.[/b] %s comes to the drafting table with %d leverage over %s." % [
+			winner.name, int(leverage), loser.name])
+		_raise_treaty(winner, loser, leverage)
 	else:
 		_log("[b]White peace.[/b] The war ends with nothing gained.")
+	_end_war()
+	return ""
+
+
+func _end_war() -> void:
 	at_war = false
 	war_score = 0.0
+	war_cb = ""
 	battle_ready = false
 	pending_battle = []
+	truce_until = tick + TRUCE_MONTHS
 	for a: Army in armies:
 		a.target = map.realm_centroid(a.realm_id)
 		a.has_target = a.pos.distance_to(a.target) > 0.02
-	return ""
+	_demobilization()
+
+
+# ------------------------------------------- the treaty drafting table (Module 5)
+
+func _raise_treaty(winner: Realm, loser: Realm, leverage: float) -> void:
+	## No binary war conclusion: the winner drafts the peace from a menu
+	## of terms, gated by the leverage the war actually earned.
+	var options: Array = []
+	options.append({"label": "A magnanimous peace — ask nothing, and be remembered for it",
+		"base": 2.0, "ai": {"aggression": -0.6, "greed": -0.4},
+		"effect": func() -> void: _term_magnanimous(winner, loser)})
+	options.append({"label": "Tribute — gold to the victor's chests",
+		"base": 4.0, "ai": {"greed": 0.8},
+		"effect": func() -> void: _term_tribute(winner, loser, leverage * 1.2)})
+	# a lawful claim makes taking land cheaper at the table
+	var cede_cost := 35.0 if (war_cb == "de_jure" or war_cb == "fabricated") else 50.0
+	if leverage >= cede_cost:
+		options.append({"label": "Cession — a border province changes hands",
+			"base": 5.0, "ai": {"aggression": 0.7},
+			"effect": func() -> void: _term_cede(winner, loser)})
+	if leverage >= 60.0:
+		options.append({"label": "The Yoke — a decade of reparations, and demilitarization",
+			"base": 4.0, "ai": {"patience": 0.5, "greed": 0.5},
+			"effect": func() -> void: _term_yoke(winner, loser)})
+	if leverage >= 45.0 and heir_of(loser.id) != null and not wards.has(heir_of(loser.id).id):
+		options.append({"label": "Collateral — their heir, a permanent ward at your court",
+			"base": 3.0, "ai": {"scheming": 0.8},
+			"effect": func() -> void: _term_hostage(winner, loser)})
+	if leverage >= 75.0:
+		options.append({"label": "Salt the earth — return the land, ruined for a generation",
+			"base": 1.0, "ai": {"aggression": 1.0},
+			"effect": func() -> void: _term_salt(winner, loser)})
+	if war_cb == "restoration":
+		options.append({"label": "Restoration — the exiled house takes back its halls",
+			"base": 8.0, "ai": {},
+			"effect": func() -> void: _term_restore(winner, loser)})
+	raise_event(winner.id, winner.ruler_id, "The Drafting Table",
+		"%s dictates the peace. War leverage: %d. What the treaty takes now, the next twenty years will answer for." % [
+			winner.name, int(leverage)], options)
+
+
+func _term_magnanimous(winner: Realm, loser: Realm) -> void:
+	winner.prestige = minf(100.0, winner.prestige + 20.0)
+	if loser.ruler_id >= 0 and winner.ruler_id >= 0:
+		add_memory(characters[loser.ruler_id], "a generous peace", winner.ruler_id, 30.0, 1.5)
+	_log("[b]%s asks nothing.[/b] The chronicles will remember the mercy longer than the war." % winner.name)
+
+
+func _term_tribute(winner: Realm, loser: Realm, amount: float) -> void:
+	var tribute := minf(amount, maxf(loser.gold, 0.0))
+	loser.gold -= tribute
+	winner.gold += tribute
+	_log("[b]%s yields %d gold in tribute to %s.[/b]" % [loser.name, int(tribute), winner.name])
+
+
+func _term_cede(winner: Realm, loser: Realm) -> void:
+	_term_tribute(winner, loser, 40.0)
+	_cede_border_province(winner, loser)
+
+
+func _term_yoke(winner: Realm, loser: Realm) -> void:
+	reparations = {"from": loser.id, "to": winner.id, "months_left": REPARATIONS_MONTHS}
+	demilitarized_until[loser.id] = tick + DEMILITARIZED_MONTHS
+	_log("[b]The yoke:[/b] %s pays reparations for ten years and may muster only common levies." % loser.name)
+
+
+func _term_hostage(winner: Realm, loser: Realm) -> void:
+	var h := heir_of(loser.id)
+	if h == null or wards.has(h.id):
+		_term_tribute(winner, loser, 40.0)  # the heir slipped the net; take gold instead
+		return
+	var _e := send_ward(h.id, winner.id, true)
+
+
+func _term_salt(winner: Realm, loser: Realm) -> void:
+	var options: Array = []
+	for p in map.provinces:
+		if p.owner != loser.id:
+			continue
+		for nid in p.neighbors:
+			if map.provinces[nid].owner == winner.id:
+				options.append(p)
+				break
+	if options.is_empty():
+		_term_tribute(winner, loser, 60.0)
+		return
+	var p2 = options[rng.randi_range(0, options.size() - 1)]
+	salted[p2.id] = tick + SALT_MONTHS
+	_log("[b]%s is salted[/b] — granaries burned, walls pulled down, wells fouled. A generation will pass before it matters again." % p2.name)
+
+
+func _term_restore(winner: Realm, loser: Realm) -> void:
+	## The Foreign Proxy War pays off: the house-in-exile is reinstated on
+	## its old land, sworn to the loser's crown but owing everything to the
+	## winner's — a knife left in the treaty.
+	for root in dispossessed.keys():
+		var d: Dictionary = dispossessed[root]
+		if int(d["host"]) != winner.id or int(d["home"]) != loser.id:
+			continue
+		var exiles: Array = []
+		for c in characters.values():
+			if c.alive and root_house_id(c.dynasty_id) == int(root) and c.age_years(tick) >= ADULT_AGE:
+				exiles.append(c)
+		exiles.sort_custom(func(x: SimCharacter, y: SimCharacter) -> bool: return x.birth_tick < y.birth_tick)
+		var granted := 0
+		for c in characters.values():
+			if c.alive and root_house_id(c.dynasty_id) == int(root):
+				c.realm_id = loser.id  # the whole house comes home
+		for e: SimCharacter in exiles:
+			if granted >= 2:
+				break
+			for p in map.provinces:
+				if p.owner == loser.id and county_holder(p.id) == null:
+					county_holders[p.id] = e.id
+					var _contract := contract_of(e.id)  # opens the feudal contract
+					if winner.ruler_id >= 0:
+						add_memory(e, "restored us to our halls", winner.ruler_id, 60.0, 2.0)
+					_log("[b]%s is restored to %s[/b] — the exile ends at sword-point." % [full_name(e), p.name])
+					granted += 1
+					break
+		dispossessed.erase(root)
+		winner.prestige = minf(100.0, winner.prestige + 15.0)
+		return
+	_term_tribute(winner, loser, 40.0)  # no exiles left to restore
 
 
 func _campaign_military() -> void:
@@ -1353,6 +1618,7 @@ func _overrun(winner_army: Army, victim: Army) -> void:
 	armies.erase(victim)
 	war_score += 15.0 if winner_army.realm_id == 0 else -15.0
 	war_score = clampf(war_score, -100.0, 100.0)
+	war_battles_won[winner_army.realm_id] += 1
 	if absf(war_score) >= 100.0:
 		var _msg := negotiate_peace()
 
@@ -1375,6 +1641,18 @@ func _ai_army_orders() -> void:
 					best = e
 			if best != null:
 				a.target = best.pos
+				a.has_target = true
+		elif not free_companies.is_empty():
+			# in peace, loose swords on the roads are hunted down
+			var quarry: Army = null
+			var quarry_d := INF
+			for fc: Army in free_companies:
+				var fd := a.pos.distance_squared_to(fc.pos)
+				if fd < quarry_d:
+					quarry_d = fd
+					quarry = fc
+			if quarry != null:
+				a.target = quarry.pos
 				a.has_target = true
 		elif not a.has_target:
 			a.target = map.realm_centroid(1)
@@ -1445,6 +1723,7 @@ func apply_battle_result(winner_side: int, loser_loss_fraction: float) -> void:
 		var swing := 20.0 + 30.0 * clampf(loser_loss_fraction, 0.0, 1.0)
 		war_score += swing if winner_side == 0 else -swing
 		war_score = clampf(war_score, -100.0, 100.0)
+		war_battles_won[winner_side] += 1  # every field won is leverage at the table
 		_log("[b]The Battle of %s![/b] %s carries the field." % [site, realms[winner_side].name])
 		var loser_army: Army = pb if winner_side == 0 else pa
 		if loser_army != null and army_by_id(loser_army.id) != null:
@@ -1517,6 +1796,351 @@ func toggle_trade_pact() -> String:
 	trade_pact = not trade_pact
 	_log("[b]A trade pact is %s.[/b]" % ("signed" if trade_pact else "dissolved"))
 	return ""
+
+
+# ------------------------------------------- hostages & wards (Module 5)
+
+func send_ward(child_id: int, to_realm: int, hostage: bool = false) -> String:
+	## Fostering shapes a child at a foreign court; a hostage is the same
+	## arrangement with a knife under the table.
+	if not characters.has(child_id):
+		return "No such child."
+	var c: SimCharacter = characters[child_id]
+	if not c.alive:
+		return "%s is dead." % c.name
+	if wards.has(child_id):
+		return "%s is already fostered abroad." % c.name
+	if to_realm == c.realm_id:
+		return "A ward must cross a border."
+	if not hostage and c.age_years(tick) >= ADULT_AGE:
+		return "Fostering shapes the young — %s is grown." % c.name
+	var host: Realm = realms[to_realm]
+	if host.ruler_id < 0:
+		return "No court stands to receive a ward."
+	var home: Realm = realms[c.realm_id]
+	wards[child_id] = {"home": c.realm_id, "host": to_realm,
+		"guardian": host.ruler_id, "hostage": hostage, "since": tick, "of_age": false}
+	c.realm_id = to_realm
+	host.prestige = minf(100.0, host.prestige + 5.0)
+	if home.ruler_id >= 0:
+		add_memory(characters[host.ruler_id], "a child of their blood in my hall", home.ruler_id, 10.0, 1.0)
+		add_memory(characters[home.ruler_id], "they raise my blood", host.ruler_id, 10.0, 1.0)
+	_log("[b]%s rides to the court of %s[/b] — %s." % [full_name(c), host.name,
+		"a hostage against the peace" if hostage else "to be fostered and shaped"])
+	return ""
+
+
+func ransom_ward(child_id: int) -> String:
+	if not wards.has(child_id):
+		return "They are not held abroad."
+	var w: Dictionary = wards[child_id]
+	var home: Realm = realms[int(w["home"])]
+	if home.gold < RANSOM_COST:
+		return "A ransom costs %d gold." % int(RANSOM_COST)
+	home.gold -= RANSOM_COST
+	realms[int(w["host"])].gold += RANSOM_COST
+	var c: SimCharacter = characters[child_id]
+	c.realm_id = int(w["home"])
+	wards.erase(child_id)
+	_log("[b]%s is ransomed home[/b] for %d gold." % [full_name(c), int(RANSOM_COST)])
+	return ""
+
+
+func _wards_tick() -> void:
+	if wards.is_empty():
+		return
+	for cid in wards.keys():
+		var w: Dictionary = wards[cid]
+		var c: SimCharacter = characters.get(int(cid))
+		if c == null or not c.alive:
+			var home: Realm = realms[int(w["home"])]
+			var host: Realm = realms[int(w["host"])]
+			if bool(w["hostage"]) and home.ruler_id >= 0 and host.ruler_id >= 0:
+				add_memory(characters[home.ruler_id], "my blood died in their keeping", host.ruler_id, -30.0, 2.0)
+			wards.erase(cid)
+			continue
+		# a crowned head cannot be held
+		if realms[int(w["home"])].ruler_id == c.id:
+			c.realm_id = int(w["home"])
+			wards.erase(cid)
+			_log("[b]%s is released to take the crown[/b] — no court dares keep a king." % full_name(c))
+			continue
+		# the guardianship passes with the host's crown
+		var g: SimCharacter = characters.get(int(w["guardian"]))
+		if g == null or not g.alive:
+			w["guardian"] = realms[int(w["host"])].ruler_id
+			g = characters.get(int(w["guardian"]))
+		if c.age_years(tick) >= ADULT_AGE and not bool(w.get("of_age", false)):
+			_ward_comes_of_age(c, w, g)
+
+
+func _ward_comes_of_age(c: SimCharacter, w: Dictionary, g: SimCharacter) -> void:
+	## Custom mentorship pays out: the guardian's strongest art rubs off,
+	## personality flows down the high table, and a long fostering turns
+	## the child's culture to the court that raised them.
+	var years := int(float(tick - int(w["since"])) / 12.0)
+	if g != null and g.alive:
+		var best_key := "diplomacy"
+		var best_v := -1
+		for key in STAT_PROPS.values():
+			if int(g.get(key)) > best_v:
+				best_v = int(g.get(key))
+				best_key = str(key)
+		c.set(best_key, clampi(int(c.get(best_key)) + 2, 1, 30))
+		add_memory(c, "raised me as their own", g.id, 25.0, 1.0)
+		if years >= 4 and rng.randf() < 0.5:
+			for t in g.traits:
+				if trait_cat(t) == "personality" and _can_add_trait(c, t):
+					_add_trait(c, t)
+					break
+		if years >= 6 and c.culture != g.culture:
+			c.culture = g.culture
+			_log("%s comes of age more %s than anything of home — the fostering did its work." % [
+				full_name(c), CultureData.culture_label(g.culture)])
+	if bool(w["hostage"]):
+		w["of_age"] = true
+		_log("%s comes of age at a foreign court — an honored guest who may not leave." % full_name(c))
+	else:
+		c.realm_id = int(w["home"])
+		wards.erase(c.id)
+		_log("[b]%s returns home from fostering[/b], carrying another court's lessons." % full_name(c))
+
+
+# ------------------------------------------- the shadow court (Module 5)
+
+func _dispossess(root_id: int, home_realm: int) -> void:
+	## A landless noble house does not become harmless courtiers — it
+	## flees abroad and becomes a national security threat.
+	if dispossessed.has(root_id):
+		return
+	var home: Realm = realms[home_realm]
+	if home.ruler_id >= 0 and root_house_id(characters[home.ruler_id].dynasty_id) == root_id:
+		return  # the royal house cannot exile itself
+	var host := 1 - home_realm
+	var fled := 0
+	for c in characters.values():
+		if c.alive and c.realm_id == home_realm and root_house_id(c.dynasty_id) == root_id:
+			c.realm_id = host
+			fled += 1
+	if fled == 0:
+		return
+	dispossessed[root_id] = {"home": home_realm, "host": host, "since": tick}
+	_log("[b]The %s are dispossessed[/b] — %d of the blood flee to %s and raise a court-in-exile." % [
+		dynasties[root_id].name, fled, realms[host].name])
+
+
+func _shadow_court_tick() -> void:
+	if dispossessed.is_empty():
+		return
+	for root in dispossessed.keys():
+		var d: Dictionary = dispossessed[root]
+		var line_lives := false
+		for c in characters.values():
+			if c.alive and root_house_id(c.dynasty_id) == int(root):
+				line_lives = true
+				break
+		if not line_lives:
+			dispossessed.erase(root)
+			_log("The line of %s ends in exile — the shadow court dissolves." % dynasties[root].name)
+			continue
+		# old keys still open doors: the exiles bleed the homeland and
+		# sharpen the host's knives against it
+		var home: Realm = realms[int(d["home"])]
+		var host: Realm = realms[int(d["host"])]
+		home.gold = maxf(0.0, home.gold - 1.5)
+		if host.plot_progress >= 0.0 and host.plot_target_id >= 0 \
+				and characters.has(host.plot_target_id) \
+				and characters[host.plot_target_id].realm_id == home.id:
+			host.plot_progress += 1.0
+		if tick % 12 == int(d["since"]) % 12:
+			_log("From exile, the %s feed secrets across the border — %s bleeds coin and quiet." % [
+				dynasties[root].name, home.name])
+
+
+# ------------------------------------------- the broken blade cycle (Module 5)
+
+func _demobilization() -> void:
+	## The Scourge of Peace: professional swords beyond what peace can
+	## pay must be settled with a bounty — or turned out onto the roads.
+	for realm: Realm in realms:
+		var professional := 0
+		for a: Army in armies:
+			if a.realm_id != realm.id:
+				continue
+			for reg in a.regiments:
+				if str(reg["kind"]) != "levy":
+					professional += int(reg["soldiers"])
+		var excess := professional - maxi(120, int(levy_capacity(realm.id) / 2.0))
+		if excess < FREE_COMPANY_MIN_MEN:
+			continue
+		var bounty := float(excess) * DEMOB_BOUNTY_PER_MAN
+		var rid := realm.id
+		raise_event(realm.id, realm.ruler_id, "The Scourge of Peace",
+			"%d professional soldiers of %s stand unneeded and unpaid now the war is done. Settle them with a bounty — or turn them out, and let the roads answer for it." % [
+				excess, realm.name],
+			[
+				{"label": "Pay the demobilization bounty (%d gold)" % int(bounty),
+					"base": 3.0, "ai": {"greed": -0.6, "patience": 0.4},
+					"effect": func() -> void: _demob_pay(rid, excess, bounty)},
+				{"label": "Turn them out — the realm owes them nothing",
+					"base": 0.0, "ai": {"greed": 0.6, "aggression": 0.3},
+					"effect": func() -> void: _demob_turn_out(rid, excess)},
+			])
+
+
+func _demob_pay(realm_id: int, excess: int, bounty: float) -> void:
+	var realm: Realm = realms[realm_id]
+	if realm.gold < bounty:
+		_log("%s's coffers cannot meet the bounty — the men are turned out unpaid." % realm.name)
+		_demob_turn_out(realm_id, excess)
+		return
+	realm.gold -= bounty
+	var _stripped := _strip_professionals(realm_id, excess)
+	_log("[b]%s pays %d gold in demobilization bounties[/b] — the soldiers go home as farmers, not brigands." % [
+		realm.name, int(bounty)])
+
+
+func _demob_turn_out(realm_id: int, excess: int) -> void:
+	var stripped := _strip_professionals(realm_id, excess)
+	if stripped.is_empty():
+		return
+	var fc := Army.new()
+	fc.id = next_army_id
+	next_army_id += 1
+	fc.realm_id = -1
+	fc.pos = map.realm_centroid(realm_id) + Vector2(0.04, -0.03)
+	fc.regiments = stripped
+	free_companies.append(fc)
+	var men := 0
+	for reg in stripped:
+		men += int(reg["soldiers"])
+	_log("[b]A Free Company forms![/b] %d unpaid veterans of %s's war take to the roads under their own banner." % [
+		men, realms[realm_id].name])
+
+
+func _strip_professionals(realm_id: int, target_men: int) -> Array:
+	## Pulls whole professional regiments out of the realm's armies until
+	## roughly target_men are mustered out. Levies always go home free.
+	var out: Array = []
+	var taken := 0
+	for a: Army in armies:
+		if a.realm_id != realm_id:
+			continue
+		var kept: Array = []
+		for reg in a.regiments:
+			if taken < target_men and str(reg["kind"]) != "levy":
+				out.append(reg)
+				taken += int(reg["soldiers"])
+			else:
+				kept.append(reg)
+		a.regiments = kept
+	for a: Army in armies.duplicate():
+		if a.realm_id == realm_id and a.regiments.is_empty():
+			armies.erase(a)
+	return out
+
+
+func _province_at(pos: Vector2):
+	var best = null
+	var best_d := INF
+	for p in map.provinces:
+		var d: float = p.center.distance_squared_to(pos)
+		if d < best_d:
+			best_d = d
+			best = p
+	return best
+
+
+func _free_company_tick() -> void:
+	if free_companies.is_empty():
+		return
+	for fc: Army in free_companies.duplicate():
+		# plunder is a poor paymaster — the company bleeds men every month
+		for reg in fc.regiments:
+			reg["soldiers"] = int(float(reg["soldiers"]) * 0.985)
+		fc.regiments = fc.regiments.filter(func(r) -> bool: return int(r["soldiers"]) > 0)
+		if fc.size() < 30:
+			free_companies.erase(fc)
+			_log("The free company scatters — too few blades left to hold the road.")
+			continue
+		# pillage whatever county the company squats on
+		var p = _province_at(fc.pos)
+		if p != null and p.owner >= 0 and p.owner < realms.size():
+			var plunder := rng.randf_range(1.0, 4.0)
+			realms[p.owner].gold = maxf(0.0, realms[p.owner].gold - plunder)
+			if rng.randf() < 0.25:
+				_log("The free company pillages %s — %s bleeds %d gold in burned barns and robbed roads." % [
+					p.name, realms[p.owner].name, int(maxf(plunder, 1.0))])
+		# then drift on toward the next unlucky county
+		if not fc.has_target or fc.pos.distance_to(fc.target) < 0.02:
+			if p != null and not p.neighbors.is_empty():
+				var nid: int = p.neighbors[rng.randi_range(0, p.neighbors.size() - 1)]
+				fc.target = map.provinces[nid].center
+				fc.has_target = true
+		else:
+			fc.pos += (fc.target - fc.pos).normalized() * 0.05
+		# any realm army that closes the distance forces the fight
+		for a: Army in armies:
+			if a.regiments.is_empty() or a.pos.distance_to(fc.pos) > 0.05:
+				continue
+			_fight_free_company(a, fc)
+			break
+
+
+func _fight_free_company(a: Army, fc: Army) -> void:
+	## Free companies behave like aggressive unlanded armies — until an
+	## army physically marches out and destroys them.
+	var cmdr_martial := 0
+	if a.commander_id >= 0 and characters.has(a.commander_id):
+		cmdr_martial = characters[a.commander_id].martial
+	var sim := BattleSim.new()
+	sim.setup_from_rosters(a.regiments, fc.regiments, cmdr_martial, 8,
+		[str(realms[a.realm_id].name), "Free Company"])
+	sim.run_headless()
+	for reg: BattleSim.Regiment in sim.regiments:
+		var target: Array = a.regiments if reg.side == 0 else fc.regiments
+		if reg.roster_index < target.size():
+			target[reg.roster_index]["soldiers"] = reg.soldiers if reg.alive() else 0
+	a.regiments = a.regiments.filter(func(r) -> bool: return int(r["soldiers"]) > 0)
+	fc.regiments = fc.regiments.filter(func(r) -> bool: return int(r["soldiers"]) > 0)
+	if a.regiments.is_empty():
+		armies.erase(a)
+	if sim.winner == 0 or fc.size() < 30:
+		free_companies.erase(fc)
+		realms[a.realm_id].prestige = minf(100.0, realms[a.realm_id].prestige + 10.0)
+		_log("[b]The free company is broken[/b] by %s — the roads are safe again." % realms[a.realm_id].name)
+	else:
+		fc.pos += Vector2(0.06, 0.04)
+		fc.has_target = false
+		_log("The free company mauls %s's soldiers and melts away with the baggage." % realms[a.realm_id].name)
+
+
+# ------------------------------------------- the monthly diplomacy tick
+
+func _diplomacy_tick() -> void:
+	## Module 5's slow machinery: forged claims, wards growing up abroad,
+	## reparations, exiled courts, and the swords peace left loose. Every
+	## subsystem returns before touching the dice when it has no work.
+	for realm: Realm in realms:
+		realm.prestige = move_toward(realm.prestige, 0.0, PRESTIGE_DECAY)
+	_fabricate_tick()
+	_wards_tick()
+	if not reparations.is_empty():
+		var from: Realm = realms[int(reparations["from"])]
+		var to: Realm = realms[int(reparations["to"])]
+		var cut := minf(maxf(1.0, (2.0 + realm_tax_eff(from.id)) * REPARATIONS_RATE), maxf(from.gold, 0.0))
+		from.gold -= cut
+		to.gold += cut
+		reparations["months_left"] = int(reparations["months_left"]) - 1
+		if int(reparations["months_left"]) <= 0:
+			_log("[b]The reparations are paid in full[/b] — the yoke lifts from %s." % from.name)
+			reparations = {}
+	for pid in salted.keys():
+		if int(salted[pid]) <= tick:
+			salted.erase(pid)
+			_log("Green returns to %s at last — the salted years are over." % map.provinces[pid].name)
+	_shadow_court_tick()
+	_free_company_tick()
 
 
 # ---------------------------------------------------------------- marriage
@@ -2469,6 +3093,8 @@ func realm_tax_eff(realm_id: int) -> float:
 		var t: float = p.tax
 		if p.de_jure != realm_id:
 			t *= FOREIGN_LAND_YIELD  # the people remember other banners
+		if int(salted.get(p.id, -1)) > tick:
+			t *= SALT_YIELD  # salted earth (Module 5): a generation of ash
 		var lord := county_holder(p.id)
 		if lord != null:
 			# the feudal contract sets what the crown actually collects
@@ -2494,6 +3120,8 @@ func realm_levy_eff(realm_id: int) -> float:
 		var l := float(p.levy)
 		if p.de_jure != realm_id:
 			l *= FOREIGN_LAND_YIELD
+		if int(salted.get(p.id, -1)) > tick:
+			l *= SALT_YIELD  # salted earth raises no spears
 		var lord := county_holder(p.id)
 		if lord != null:
 			l += lord.martial * 0.5  # a lord drills his own men
@@ -3172,33 +3800,143 @@ func _civil_war(realm: Realm, f: Dictionary) -> void:
 			armies.erase(a)
 	if sim.winner == 0:
 		_log("[b]The rebellion is broken in the field.[/b] The crown's banners stand over the wreck of the %s faction." % FACTION_LABELS[str(f["type"])])
-		for cid in f["members"]:
-			var c: SimCharacter = characters.get(int(cid))
-			if c == null or not c.alive:
-				continue
-			# attainder first: a traitor's land never passes to his heirs
-			for pid in counties_of(c.id):
-				county_holders.erase(pid)
-			for did in duchy_holders.keys():
-				if int(duchy_holders[did]) == c.id:
-					duchy_holders.erase(did)
-			if rng.randf() < 0.4:
-				_log("%s is taken and hanged for rebellion." % full_name(c))
-				_kill(c, "was hanged for rebellion")
-			else:
-				if realm.ruler_id >= 0:
-					add_memory(c, "stripped for my treason", realm.ruler_id, -60.0, 1.0)
-				_log("%s is stripped of every title and spared — a mercy, and a warning." % full_name(c))
 		if str(f["type"]) == "populist":
 			for pid in f["provinces"]:
 				map.provinces[pid].held_since = tick  # the rising crushed, the clock reset
 			realm.tyranny = minf(100.0, realm.tyranny + 10.0)
+		else:
+			# The Traitor's Tribunal (Module 5): treason is not answered
+			# with three buttons — the crown must convene and judge.
+			_raise_tribunal(realm, (f["members"] as Array).duplicate())
 		factions.erase(f)
 	else:
 		_log("[b]The crown's host is beaten by its own vassals.[/b] The demand is granted at sword-point.")
 		realm.gold = maxf(0.0, realm.gold - 60.0)
 		realm.tyranny = maxf(0.0, realm.tyranny - 30.0)
 		_concede_faction(realm, f)
+
+
+# ------------------------------------------- the traitor's tribunal (Module 5)
+
+func _raise_tribunal(realm: Realm, traitor_ids: Array) -> void:
+	## Loyalist Expectations: the lords who bled for the crown wait to see
+	## what treason costs. Mercy reads as weakness; cruelty reads as tyranny.
+	var names: Array = []
+	for cid in traitor_ids:
+		var c: SimCharacter = characters.get(int(cid))
+		if c != null and c.alive:
+			names.append(full_name(c))
+	if names.is_empty():
+		return
+	var rid := realm.id
+	raise_event(realm.id, realm.ruler_id, "The Traitor's Tribunal",
+		"The rebels — %s — kneel in chains. The loyalists who bled for the crown watch what their loyalty was worth." % ", ".join(names),
+		[
+			{"label": "The Scaffold — hang them all", "base": 0.0, "ai": {"aggression": 0.8},
+				"effect": func() -> void: _tribunal_scaffold(rid, traitor_ids)},
+			{"label": "Attainder — strip their lands, spare their necks", "base": 3.0, "ai": {"greed": 0.6},
+				"effect": func() -> void: _tribunal_attainder(rid, traitor_ids)},
+			{"label": "Forced Tonsure — the cloister takes them", "base": 2.0, "ai": {"patience": 0.6},
+				"effect": func() -> void: _tribunal_tonsure(rid, traitor_ids)},
+			{"label": "The King's Pardon — total mercy", "base": 0.0, "ai": {"aggression": -0.8},
+				"effect": func() -> void: _tribunal_pardon(rid, traitor_ids)},
+		])
+
+
+func _tribunal_loyalists(realm_id: int, traitor_ids: Array) -> Array:
+	var out: Array = []
+	for c in landed_vassals(realm_id):
+		if not traitor_ids.has(c.id):
+			out.append(c)
+	return out
+
+
+func _strip_traitor(c: SimCharacter) -> void:
+	for pid in counties_of(c.id):
+		county_holders.erase(pid)
+	for did in duchy_holders.keys():
+		if int(duchy_holders[did]) == c.id:
+			duchy_holders.erase(did)
+
+
+func _tribunal_scaffold(realm_id: int, traitor_ids: Array) -> void:
+	var realm: Realm = realms[realm_id]
+	var ruler_root := -1
+	if realm.ruler_id >= 0:
+		ruler_root = root_house_id(characters[realm.ruler_id].dynasty_id)
+	for cid in traitor_ids:
+		var c: SimCharacter = characters.get(int(cid))
+		if c == null or not c.alive:
+			continue
+		_strip_traitor(c)
+		var t_root := root_house_id(c.dynasty_id)
+		if ruler_root >= 0 and t_root != ruler_root and not in_blood_feud(ruler_root, t_root):
+			blood_feuds.append([ruler_root, t_root])  # the hanged become martyrs
+		_kill(c, "went to the scaffold for treason")
+	realm.tyranny = minf(100.0, realm.tyranny + 20.0)
+	for l: SimCharacter in _tribunal_loyalists(realm_id, traitor_ids):
+		add_memory(l, "traitors got what traitors earn", realm.ruler_id, 30.0, 1.0)
+	_log("[b]The Scaffold.[/b] The traitors hang in a row — the loyal cheer, the realm shudders, and blood swears feuds against the crown.")
+
+
+func _tribunal_attainder(realm_id: int, traitor_ids: Array) -> void:
+	var realm: Realm = realms[realm_id]
+	var stripped_roots := {}
+	for cid in traitor_ids:
+		var c: SimCharacter = characters.get(int(cid))
+		if c == null or not c.alive:
+			continue
+		_strip_traitor(c)
+		if realm.ruler_id >= 0:
+			add_memory(c, "attainted — my line dispossessed", realm.ruler_id, -60.0, 1.0)
+		stripped_roots[root_house_id(c.dynasty_id)] = true
+	realm.tyranny = minf(100.0, realm.tyranny + 10.0)
+	for l: SimCharacter in _tribunal_loyalists(realm_id, traitor_ids):
+		add_memory(l, "the traitors' lands should be ours", realm.ruler_id, -10.0, 1.0)
+	_log("[b]Attainder.[/b] The traitors are stripped of every hall and acre — and the loyal eye the vacant land, expecting.")
+	# a house left with nothing does not linger — it flees (the Shadow Court)
+	for root in stripped_roots:
+		var holds_land := false
+		for c2 in characters.values():
+			if c2.alive and root_house_id(c2.dynasty_id) == int(root) and not counties_of(c2.id).is_empty():
+				holds_land = true
+				break
+		if not holds_land:
+			_dispossess(int(root), realm_id)
+
+
+func _tribunal_tonsure(realm_id: int, traitor_ids: Array) -> void:
+	var realm: Realm = realms[realm_id]
+	for cid in traitor_ids:
+		var c: SimCharacter = characters.get(int(cid))
+		if c == null or not c.alive:
+			continue
+		_strip_traitor(c)
+		c.disinherited = true
+		add_stress(c, -20.0, "the quiet of the cloister")
+		if realm.ruler_id >= 0:
+			add_memory(c, "tonsured against my will", realm.ruler_id, -30.0, 1.0)
+	# neutralized — but the cloistered pen still cuts
+	for l: SimCharacter in landed_vassals(realm_id):
+		if traitor_ids.has(l.id):
+			continue
+		add_memory(l, "pamphlets from the cloister", realm.ruler_id, -5.0, 2.0)
+		add_memory(l, "holy tradition upheld", realm.ruler_id, 10.0, 1.0)
+	_log("[b]Forced Tonsure.[/b] The traitors take vows they did not choose — out of the succession, into the scriptorium, and never quite silent.")
+
+
+func _tribunal_pardon(realm_id: int, traitor_ids: Array) -> void:
+	var realm: Realm = realms[realm_id]
+	for cid in traitor_ids:
+		var c: SimCharacter = characters.get(int(cid))
+		if c == null or not c.alive:
+			continue
+		if realm.ruler_id >= 0:
+			add_memory(c, "pardoned — and in the crown's debt", realm.ruler_id, 30.0, 1.0)
+	realm.prestige = minf(100.0, realm.prestige + 10.0)
+	for l: SimCharacter in _tribunal_loyalists(realm_id, traitor_ids):
+		add_memory(l, "mercy for traitors, nothing for the loyal", realm.ruler_id, -40.0, 1.0)
+	_log("[b]The King's Pardon.[/b] The traitors keep their heads and their halls — and every loyal lord remembers what rebellion did not cost.")
 
 
 # ---------------------------------------------------------------- monthly grievances
