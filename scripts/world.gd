@@ -253,6 +253,25 @@ const MINOR_SCHEME_LABELS := {
 	"slander_vice": "Slander: the Manufactured Vice",
 }
 
+# Module 7: warfare — supply, sieges, and the men who march
+# How many mouths a county can feed (terrain sets the ceiling; home
+# stores raise it; salt and fire empty it). Doc: exceed it and starve.
+const SUPPLY_BY_TERRAIN := {
+	"plains": 380, "river_valley": 480, "hills": 260, "forest": 260,
+	"coast": 340, "wetland": 160, "mountain": 110, "ashfields": 90, "ruined": 130,
+}
+const SUPPLY_HOME_MULT := 1.6         # your own granaries stand open to you
+const ATTRITION_MAX := 0.12           # starvation's monthly ceiling
+const SEVERED_ATTRITION := 0.04       # a cut supply line, compounding by the month
+const BAGGAGE_RAID_RANGE := 0.05      # how close a raider must ride to the train
+const SIEGE_BASE_PROGRESS := 6.0      # months of circumvallation, before the Marshal
+const SIEGE_THRESHOLD_BASE := 100.0
+const SIEGE_FORT_STEP := 25.0         # each fort level buys the defenders another season
+const SCORCH_MONTHS := 60             # five years before scorched fields bear again
+const SCORCH_YIELD := 0.4             # what a burned county still renders
+const CHAMPION_COUNT := 3             # the named blades who ride with the main host
+const CHAMPION_LEAD_DIV := 6.0        # pooled champion prowess -> battle leadership
+
 var rng := RandomNumberGenerator.new()
 var tick: int = 0                  # months since Year Zero of the Silence
 var characters: Dictionary = {}    # id -> SimCharacter
@@ -302,6 +321,14 @@ var ferreting: Dictionary = {}        # realm id -> months spent digging for sec
 var plot_details: Dictionary = {}     # realm id -> {vector, asset_id, asset_role, double_agent, waiting}
 var minor_schemes: Array = []         # [{realm, kind, target, progress}] — seduce/abduct/slander
 var mithridatism: Dictionary = {}     # char id -> months of micro-doses endured
+# Module 7: warfare — who marched first, what stands besieged, what burns.
+var war_aggressor: int = -1           # the realm that declared the current war
+var war_start_strength := [0, 0]      # what each side marched out with (ambush math)
+var occupied: Dictionary = {}         # province id -> occupying realm id (held under the sword)
+var sieges: Dictionary = {}           # province id -> {attacker, progress, threshold}
+var scorched: Dictionary = {}         # province id -> tick the fields bear again
+var partisans: Dictionary = {}        # province id -> defending realm id — night-raid cells
+var last_war_occupied: Array = []     # counties the winner held when the war ended — ceded first
 
 # The event framework: choice events with trait-weighted AI resolution.
 var pending_events: Array = []       # events awaiting the player's decision
@@ -375,6 +402,10 @@ class Army:
 	var target := Vector2.ZERO
 	var regiments: Array = []     # [{kind, soldiers, max}]
 	var commander_id := -1
+	# Module 7: the physical supply train that trails an army abroad
+	var train_active := false     # marching on foreign soil — the train is on the road
+	var train_pos := Vector2.ZERO # where the wagons actually are
+	var severed_months := 0       # months since the line of communication was cut
 
 	func size() -> int:
 		var total := 0
@@ -538,6 +569,7 @@ func advance_month() -> void:
 	_military_upkeep()
 	_ai_recruit()
 	_campaign_military()
+	_warfare_tick()
 	# while two armies stand facing each other, the war waits on the battle
 	if at_war and not battle_ready:
 		_war_tick()
@@ -1202,6 +1234,8 @@ func _military_upkeep() -> void:
 	for a: Army in armies:
 		if battle_ready and pending_battle.has(a.id):
 			continue  # no reinforcements reach an army standing on the field
+		if a.severed_months > 0:
+			continue  # nothing reaches an army whose wagons burn (Module 7)
 		var realm: Realm = realms[a.realm_id]
 		var heal_rate := 0.08 + council_stat(a.realm_id, "Marshal") * 0.002
 		for reg in a.regiments:
@@ -1260,7 +1294,11 @@ func apply_battle_casualties(army_id: int, results: Array, lost_the_battle: bool
 func _war_tick() -> void:
 	var sa := float(strength(0))
 	var sb := float(strength(1))
-	war_score += 10.0 * (sa - sb) / maxf(sa + sb, 1.0) + rng.randf_range(-2.0, 2.0)
+	# every county under occupation leans on the scales (Module 7)
+	var occ_bias := 0.0
+	for pid in occupied:
+		occ_bias += 0.8 if int(occupied[pid]) == 0 else -0.8
+	war_score += 10.0 * (sa - sb) / maxf(sa + sb, 1.0) + occ_bias + rng.randf_range(-2.0, 2.0)
 	war_score = clampf(war_score, -100.0, 100.0)
 	for realm in realms:
 		if rng.randf() < 0.04:
@@ -1354,6 +1392,10 @@ func declare_war(by_realm: int = 0) -> String:
 	at_war = true
 	war_score = 0.0
 	war_battles_won = [0, 0]
+	war_aggressor = by_realm
+	war_start_strength = [strength(0), strength(1)]
+	occupied.clear()
+	sieges.clear()
 	battle_ready = false
 	pending_battle = []
 	if trade_pact:
@@ -1459,6 +1501,12 @@ func negotiate_peace() -> String:
 		# War Leverage (Module 5): the score, the battles carried, and the
 		# winner's standing set what can be dictated at the table.
 		var leverage := absf(war_score) + 10.0 * float(war_battles_won[winner.id]) + winner.prestige * 0.2
+		# every county held under the sword is an argument at the table (Module 7)
+		last_war_occupied = []
+		for pid in occupied:
+			if int(occupied[pid]) == winner.id:
+				last_war_occupied.append(int(pid))
+		leverage += 5.0 * float(last_war_occupied.size())
 		winner.prestige = minf(100.0, winner.prestige + 15.0)
 		loser.prestige = maxf(-100.0, loser.prestige - 10.0)
 		_log("[b]Peace.[/b] %s comes to the drafting table with %d leverage over %s." % [
@@ -1474,12 +1522,20 @@ func _end_war() -> void:
 	at_war = false
 	war_score = 0.0
 	war_cb = ""
+	war_aggressor = -1
 	battle_ready = false
 	pending_battle = []
 	truce_until = tick + TRUCE_MONTHS
+	if not occupied.is_empty():
+		occupied.clear()
+		_log("The armies of occupation march home — the counties they held return to their crowns.")
+	sieges.clear()
+	partisans.clear()  # the cells disband; the scorched fields stay scorched
 	for a: Army in armies:
 		a.target = map.realm_centroid(a.realm_id)
 		a.has_target = a.pos.distance_to(a.target) > 0.02
+		a.train_active = false
+		a.severed_months = 0
 	_demobilization()
 
 
@@ -1656,6 +1712,7 @@ func _overrun(winner_army: Army, victim: Army) -> void:
 	_log("[b]The army of %s is ridden down near %s — no battle, only slaughter.[/b]" % [
 		victim_realm.name, _site_name_at(victim.pos)])
 	_commander_fate(victim, winner_army, false, 1.0, _site_name_at(victim.pos))
+	_champion_fates(victim, winner_army, false, 1.0, _site_name_at(victim.pos))
 	armies.erase(victim)
 	war_score += 15.0 if winner_army.realm_id == 0 else -15.0
 	war_score = clampf(war_score, -100.0, 100.0)
@@ -1683,6 +1740,21 @@ func _ai_army_orders() -> void:
 			if best != null:
 				a.target = best.pos
 				a.has_target = true
+			else:
+				# no field army left to fight — march on the nearest county
+				# still flying the enemy's banner and starve its walls
+				var siege_target: Vector2 = a.target
+				var sd := INF
+				for p in map.provinces:
+					if p.owner != 0 or int(occupied.get(p.id, -1)) == 1:
+						continue
+					var pd: float = p.center.distance_squared_to(a.pos)
+					if pd < sd:
+						sd = pd
+						siege_target = p.center
+				if sd < INF:
+					a.target = siege_target
+					a.has_target = a.pos.distance_to(a.target) > 0.01
 		elif not free_companies.is_empty():
 			# in peace, loose swords on the roads are hunted down
 			var quarry: Army = null
@@ -1750,7 +1822,7 @@ func _site_name_at(target: Vector2) -> String:
 	return best_name
 
 
-func apply_battle_result(winner_side: int, loser_loss_fraction: float) -> void:
+func apply_battle_result(winner_side: int, loser_loss_fraction: float, charged: Array = [false, false]) -> void:
 	## Feeds a fought battle back into the war: the score swings, the
 	## beaten army retreats home, and either commander may not come back.
 	var site := battle_site_name()
@@ -1770,13 +1842,15 @@ func apply_battle_result(winner_side: int, loser_loss_fraction: float) -> void:
 		if loser_army != null and army_by_id(loser_army.id) != null:
 			loser_army.target = map.realm_centroid(loser_army.realm_id)
 			loser_army.has_target = true
-	_commander_fate(pa, pb, winner_side == 0, loser_loss_fraction, site)
-	_commander_fate(pb, pa, winner_side == 1, loser_loss_fraction, site)
+	_commander_fate(pa, pb, winner_side == 0, loser_loss_fraction, site, bool(charged[0]))
+	_commander_fate(pb, pa, winner_side == 1, loser_loss_fraction, site, bool(charged[1]))
+	_champion_fates(pa, pb, winner_side == 0, loser_loss_fraction, site)
+	_champion_fates(pb, pa, winner_side == 1, loser_loss_fraction, site)
 	if absf(war_score) >= 100.0:
 		var _msg := negotiate_peace()
 
 
-func _commander_fate(a: Army, enemy: Army, won: bool, loss: float, site: String) -> void:
+func _commander_fate(a: Army, enemy: Army, won: bool, loss: float, site: String, charged: bool = false) -> void:
 	## Leading from the front has a price — Prowess is what keeps you alive
 	## in the press. The beaten may fall, be scarred, and never forgive.
 	if a == null or a.commander_id < 0:
@@ -1789,6 +1863,8 @@ func _commander_fate(a: Army, enemy: Army, won: bool, loss: float, site: String)
 		chance = 0.15 + 0.20 * clampf(loss, 0.0, 1.0)
 	chance *= clampf(1.4 - c.prowess * 0.03, 0.5, 1.4)
 	chance *= trait_mult(c, "commander_risk_mult")  # the Impulsive lead from the front
+	if charged:
+		chance *= 1.8  # a chivalric charge is glory bought on credit (Module 7)
 	if rng.randf() < chance:
 		_kill(c, "fell leading the army at %s," % site)
 		return
@@ -1807,6 +1883,312 @@ func _commander_fate(a: Army, enemy: Army, won: bool, loss: float, site: String)
 				_log("%s is carried from the field at %s, badly wounded." % [full_name(c), site])
 
 
+# ------------------------------------------- warfare: supply, sieges, fire (Module 7)
+
+func province_supply(p, realm_id: int) -> int:
+	## The Supply Limit: how many soldiers this county can feed in a month.
+	## Terrain sets the ceiling, home granaries raise it, salt thins it —
+	## and scorched fields feed no one at all.
+	if int(scorched.get(p.id, -1)) > tick:
+		return 0
+	var s := float(SUPPLY_BY_TERRAIN.get(p.terrain, 300))
+	if int(salted.get(p.id, -1)) > tick:
+		s *= SALT_YIELD
+	if p.owner == realm_id and int(occupied.get(p.id, -1)) < 0:
+		s *= SUPPLY_HOME_MULT
+	return int(s)
+
+
+func is_winter() -> bool:
+	return (tick % 12) in [11, 0, 1]  # the campaign season is long over
+
+
+func army_supply_report(a: Army) -> Dictionary:
+	## What the army lives on where it stands — the monthly tick and the
+	## UI read the same arithmetic.
+	var p = _province_at(a.pos)
+	var limit := province_supply(p, a.realm_id)
+	var foreign: bool = p != null and p.owner == 1 - a.realm_id
+	return {"province": p, "limit": limit, "foreign": foreign,
+		"over": maxi(0, a.size() - limit)}
+
+
+func _warfare_tick() -> void:
+	## Module 7's monthly grind: wagons, hunger, siege lines, and fire.
+	## The dice stay untouched unless a siege is actually being pressed.
+	for pid in scorched.keys():
+		if int(scorched[pid]) <= tick:
+			scorched.erase(pid)
+			partisans.erase(pid)
+			_log("The first green shoots return to %s — the burned years are over." % map.provinces[pid].name)
+	if armies.is_empty():
+		return
+	for a: Army in armies.duplicate():
+		if battle_ready and pending_battle.has(a.id):
+			continue  # an army drawn up for battle stands on its last full ration
+		_army_supply_tick(a)
+	if at_war and not battle_ready:
+		_ai_scorch()
+		_sieges_tick()
+
+
+func _army_supply_tick(a: Army) -> void:
+	var rep := army_supply_report(a)
+	var p = rep["province"]
+	# The Baggage Train: the moment an army stands on foreign soil, its
+	# wagons trail behind it on the road home — a physical thing on the
+	# map, and the campaign's softest target.
+	a.train_active = at_war and bool(rep["foreign"])
+	var severed := false
+	if a.train_active:
+		var home: Vector2 = map.realm_centroid(a.realm_id)
+		var best_d := INF
+		for fp in map.provinces:
+			if fp.owner == a.realm_id and int(occupied.get(fp.id, -1)) < 0:
+				var d: float = fp.center.distance_squared_to(a.pos)
+				if d < best_d:
+					best_d = d
+					home = fp.center
+		var back := home - a.pos
+		a.train_pos = a.pos + (back.normalized() * minf(0.06, back.length() * 0.5) if back.length() > 0.001 else Vector2.ZERO)
+		# the Line of Communication: an enemy on the wagons — or partisan
+		# cells in the county — and the army eats its own boots
+		for e: Army in armies:
+			if e.realm_id == 1 - a.realm_id and not e.regiments.is_empty() \
+					and e.pos.distance_to(a.train_pos) < BAGGAGE_RAID_RANGE:
+				severed = true
+				break
+		if p != null and int(partisans.get(p.id, -1)) == 1 - a.realm_id:
+			severed = true  # night raids out of the burned hills
+	if severed:
+		a.severed_months += 1
+		if a.severed_months == 1:
+			_log("[b]The supply line of %s is severed![/b] The wagons burn on the road, and the host stops eating." % realms[a.realm_id].name)
+	else:
+		a.severed_months = 0
+	# starvation attrition: compounding, doubled by winter on foreign soil.
+	# On its own intact soil the realm's granary network feeds any host —
+	# the Supply Limit bites abroad, under occupation, or on ruined ground.
+	var home_fed: bool = p != null and p.owner == a.realm_id \
+			and int(occupied.get(p.id, -1)) < 0 \
+			and int(scorched.get(p.id, -1)) <= tick and int(salted.get(p.id, -1)) <= tick
+	var frac := 0.0
+	var limit: int = rep["limit"]
+	if int(rep["over"]) > 0 and not home_fed:
+		frac += clampf(0.02 + 0.04 * (float(a.size()) / maxf(float(limit), 1.0) - 1.0), 0.02, ATTRITION_MAX)
+	if a.severed_months > 0:
+		frac += SEVERED_ATTRITION + 0.01 * float(a.severed_months - 1)
+	if frac <= 0.0:
+		return
+	if is_winter() and bool(rep["foreign"]):
+		frac *= 2.0  # the Winter Trap
+	frac = minf(frac, ATTRITION_MAX * 2.0)
+	var before := a.size()
+	for reg in a.regiments:
+		reg["soldiers"] = maxi(0, int(reg["soldiers"]) - maxi(1, int(float(int(reg["soldiers"])) * frac)))
+	a.regiments = a.regiments.filter(func(r) -> bool: return int(r["soldiers"]) > 0)
+	var lost := before - a.size()
+	if lost > 0 and (a.severed_months == 1 or tick % 3 == 0):
+		var where := str(p.name) if p != null else "the field"
+		_log("Hunger stalks the camp of %s at %s — %d men lost to the empty roads." % [
+			realms[a.realm_id].name, where, lost])
+	if a.regiments.is_empty():
+		_log("[b]The army of %s starves to nothing[/b] — no battle, no glory, only the crows." % realms[a.realm_id].name)
+		armies.erase(a)
+
+
+func fort_level(p) -> int:
+	## How long a county can shut its gates: the high places hold longest,
+	## seats of power and storied sites are walled to match.
+	var f := 0
+	if p.terrain == "mountain":
+		f += 2
+	elif p.terrain == "hills":
+		f += 1
+	if str(p.special_feature) != "":
+		f += 1
+	if p.owner >= 0 and p.owner < map.realms.size() \
+			and map.realms[p.owner].capital_province_id == p.id:
+		f += 2
+	return f
+
+
+func _sieges_tick() -> void:
+	## Sieges & Strongholds: an army encamped on an enemy county, with no
+	## field army near enough to contest it, settles in to starve the walls.
+	var pressed := {}
+	for a: Army in armies:
+		if a.regiments.is_empty() or a.realm_id < 0:
+			continue
+		var p = _province_at(a.pos)
+		if p == null or p.owner != 1 - a.realm_id:
+			continue
+		if int(occupied.get(p.id, -1)) == a.realm_id:
+			continue  # the banner already flies over the keep
+		var contested := false
+		for e: Army in armies:
+			if e.realm_id == 1 - a.realm_id and not e.regiments.is_empty() \
+					and e.pos.distance_to(a.pos) < 0.07:
+				contested = true
+				break
+		if contested:
+			continue
+		if int(partisans.get(p.id, -1)) == p.owner:
+			pressed[p.id] = true  # the siege stands, but makes no progress
+			continue  # partisan night raids burn the works as fast as they rise
+		if not sieges.has(p.id):
+			sieges[p.id] = {"attacker": a.realm_id, "progress": 0.0,
+				"threshold": SIEGE_THRESHOLD_BASE + float(fort_level(p)) * SIEGE_FORT_STEP}
+			_log("[b]%s lays siege to %s[/b] — the gates shut, and the waiting begins." % [
+				realms[a.realm_id].name, p.name])
+		var s: Dictionary = sieges[p.id]
+		if int(s["attacker"]) != a.realm_id:
+			continue
+		pressed[p.id] = true
+		var gain := SIEGE_BASE_PROGRESS + council_stat(a.realm_id, "Marshal") * 0.5
+		# the recurring siege event timer: breaches and camp fevers
+		var roll := rng.randf()
+		if roll < 0.10:
+			gain += 15.0
+			_log("A section of %s's wall comes down in the night — the breach is made." % p.name)
+		elif roll < 0.22:
+			for reg in a.regiments:
+				reg["soldiers"] = maxi(1, int(float(int(reg["soldiers"])) * 0.96))
+			_log("Camp fever spreads through the siege lines at %s — the latrines kill more than the garrison does." % p.name)
+		s["progress"] = float(s["progress"]) + gain
+		if float(s["progress"]) >= float(s["threshold"]):
+			sieges.erase(p.id)
+			occupied[p.id] = a.realm_id
+			war_score = clampf(war_score + (10.0 if a.realm_id == 0 else -10.0), -100.0, 100.0)
+			_log("[b]%s falls to %s![/b] The gates open — to hunger, not to storm." % [
+				p.name, realms[a.realm_id].name])
+	for pid in sieges.keys():
+		if not pressed.has(pid):
+			sieges.erase(pid)
+			_log("The siege of %s is abandoned — the garrison sallies out to reopen the roads." % map.provinces[pid].name)
+
+
+func scorch_earth(realm_id: int, pid: int) -> String:
+	## The Scorched Earth Protocol (defensive wars only): burn your own
+	## crops and foul your own wells on your own rightful soil. The county
+	## feeds no invader — and its peasants take to the hills as partisans.
+	if not at_war:
+		return "Scorched earth is a measure of war."
+	if war_aggressor == realm_id:
+		return "The protocol is a defender's desperation — and you marched first."
+	if pid < 0 or pid >= map.provinces.size():
+		return "No such county."
+	var p = map.provinces[pid]
+	if p.owner != realm_id:
+		return "Not your county to burn."
+	if p.de_jure != realm_id:
+		return "The people here fly older banners — they will not burn their fields for your war."
+	if int(scorched.get(pid, -1)) > tick:
+		return "Nothing is left there to burn."
+	scorched[pid] = tick + SCORCH_MONTHS
+	partisans[pid] = realm_id
+	sieges.erase(pid)
+	_log("[b]The Scorched Earth Protocol:[/b] %s burns its own crops at %s and fouls the wells. The county will feed no invader — and its people melt into the hills with knives." % [
+		realms[realm_id].name, p.name])
+	return ""
+
+
+func _ai_scorch() -> void:
+	## Karn-Vol will burn its own fields before it feeds an invader:
+	## when Vael's armies stand on clan soil, the frontier goes up.
+	if war_aggressor != 0:
+		return
+	for a: Army in armies:
+		if a.realm_id != 0 or a.regiments.is_empty():
+			continue
+		var p = _province_at(a.pos)
+		if p == null or p.owner != 1 or p.de_jure != 1:
+			continue
+		if int(scorched.get(p.id, -1)) > tick:
+			continue
+		if rng.randf() < 0.35:
+			var _e := scorch_earth(1, p.id)
+		return  # one county considered a month — the clan argues about the rest
+
+
+# ------------------------------------------- knights & champions (Module 7)
+
+func main_army_of(realm_id: int) -> Army:
+	var best: Army = null
+	for a: Army in armies:
+		if a.realm_id == realm_id and (best == null or a.size() > best.size()):
+			best = a
+	return best
+
+
+func champions_of(realm_id: int) -> Array:
+	## The realm's named blades: its highest-Prowess adults after the
+	## commanders are seated. They ride with the main host, trading their
+	## lives' risk for the steadiness their names lend the line.
+	var taken := {}
+	for a: Army in armies:
+		if a.commander_id >= 0:
+			taken[a.commander_id] = true
+	var pool: Array = []
+	for c in characters.values():
+		if c.alive and c.realm_id == realm_id and not c.denounced \
+				and c.age_years(tick) >= ADULT_AGE and not taken.has(c.id) \
+				and not wards.has(c.id):
+			pool.append(c)
+	pool.sort_custom(func(x: SimCharacter, y: SimCharacter) -> bool:
+		return x.prowess > y.prowess if x.prowess != y.prowess else x.id < y.id)
+	return pool.slice(0, CHAMPION_COUNT)
+
+
+func champions_with(a: Army) -> Array:
+	if a == null or a != main_army_of(a.realm_id):
+		return []
+	return champions_of(a.realm_id)
+
+
+func battle_lead_mod(a: Army) -> int:
+	## What the campaign adds to — or starves from — an army's leadership
+	## on the field: champions steady it, a severed train hollows it, and
+	## a defender ambushing a bled invader in burned or high country owns
+	## the ground it chose.
+	if a == null:
+		return 0
+	var mod := 0.0
+	for c: SimCharacter in champions_with(a):
+		mod += float(c.prowess) / CHAMPION_LEAD_DIV
+	mod -= float(a.severed_months) * 2.0
+	if at_war and war_aggressor == 1 - a.realm_id and war_aggressor >= 0:
+		var enemy_bled := float(strength(1 - a.realm_id)) < float(war_start_strength[1 - a.realm_id]) * 0.5
+		var p = _province_at(a.pos)
+		if enemy_bled and p != null and (p.terrain == "mountain" or int(scorched.get(p.id, -1)) > tick):
+			mod += 8.0  # Phase 4: strike the exhausted host on ground of your choosing
+	return int(mod)
+
+
+func _champion_fates(a: Army, enemy: Army, won: bool, loss: float, site: String) -> void:
+	## Champions enter the melee in person: death, wounds, or a lost
+	## field's worst dishonor — taken alive, a hostage in the enemy's keep.
+	if a == null:
+		return
+	for c: SimCharacter in champions_with(a):
+		var chance := 0.03 if won else 0.10 + 0.10 * clampf(loss, 0.0, 1.0)
+		chance *= clampf(1.5 - c.prowess * 0.03, 0.5, 1.5)
+		if rng.randf() >= chance:
+			continue
+		var fate := rng.randf()
+		if fate < 0.35:
+			_kill(c, "fell championing the host at %s," % site)
+		elif fate < 0.65 or won or enemy == null:
+			_add_trait(c, "Wounded")
+			_log("%s, champion of the host, is dragged from the press at %s — alive, barely." % [full_name(c), site])
+		else:
+			var captor := enemy.realm_id
+			wards[c.id] = {"home": a.realm_id, "host": captor, "guardian": realms[captor].ruler_id,
+				"hostage": true, "since": tick, "of_age": true}
+			c.realm_id = captor
+			_log("[b]%s is taken alive at %s[/b] — a champion in chains, awaiting ransom." % [full_name(c), site])
+
+
 func _cede_border_province(winner: Realm, loser: Realm) -> void:
 	var options: Array = []
 	for p in map.provinces:
@@ -1820,6 +2202,11 @@ func _cede_border_province(winner: Realm, loser: Realm) -> void:
 			if map.provinces[nid].owner == winner.id:
 				options.append(p)
 				break
+	# land already held under the sword changes hands first (Module 7)
+	var occupied_options: Array = options.filter(func(p) -> bool:
+		return last_war_occupied.has(p.id))
+	if not occupied_options.is_empty():
+		options = occupied_options
 	if options.is_empty():
 		return
 	var ceded = options[rng.randi_range(0, options.size() - 1)]
@@ -3674,11 +4061,15 @@ func realm_tax_eff(realm_id: int) -> float:
 	for p in map.provinces:
 		if p.owner != realm_id:
 			continue
+		if int(occupied.get(p.id, -1)) >= 0 and int(occupied.get(p.id, -1)) != realm_id:
+			continue  # a county under occupation pays its crown nothing (Module 7)
 		var t: float = p.tax
 		if p.de_jure != realm_id:
 			t *= FOREIGN_LAND_YIELD  # the people remember other banners
 		if int(salted.get(p.id, -1)) > tick:
 			t *= SALT_YIELD  # salted earth (Module 5): a generation of ash
+		if int(scorched.get(p.id, -1)) > tick:
+			t *= SCORCH_YIELD  # the fields you burned yourself (Module 7)
 		var lord := county_holder(p.id)
 		if lord != null:
 			# the feudal contract sets what the crown actually collects
@@ -3701,11 +4092,15 @@ func realm_levy_eff(realm_id: int) -> float:
 	for p in map.provinces:
 		if p.owner != realm_id:
 			continue
+		if int(occupied.get(p.id, -1)) >= 0 and int(occupied.get(p.id, -1)) != realm_id:
+			continue  # no muster answers from behind an occupier's pickets (Module 7)
 		var l := float(p.levy)
 		if p.de_jure != realm_id:
 			l *= FOREIGN_LAND_YIELD
 		if int(salted.get(p.id, -1)) > tick:
 			l *= SALT_YIELD  # salted earth raises no spears
+		if int(scorched.get(p.id, -1)) > tick:
+			l *= SCORCH_YIELD  # the partisans fight, but they are not levies (Module 7)
 		var lord := county_holder(p.id)
 		if lord != null:
 			l += lord.martial * 0.5  # a lord drills his own men
