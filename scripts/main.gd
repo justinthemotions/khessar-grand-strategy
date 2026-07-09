@@ -78,6 +78,8 @@ var event_options_box: VBoxContainer
 var gov_label: Label
 var demesne_label: Label
 var titles_box: VBoxContainer
+var vassals_box: VBoxContainer     # Module 4: contracts, blocs, opinions
+var factions_box: VBoxContainer    # Module 4: what the crown can see
 var opt_title: OptionButton
 var opt_grantee: OptionButton
 var btn_grant: Button
@@ -870,6 +872,19 @@ func _make_realm_tab() -> ScrollContainer:
 	box.add_child(grant_row)
 
 	box.add_child(HSeparator.new())
+	box.add_child(_header("Vassals & the Curia"))
+	box.add_child(_muted("Contracts set what each lord owes; blocs decide how he votes"))
+	vassals_box = VBoxContainer.new()
+	vassals_box.add_theme_constant_override("separation", 2)
+	box.add_child(vassals_box)
+
+	box.add_child(HSeparator.new())
+	box.add_child(_header("Factions"))
+	factions_box = VBoxContainer.new()
+	factions_box.add_theme_constant_override("separation", 2)
+	box.add_child(factions_box)
+
+	box.add_child(HSeparator.new())
 	box.add_child(_header("The Title Pyramid"))
 	titles_box = VBoxContainer.new()
 	titles_box.add_theme_constant_override("separation", 2)
@@ -908,10 +923,13 @@ func _refresh_realm_tab() -> void:
 	var admin_cap: int = SimWorld.CROWN_ADMIN_BASE
 	if realm.ruler_id >= 0:
 		admin_cap += int(world.characters[realm.ruler_id].stewardship / 5.0)
-	demesne_label.text = "The crown holds %d counties and administers %d of them well.%s" % [
+	demesne_label.text = "The crown holds %d counties and administers %d of them well.%s%s" % [
 		crown_count, mini(crown_count, admin_cap),
 		"\n%d conquered count%s still fly older banners (reduced yield)." % [
-			foreign_count, "y" if foreign_count == 1 else "ies"] if foreign_count > 0 else ""]
+			foreign_count, "y" if foreign_count == 1 else "ies"] if foreign_count > 0 else "",
+		"\nTyranny %d — the lords remember every injustice." % int(realm.tyranny) if realm.tyranny >= 1.0 else ""]
+
+	_refresh_vassals_and_factions()
 
 	# title picker: our duchies, then our counties
 	var prev_title := str(opt_title.get_item_metadata(opt_title.selected)) if opt_title.selected >= 0 else ""
@@ -970,6 +988,92 @@ func _refresh_realm_tab() -> void:
 			var lord2 = world.county_holder(p.id)
 			row2.text = "%s (conquered) — %s" % [p.name, world.full_name(lord2) if lord2 != null else crown_name]
 			titles_box.add_child(row2)
+
+
+func _refresh_vassals_and_factions() -> void:
+	## Module 4: each landed lord's contract, bloc and regard; the
+	## factions the crown can actually see.
+	for child in vassals_box.get_children():
+		child.queue_free()
+	var lords: Array = world.landed_vassals(0)
+	if lords.is_empty():
+		vassals_box.add_child(_muted("No lords hold granted land — the crown rules alone, and votes alone."))
+	for c in lords:
+		var op: int = world.vassal_opinion(c.id, 0)
+		var contract: Dictionary = world.contract_of(c.id)
+		var privs: Array = []
+		for p in contract["privileges"]:
+			privs.append(str(SimWorld.PRIVILEGES[p]["label"]))
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		var lbl := Label.new()
+		lbl.add_theme_font_size_override("font_size", 12)
+		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		lbl.clip_text = true
+		lbl.text = "%s — %d cty · %s · %+d%s" % [world.full_name(c),
+			world.counties_of(c.id).size(), world.bloc_of(c), op,
+			(" · " + ", ".join(privs)) if not privs.is_empty() else ""]
+		lbl.add_theme_color_override("font_color",
+			Color("7fae72") if op >= 20 else (Color("c25a4a") if op <= -20 else Color("c9b896")))
+		row.add_child(lbl)
+		for which in ["tax", "levy"]:
+			var b := Button.new()
+			b.add_theme_font_size_override("font_size", 11)
+			b.text = "%s: %s" % [which, contract[which]]
+			var w: String = which
+			var cid: int = c.id
+			b.pressed.connect(func() -> void:
+				var order := ["lenient", "normal", "harsh"]
+				var cur: String = world.contract_of(cid)[w]
+				var next_rate: String = order[(order.find(cur) + 1) % 3]
+				realm_msg.text = world.set_contract_rate(cid, w, next_rate)
+				_refresh())
+			row.add_child(b)
+		var sway := Button.new()
+		sway.add_theme_font_size_override("font_size", 11)
+		sway.text = "Sway 40g"
+		var sid: int = c.id
+		sway.pressed.connect(func() -> void:
+			realm_msg.text = world.sway_curia(0, sid)
+			_refresh())
+		row.add_child(sway)
+		vassals_box.add_child(row)
+
+	for child in factions_box.get_children():
+		child.queue_free()
+	var seen: Array = world.visible_factions(0)
+	var hidden := 0
+	for f in world.factions:
+		if int(f["realm"]) == 0 and bool(f["covert"]) and not bool(f["discovered"]):
+			hidden += 1
+	if seen.is_empty():
+		factions_box.add_child(_muted("No conspiracies known to the crown."
+			+ (" (A Spymaster might know better.)" if hidden > 0 and world.council_member(0, "Spymaster") == null else "")))
+	for f in seen:
+		var row2 := HBoxContainer.new()
+		row2.add_theme_constant_override("separation", 6)
+		var strength: int = int(world.faction_strength(f))
+		var cap: int = world.levy_capacity(0)
+		var lbl2 := Label.new()
+		lbl2.add_theme_font_size_override("font_size", 12)
+		lbl2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		lbl2.clip_text = true
+		lbl2.text = "%s faction — %d men (%d%% of the levy)%s" % [
+			SimWorld.FACTION_LABELS[str(f["type"])], strength,
+			int(100.0 * strength / maxf(1.0, float(cap))),
+			" · covert" if bool(f["covert"]) else " · OVERT"]
+		lbl2.add_theme_color_override("font_color", Color("c25a4a"))
+		row2.add_child(lbl2)
+		if not f["members"].is_empty():
+			var bribe := Button.new()
+			bribe.add_theme_font_size_override("font_size", 11)
+			var first: int = int(f["members"][0])
+			bribe.text = "Bribe %s (60g)" % world.characters[first].name
+			bribe.pressed.connect(func() -> void:
+				realm_msg.text = world.bribe_faction_member(first)
+				_refresh())
+			row2.add_child(bribe)
+		factions_box.add_child(row2)
 
 
 func _player_root() -> int:
