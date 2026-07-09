@@ -101,9 +101,12 @@ func _init() -> void:
 	assert(world.recruit_gate(1, "brushgate_column") != "", "no monastery access without Dwarven land")
 	print("recruit gating follows Design Decision A (identity is geography)")
 
-	# character culture: the Vael court is Aelindran-cultured (Roster §2)
+	# character culture: the Vael court is Aelindran-cultured (Roster §2);
+	# the Faction Cast (realm 2+) carry their own canonical cultures
 	for cid in world.characters:
 		var c = world.characters[cid]
+		if c.realm_id >= 2:
+			continue
 		assert(c.culture == ("aelindran" if c.realm_id == 0 else "karn_vol"),
 			"%s has culture %s in realm %d" % [c.name, c.culture, c.realm_id])
 	print("court characters carry their canonical cultures")
