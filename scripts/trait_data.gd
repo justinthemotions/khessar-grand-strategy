@@ -40,6 +40,15 @@ extends Resource
 ##   tax_efficiency_mult, admin_cap_bonus         (the ledger)
 ##   intrigue_defense_mult                        (the scheme system)
 ##   court_opinion_baseline                       (opinion web)
+## Magic Injection v1.0 hooks (live):
+##   corruption_gain_mult, corruption_gain_baseline   (the Patron's ledger)
+##   stress_gain_mult                                 (add_stress, now trait-aware)
+##   faith_channel_reliability_baseline               (Cleric geography formula)
+##   arcane_channel_mult, primal_channel_mult,
+##   oath_binding_mult, word_binding_mult,
+##   song_aura_baseline, discipline_binding_mult,
+##   corruption_channel_mult                          (battle commander hooks)
+##   silence_immunity                                 (≥1.0 = Silence-touched land cannot mark you)
 ## Declared now, wired when their module lands:
 ##   guild_concession_cost_mult (M8), heresy_spread_chance (M9),
 ##   decadence_generation, distance_decay_offset (M10)

@@ -46,6 +46,12 @@ var traits: Array[String] = []
 var stress: float = 0.0
 var stress_level: int = 0          # breaks suffered: 0..3
 
+# Magic Injection v1.0: the Patron's ledger and the Bard's burden.
+var corruption: float = 0.0        # parallel to stress — but it never decays on its own
+var corruption_marks: int = 0      # thresholds crossed at 5/10/15: 0..3
+var names_carried: int = 0         # Song-Marked: dead-names carried between the fires
+var oath_token_intact: bool = true # Oath-Sworn: the sworn object, still whole
+
 # The Memory Log: typed, decaying opinions of other characters.
 # Entries: {"type": String, "subject": int, "value": float, "tick": int, "decay": float(/year)}
 var memories: Array = []

@@ -133,6 +133,93 @@ static func _build() -> void:
 	_add(TraitData.make("Mithridatic", "health", {},
 		{"eulogy": "whom no cup could kill"}))
 
+	# --- coping: the Silence Response substrate (Magic Injection v1.0) ---
+	# Every soul alive on the Night of the Third Hour answered it somehow.
+	# Coping-category by design: event-assigned, never rolled — the Year
+	# Zero founder seeds stay exactly as the Faction Map wrote them.
+	_add(TraitData.make("Zealous", "coping", {"dip": 1, "mar": -1},
+		{"opposite": "Broken", "ai": {"orthodoxy": 30, "patience": -10, "aggression": 10},
+		"eulogy": "who kept the rites when the rites no longer answered",
+		"mods": {"faith_channel_reliability_baseline": 1.15, "corruption_gain_mult": 0.90}}))
+	_add(TraitData.make("Broken", "coping", {"lrn": -1, "stw": -1},
+		{"opposite": "Zealous", "ai": {"patience": 5, "scheming": -10},
+		"eulogy": "who could not carry what the pantheon had left them",
+		"mods": {"stress_gain_mult": 1.20, "faith_channel_reliability_baseline": 0.60}}))
+	_add(TraitData.make("Pragmatic", "coping", {"stw": 1, "dip": 1},
+		{"opposite": "Opportunistic", "ai": {"patience": 15},
+		"eulogy": "who accepted what was and worked from there",
+		"mods": {"tax_efficiency_mult": 1.05, "court_opinion_baseline": 5.0}}))
+	_add(TraitData.make("Opportunistic", "coping", {"int": 1, "dip": 1},
+		{"opposite": "Pragmatic", "ai": {"orthodoxy": -20, "scheming": 15, "patience": -5},
+		"eulogy": "who found their moment in the silence",
+		"mods": {"corruption_gain_mult": 1.15, "intrigue_defense_mult": 1.10}}))
+
+	# --- coping: the eight practices (Magic Injection v1.0) ---
+	# Event-authored in v1.0 (academy detection, seminaries, oaths sworn);
+	# the congenital Arcane-Blooded promotion is documented for v1.1.
+	_add(TraitData.make("Arcane-Blooded", "coping", {"lrn": 2, "int": 1},
+		{"eulogy": "who read the world in symbols nobody else could see",
+		"ai": {"orthodoxy": -5, "scheming": 5},
+		"mods": {"arcane_channel_mult": 1.20, "corruption_gain_mult": 0.85,
+		"supply_consumption_mult": 1.05, "intrigue_defense_mult": 1.10}}))
+	_add(TraitData.make("Academy-Sworn", "coping", {"lrn": 1, "dip": 1},
+		{"eulogy": "who kept the archive faith when the archive lost the mandate",
+		"ai": {"orthodoxy": -10, "patience": 10},
+		"mods": {"admin_cap_bonus": 1.0, "court_opinion_baseline": 5.0,
+		"tax_efficiency_mult": 1.05}}))
+	_add(TraitData.make("Faith-Practicing", "coping", {"dip": 1, "lrn": 1},
+		{"eulogy": "who lit the candles no one answered",
+		"ai": {"orthodoxy": 20, "patience": 10, "scheming": -5},
+		"mods": {"faith_channel_reliability_baseline": 1.0,
+		"court_opinion_baseline": 3.0, "stress_gain_mult": 1.10}}))
+	_add(TraitData.make("Oath-Sworn", "coping", {"mar": 1, "dip": 1},
+		{"opposite": "Oathbreaker", "eulogy": "who kept the oath the world stopped enforcing",
+		"ai": {"orthodoxy": 10, "patience": 15, "aggression": -5},
+		"mods": {"oath_binding_mult": 1.30, "panic_resistance": 0.15,
+		"court_opinion_baseline": 5.0, "commander_risk_mult": 0.90}}))
+	_add(TraitData.make("Oathbreaker", "coping", {"dip": -2, "mar": -1},
+		{"opposite": "Oath-Sworn", "eulogy": "who did not keep what they had sworn",
+		"ai": {"orthodoxy": -25, "scheming": 15},
+		"mods": {"oath_binding_mult": 0.0, "court_opinion_baseline": -15.0,
+		"corruption_gain_mult": 1.25, "intrigue_defense_mult": 0.70}}))
+	_add(TraitData.make("Primal-Practiced", "coping", {"lrn": 2, "prw": 1},
+		{"eulogy": "who kept faith with the roots when the sky fell silent",
+		"ai": {"orthodoxy": -10, "patience": 20, "scheming": -10},
+		"mods": {"primal_channel_mult": 1.30, "panic_resistance": 0.20,
+		"stress_gain_mult": 0.85, "corruption_gain_mult": 0.50}}))
+	_add(TraitData.make("Patron-Bound", "coping", {"lrn": 1, "int": 1},
+		{"eulogy": "who bought power at a price they never fully understood",
+		"ai": {"orthodoxy": -30, "scheming": 20, "aggression": 5},
+		"mods": {"corruption_channel_mult": 1.40, "corruption_gain_baseline": 0.10,
+		"arcane_channel_mult": 1.15, "court_opinion_baseline": -10.0}}))
+	_add(TraitData.make("Song-Marked", "coping", {"dip": 2, "lrn": 1},
+		{"eulogy": "who carried the names between the fires",
+		"ai": {"scheming": 5, "patience": 10},
+		"mods": {"word_binding_mult": 1.20, "court_opinion_baseline": 5.0,
+		"song_aura_baseline": 0.05, "stress_gain_mult": 1.10}}))
+	_add(TraitData.make("Brushgate-Trained", "coping", {"prw": 1, "lrn": 1},
+		{"eulogy": "who remained present with the dying when others turned away",
+		"ai": {"orthodoxy": -5, "patience": 25, "aggression": -5},
+		"mods": {"discipline_binding_mult": 1.20, "panic_resistance": 0.40,
+		"silence_immunity": 0.5, "stress_gain_mult": 0.60,
+		"casualty_rate_mult": 0.85}}))
+
+	# --- health: the Corruption Marks (Magic Injection v1.0) ---
+	# The meter made flesh, at thresholds 5 / 10 / 15. Mark III grants
+	# full silence_immunity — sufficiently entity-adjacent that the
+	# Ashfields no longer bite; the only souls who walk there freely.
+	_add(TraitData.make("Corruption Mark I", "health", {},
+		{"eulogy": "whose hands began to darken",
+		"mods": {"corruption_gain_mult": 1.10}}))
+	_add(TraitData.make("Corruption Mark II", "health", {"dip": -1, "prw": -1},
+		{"eulogy": "whose eye caught light wrong",
+		"mods": {"corruption_gain_mult": 1.20, "court_opinion_baseline": -10.0,
+		"intrigue_defense_mult": 1.30}}))
+	_add(TraitData.make("Corruption Mark III", "health", {"dip": -3, "prw": -2},
+		{"eulogy": "who became what they had bargained for",
+		"mods": {"corruption_gain_mult": 1.30, "court_opinion_baseline": -30.0,
+		"intrigue_defense_mult": 1.60, "silence_immunity": 1.0}}))
+
 	# --- coping (stress scars) ---
 	_add(TraitData.make("Drunkard", "coping", {"stw": -2, "mar": -1}))
 	_add(TraitData.make("Reclusive", "coping", {"dip": -3, "lrn": 1}))
