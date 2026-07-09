@@ -39,14 +39,19 @@ split/merge supported. New recruits report to the army nearest the realm centroi
 (`muster_army`).
 
 **Unit kinds** exist in TWO tables that must both be updated when adding a kind:
-- `world.gd`: `UNIT_LABELS`, `UNIT_WEIGHTS` (levy 1.0, sword 1.4, cav 2.2, archer 1.2 —
-  used for strategic strength), `RECRUIT_COST` (120/240/450/200 gold), `RECRUIT_SIZE`
-  (48/36/16/24 men).
+- `world.gd`: `UNIT_LABELS`, `UNIT_WEIGHTS` (~cost/200, used for strategic strength),
+  `RECRUIT_COST`, `RECRUIT_SIZE`, and `UNIT_UPKEEP` for kinds priced above the flat rate.
 - `battle_sim.gd`: `PRESETS` (full battle stats, see §5).
 
+There are **24 kinds**: the universal roster (levy 120g / sword 240g / cav 450g /
+archer 200g, open to every realm) plus **20 cultural specialty kinds** from the
+Cultural Roster v1.0 — see §10b for the culture system.
+
 **Recruitment** is capped by `levy_capacity(realm)` = effective province levies × tax-law
-multiplier (+ Marshal bonus, tribal ruler bonus, legacies, interregnum penalty). Upkeep is
-`0.05 gold/man/month` (× commander's `supply_consumption_mult` trait hook); regiments
+multiplier (+ Marshal bonus, tribal ruler bonus, legacies, interregnum penalty), and
+culture-gated for specialty kinds (`recruit_gate`, §10b). Upkeep is `0.05 gold/man/month`
+for the universal roster and per-kind (`UNIT_UPKEEP`, up to 0.15 for the Arcane Retinue)
+for cultural units, × commander's `supply_consumption_mult` trait hook; regiments
 replenish toward `max` at ~8%/month for 0.3 gold/man while the treasury allows.
 
 **Engagement**: each month at war, armies march 0.10 map units toward their targets.
@@ -96,6 +101,13 @@ both sides AI-controlled, same sim, instant result.
 | bonus_cav | 12 | 0 | 0 | 0 | levy spears get +12 ma vs cavalry |
 | shield | 0.30 | 0.45 | 0.20 | 0.05 | frontal missile block fraction |
 | range/ammo/missile | — | — | — | 230px / 40 / 9.0 | bow range, volleys, missile strength |
+
+The 20 cultural presets follow the same schema plus optional special keys, absent by
+default: `never_routs_above` (Berserkers 0.25), `panic_resistance` (Brushgate 0.60),
+`silence_immunity`, `ward_shield` (Arcane Retinue — shield works at every arc),
+`aura_lead`/`aura_range` (Ward-Speakers +10/200px, Song-Bound +8/180px),
+`forest_bonus_ma`/`forest_bonus_speed` (Forest-Sworn +8/+12), `coastal_bonus_ma`
+(Marines +6). Stat blocks are 1:1 from the Cultural Roster v1.0 document.
 
 ## 6. Melee math (per combat tick)
 
@@ -194,6 +206,34 @@ The commander is a real dynasty character:
   −25 memory of the enemy commander, and a 25% chance of the *Wounded* trait. If a
   ruler dies at the head of the army, succession (and the Interregnum) fires immediately.
 
+## 10b. The culture system (Cultural Roster v1.0)
+
+Culture is martial tradition, not blood. `scripts/data/culture_data.gd` holds the twelve
+cultures of Khessar (Vael, Aelindran, Free City, Halveni, Drevak, Karn-Vol, Kharak-Dum
+Dwarven, Brushgate, Veldarin, Thaladris, Southern Reach, and the dead Sovereignty) with
+their specialty unit rosters, marriage acceptance tables, government compatibility,
+traditions, and syncretism affinities (the last three are designer data until their
+modules land).
+
+- **Province majority culture** (`Province.culture`) derives from the map region plus
+  canonical exceptions: four Vael counties (Veilkeep, Marling Fields, Voss-Hold,
+  Caer Velmond) are Aelindran noble countryside, Halven is Halveni, Karn-Vol land is the
+  Karn-Vol subvariant, the Aurath ruins keep the dead Sovereignty culture.
+- **Recruit gating** (Design Decision A): `SimWorld.recruit_gate` allows a specialty kind
+  only if the realm holds a province of its culture (`CultureData.KIND_CULTURE`).
+  Karn-Vol land satisfies parent-Drevak requirements; the Brushgate Column is anchored to
+  Dwarven land (monastery access). Unavailable kinds are hidden from the muster panel.
+- **Compact-Sworn** dissolve the moment war breaks between the realms (`declare_war` →
+  `_dissolve_compact_sworn`) and cannot muster during it.
+- **Character culture** (`SimCharacter.culture`): the simulated Vael court is
+  Aelindran-cultured (the great houses), the border clan Karn-Vol. Cross-culture
+  weddings apply the symmetrized acceptance modifier as a spousal memory.
+- **Trade-Guard** companies add +15 to their realm's plot-detection roll while mustered.
+- **Battle terrain**: `setup_from_rosters(..., terrain)` receives the battle province's
+  terrain (`SimWorld.battle_site_terrain`); forest and coast wake the terrain bonuses.
+- **Sovereignty units** (Draconic Breath-Sworn, Sovereignty-Guard, Song-Warden) are
+  dormant names in `CultureData.DORMANT_UNITS` for the late-game Pale Court arc.
+
 ## 11. Aftermath
 
 `main.gd._apply_battle_sim_results` (same path for fought and auto-resolved battles):
@@ -211,6 +251,9 @@ The commander is a real dynasty character:
   `Godot_v4.6.3-stable_win64_console.exe --headless --path . --script res://tests/headless_test.gd`
   — runs 60 years, auto-fighting every battle via `run_headless()`, plus static
   micro-battles asserting ranged damage, shield arcs, and trait hook application.
+- `tests/culture_roster_test.gd` validates the culture data, all 20 cultural presets,
+  recruit gating, the Compact-Sworn dissolution, auras, the Berserker oath, terrain
+  bonuses, and Brushgate panic resistance.
 - Visual check: `--path . -- --battle-screenshot` boots straight into a battle and saves
   a PNG to `user://`.
 - The sim is deterministic given the same rosters; campaign RNG uses a fixed seed (1066),
