@@ -93,6 +93,44 @@ const FOREIGN_LAND_YIELD := 0.6       # tax/levy of land you hold but do not rig
 const CROWN_ADMIN_BASE := 4           # counties the crown runs well without lords (+ stewardship/5)
 const OVERREACH_YIELD := 0.75         # tax of crown counties beyond that
 
+# --- Module 4: Vassal-Liege management ---
+# Individual feudal contracts: what each lord owes the crown. Harsher
+# terms yield more but are remembered; leniency buys loyalty with gold.
+const CONTRACT_RATES := {
+	"lenient": {"tax": 0.7, "levy": 0.7, "opinion": 10},
+	"normal":  {"tax": 1.0, "levy": 1.0, "opinion": 0},
+	"harsh":   {"tax": 1.3, "levy": 1.25, "opinion": -15},
+}
+# Privilege addenda ("privilege creep"): legal exemptions vassals extract
+# when they hold leverage. Each is wired where it bites.
+const PRIVILEGES := {
+	"guaranteed_seat":   {"label": "Guaranteed Council Seat", "blurb": "the crown must seat them at its council table"},
+	"war_sanction":      {"label": "War Declaration Sanction", "blurb": "owes only half their levies to the crown's wars"},
+	"coinage_rights":    {"label": "Coinage Rights", "blurb": "mints their own coin — the crown sees only 60% of their taxes"},
+	"marcher_lord":      {"label": "Marcher Lord", "blurb": "owes no levies, but their fortified marches are never ceded in a peace"},
+	"judicial_immunity": {"label": "Judicial Immunity", "blurb": "cannot be lawfully stripped of land, whatever they do"},
+}
+# The Faction Engine: covert unions of discontent lords. At the strength
+# threshold they turn overt and present an ultimatum — concede or fight.
+const FACTION_LABELS := {
+	"liberty": "Liberty", "claimant": "Claimant",
+	"independence": "Independence", "populist": "Populist",
+}
+const FACTION_OVERT_FRACTION := 0.4   # rebel strength vs levy capacity before the ultimatum
+const FACTION_JOIN_OPINION := -20     # lords angrier than this begin to conspire
+# The Estate Curia: landed vassals vote in permanent blocs on great
+# matters (war, harsher taxes, succession law). Blocs come from traits.
+const CURIA_BLOCS := {
+	"Absolutists":       {"traits": ["Ambitious", "Cruel", "Avaricious", "Deceitful"],
+		"agenda": {"war": 1, "tax_heavy": 1, "succession": 0}},
+	"Constitutionalists": {"traits": ["Honest", "Patient", "Methodical", "Compassionate"],
+		"agenda": {"war": -1, "tax_heavy": -1, "succession": 0}},
+	"Traditionalists":   {"traits": ["Purist", "Content", "Stoic", "Paranoid"],
+		"agenda": {"war": -1, "tax_heavy": 0, "succession": -1}},
+}
+const CURIA_MIN_MEMBERS := 3          # fewer landed lords than this and the crown rules alone
+const TYRANNY_DECAY := 0.5            # per month — the realm slowly forgets
+
 # The standing-army model: regiments persist between battles. The
 # universal roster (levy/sword/cav/archer) is open to every realm;
 # cultural specialty kinds (Cultural Roster v1.0) need a province of
@@ -195,6 +233,11 @@ var cross_marriages: Array = []    # [{husband, wife, path, progress, threshold,
 var culture_drift: Dictionary = {} # province id -> {target, progress 0..100} (1%/month toward a hybrid)
 var county_holders: Dictionary = {}  # province id -> character id (granted county titles)
 var duchy_holders: Dictionary = {}   # duchy id -> character id
+# Module 4: the push-and-pull of governing landed men
+var vassal_contracts: Dictionary = {} # char id -> {tax, levy, privileges[]}
+var factions: Array = []              # [{realm, type, members[], provinces[], covert, discovered, claimant}]
+var council_snubbed: Dictionary = {}  # char id -> true (the grievance is voiced only once)
+var last_trial_tick: int = -999       # the liege's court hears one great feud at a time
 
 # The event framework: choice events with trait-weighted AI resolution.
 var pending_events: Array = []       # events awaiting the player's decision
@@ -242,6 +285,7 @@ class Realm:
 	var plot_target_id: int = -1
 	var plot_progress: float = -1.0      # < 0 = no plot in motion
 	var plot_warned: bool = false        # the victim's court has caught wind of it
+	var tyranny: float = 0.0             # Module 4: remembered injustice — revocations, harsh terms, bad verdicts
 	# The Interregnum (Module 2): between death and coronation the realm
 	# holds its breath. {heir, stage 0..4, legitimacy 0..100}
 	var interregnum: Dictionary = {}
@@ -414,6 +458,8 @@ func advance_month() -> void:
 	_ai_dynasty()
 	_interregnum_tick()
 	_dejure_tick()
+	_factions_tick()
+	_vassal_politics_tick()
 	_council_tick()
 	_laws_tick()
 	_plots_tick()
@@ -572,7 +618,7 @@ func _kill(c: SimCharacter, cause: String) -> void:
 			if float(m["value"]) <= -40.0 and characters.has(int(m["subject"])) and characters[int(m["subject"])].alive:
 				add_memory(kid, "inherited grudge", int(m["subject"]), float(m["value"]) * 0.5, 2.0)
 	_log("%s %s at %d." % [full_name(c), cause, c.age_years(tick)])
-	_escheat_titles(c)
+	_inherit_titles(c)  # Module 4: lordships are hereditary; no heir → escheat
 	_epitaph(c)
 	for realm in realms:
 		if realm.ruler_id == c.id:
@@ -1162,6 +1208,12 @@ func declare_war(by_realm: int = 0) -> String:
 		return "The realms are already at war."
 	if allied():
 		return "A marriage alliance binds the realms. It holds while the couple lives."
+	# The Estate Curia (Module 4): an offensive war needs the landed
+	# lords' assent — tribal war-making stays personal.
+	if realms[by_realm].government != "tribal":
+		var vote := curia_vote(by_realm, "war")
+		if not bool(vote["passed"]):
+			return "The Curia votes the war down — %s. Sway the lords, or rule without them." % vote["detail"]
 	at_war = true
 	war_score = 0.0
 	battle_ready = false
@@ -1439,6 +1491,10 @@ func _cede_border_province(winner: Realm, loser: Realm) -> void:
 	var options: Array = []
 	for p in map.provinces:
 		if p.owner != loser.id:
+			continue
+		# a Marcher Lord's fortified county is never given away in a peace
+		var lord := county_holder(p.id)
+		if lord != null and has_privilege(lord.id, "marcher_lord"):
 			continue
 		for nid in p.neighbors:
 			if map.provinces[nid].owner == winner.id:
@@ -1981,6 +2037,9 @@ func council_stat(realm_id: int, seat: String) -> int:
 func appoint(realm_id: int, seat: String, char_id: int) -> String:
 	var realm: Realm = realms[realm_id]
 	if char_id < 0:
+		var sitting := int(realm.council.get(seat, -1))
+		if sitting >= 0 and has_privilege(sitting, "guaranteed_seat"):
+			return "Their contract guarantees a council seat — the crown signed it."
 		realm.council.erase(seat)
 		return ""
 	if not characters.has(char_id):
@@ -1994,6 +2053,9 @@ func appoint(realm_id: int, seat: String, char_id: int) -> String:
 		return "No realm seats a denounced criminal."
 	if c.id == realm.ruler_id:
 		return "The crown does not sit on its own council."
+	var displaced := int(realm.council.get(seat, -1))
+	if displaced >= 0 and displaced != char_id and has_privilege(displaced, "guaranteed_seat"):
+		return "Their contract guarantees a council seat — the crown signed it."
 	# one seat per person — moving them vacates the old seat
 	for other_seat in COUNCIL_SEATS:
 		if other_seat != seat and int(realm.council.get(other_seat, -1)) == char_id:
@@ -2013,8 +2075,28 @@ func _council_tick() -> void:
 
 func _ai_fill_council(realm_id: int) -> void:
 	## Fills empty seats with the best person for the job. Runs for both
-	## realms at setup, and monthly for Sarova.
+	## realms at setup, and monthly for the AI realm.
 	var realm: Realm = realms[realm_id]
+	# a Guaranteed Council Seat privilege is honored before merit (Module 4)
+	for c in landed_vassals(realm_id):
+		if not has_privilege(c.id, "guaranteed_seat"):
+			continue
+		var seated := false
+		for seat in COUNCIL_SEATS:
+			if int(realm.council.get(seat, -1)) == c.id:
+				seated = true
+		if seated:
+			continue
+		var best_seat := ""
+		var best_v := -1
+		for seat in COUNCIL_SEATS:
+			if council_member(realm_id, seat) == null and int(c.get(SEAT_STAT[seat])) > best_v:
+				best_v = int(c.get(SEAT_STAT[seat]))
+				best_seat = seat
+		if best_seat != "":
+			realm.council[best_seat] = c.id
+			if realm_id == 0:
+				_log("%s takes the %s's chair — the contract says so." % [full_name(c), best_seat])
 	for seat in COUNCIL_SEATS:
 		if council_member(realm_id, seat) != null:
 			continue
@@ -2051,6 +2133,18 @@ func enact_law(realm_id: int, law: String, value: String) -> String:
 	var current: String = realm.tax_law if law == "tax" else realm.succession_law
 	if value == current:
 		return "That is already the law of the land."
+	# The Estate Curia (Module 4): raising taxes or rewriting the
+	# succession needs the landed lords' assent in non-tribal realms.
+	if realm.government != "tribal":
+		var matter := ""
+		if law == "tax" and value == "heavy":
+			matter = "tax_heavy"
+		elif law == "succession":
+			matter = "succession"
+		if matter != "":
+			var vote := curia_vote(realm_id, matter)
+			if not bool(vote["passed"]):
+				return "The Curia votes it down — %s." % vote["detail"]
 	var months := maxi(6, 18 - int(speaker.learning * 0.5))
 	realm.pending_law = {"law": law, "value": value, "months_left": months}
 	_log("%s puts a new law before the council of %s — %d months of debate." % [full_name(speaker), realm.name, months])
@@ -2377,6 +2471,10 @@ func realm_tax_eff(realm_id: int) -> float:
 			t *= FOREIGN_LAND_YIELD  # the people remember other banners
 		var lord := county_holder(p.id)
 		if lord != null:
+			# the feudal contract sets what the crown actually collects
+			t *= float(CONTRACT_RATES[contract_of(lord.id)["tax"]]["tax"])
+			if has_privilege(lord.id, "coinage_rights"):
+				t *= 0.6  # their coin, their cut
 			total += t * (1.0 + lord.stewardship * 0.02)
 		else:
 			crown_taxes.append(t)
@@ -2399,6 +2497,12 @@ func realm_levy_eff(realm_id: int) -> float:
 		var lord := county_holder(p.id)
 		if lord != null:
 			l += lord.martial * 0.5  # a lord drills his own men
+			if has_privilege(lord.id, "marcher_lord"):
+				l = 0.0  # marchers keep their men on their own walls
+			else:
+				l *= float(CONTRACT_RATES[contract_of(lord.id)["levy"]]["levy"])
+				if at_war and has_privilege(lord.id, "war_sanction"):
+					l *= 0.5  # sanctioned lords owe only half to the crown's wars
 		total += l
 	for d in map.duchies:
 		var duke := duchy_holder(d.id)
@@ -2447,6 +2551,7 @@ func grant_title(kind: String, title_id: int, char_id: int) -> String:
 	if int(holders.get(title_id, -1)) == char_id:
 		return ""
 	holders[title_id] = char_id
+	var _contract := contract_of(char_id)  # a grant opens the feudal contract (Module 4)
 	if realm.ruler_id >= 0:
 		add_memory(c, "granted me land", realm.ruler_id, 40.0, 0.5)
 	_log("[b]%s is granted %s%s.[/b]" % [full_name(c),
@@ -2459,12 +2564,15 @@ func _revoke_title(kind: String, title_id: int, title_name: String, realm: Realm
 	if not holders.has(title_id):
 		return "The crown holds it already."
 	var old_id := int(holders[title_id])
+	if has_privilege(old_id, "judicial_immunity"):
+		return "Their contract grants Judicial Immunity — the law cannot touch them."
 	holders.erase(title_id)
+	realm.tyranny = minf(100.0, realm.tyranny + 15.0)  # every lord watches a revocation
 	if characters.has(old_id) and characters[old_id].alive:
 		var old: SimCharacter = characters[old_id]
 		if realm.ruler_id >= 0:
 			add_memory(old, "stripped my land", realm.ruler_id, -50.0, 1.0)
-		_log("[b]%s is stripped of %s[/b] — and will not forget it." % [full_name(old), title_name])
+		_log("[b]%s is stripped of %s[/b] — and will not forget it. Neither will the others." % [full_name(old), title_name])
 	return ""
 
 
@@ -2506,6 +2614,729 @@ func _dejure_tick() -> void:
 			p.de_jure = p.owner
 			_log("[b]%s is now rightful %s land[/b] — a generation has passed, and the old banners are forgotten." % [
 				p.name, str(realms[p.owner].name).trim_prefix("Kingdom of ")])
+
+
+# ---------------------------------------------------------------- vassals (Module 4)
+
+func landed_vassals(realm_id: int) -> Array:
+	## The lords who hold the realm's granted counties and duchies —
+	## the men whose contracts, votes, and grudges Module 4 is about.
+	var seen := {}
+	var out: Array = []
+	for pid in county_holders:
+		var c := county_holder(pid)
+		if c != null and map.provinces[pid].owner == realm_id and not seen.has(c.id):
+			seen[c.id] = true
+			out.append(c)
+	for did in duchy_holders:
+		var c2 := duchy_holder(did)
+		if c2 != null and map.duchies[did].realm == realm_id and not seen.has(c2.id):
+			seen[c2.id] = true
+			out.append(c2)
+	return out
+
+
+func counties_of(char_id: int) -> Array:
+	var out: Array = []
+	for pid in county_holders:
+		if int(county_holders[pid]) == char_id and county_holder(pid) != null:
+			out.append(int(pid))
+	return out
+
+
+func contract_of(char_id: int) -> Dictionary:
+	## Every landed vassal has a feudal contract; the default is fair terms.
+	if not vassal_contracts.has(char_id):
+		vassal_contracts[char_id] = {"tax": "normal", "levy": "normal", "privileges": []}
+	return vassal_contracts[char_id]
+
+
+func has_privilege(char_id: int, priv: String) -> bool:
+	return vassal_contracts.has(char_id) and vassal_contracts[char_id]["privileges"].has(priv)
+
+
+func set_contract_rate(char_id: int, which: String, value: String) -> String:
+	if not characters.has(char_id) or not CONTRACT_RATES.has(value):
+		return "No such contract."
+	var c: SimCharacter = characters[char_id]
+	var contract := contract_of(char_id)
+	var old := str(contract[which])
+	if old == value:
+		return ""
+	contract[which] = value
+	var realm: Realm = realms[c.realm_id]
+	var harsher := int(CONTRACT_RATES[value]["opinion"]) < int(CONTRACT_RATES[old]["opinion"])
+	if harsher:
+		realm.tyranny = minf(100.0, realm.tyranny + 5.0)
+		if realm.ruler_id >= 0:
+			add_memory(c, "the crown squeezes my lands", realm.ruler_id, -15.0, 1.0)
+		_log("%s's %s obligations are raised to %s terms — the ledger gains, the loyalty pays." % [
+			full_name(c), which, value])
+	else:
+		if realm.ruler_id >= 0:
+			add_memory(c, "the crown eased my burdens", realm.ruler_id, 10.0, 1.0)
+		_log("%s's %s obligations are eased to %s terms." % [full_name(c), which, value])
+	return ""
+
+
+func grant_privilege(char_id: int, priv: String) -> String:
+	if not PRIVILEGES.has(priv):
+		return "No such privilege."
+	var contract := contract_of(char_id)
+	if contract["privileges"].has(priv):
+		return "They hold that privilege already."
+	contract["privileges"].append(priv)
+	var c: SimCharacter = characters[char_id]
+	if realms[c.realm_id].ruler_id >= 0:
+		add_memory(c, "a privilege written into my contract", realms[c.realm_id].ruler_id, 20.0, 0.5)
+	_log("[b]%s extracts a privilege: %s[/b] — %s." % [full_name(c),
+		PRIVILEGES[priv]["label"], PRIVILEGES[priv]["blurb"]])
+	return ""
+
+
+func vassal_opinion(char_id: int, realm_id: int) -> int:
+	## The granular ledger of a lord's regard: personal opinion of the
+	## ruler, contract terms, cultural alignment, privileges held, and
+	## the realm's remembered tyranny.
+	var realm: Realm = realms[realm_id]
+	if realm.ruler_id < 0 or not characters.has(char_id):
+		return 0
+	var c: SimCharacter = characters[char_id]
+	var total := float(opinion_of(char_id, realm.ruler_id))
+	var contract := contract_of(char_id)
+	total += float(CONTRACT_RATES[contract["tax"]]["opinion"])
+	total += float(CONTRACT_RATES[contract["levy"]]["opinion"]) * 0.5
+	total += contract["privileges"].size() * 5.0
+	var ruler: SimCharacter = characters[realm.ruler_id]
+	if c.culture == ruler.culture:
+		total += 5.0
+	elif not CultureData.hybrid_parents(c.culture).has(ruler.culture) \
+			and not CultureData.hybrid_parents(ruler.culture).has(c.culture):
+		total -= 10.0  # a lord of another tradition under a foreign crown
+	total -= realm.tyranny * 0.5
+	return clampi(int(total), -100, 100)
+
+
+func _inherit_titles(dead: SimCharacter) -> void:
+	## Module 4: lordships are hereditary. The eldest trueborn child of
+	## the realm inherits the titles and the contract; a line with no
+	## such heir escheats to the crown as before.
+	var held_counties: Array = []
+	var held_duchies: Array = []
+	for pid in county_holders.keys():
+		if int(county_holders[pid]) == dead.id:
+			held_counties.append(pid)
+	for did in duchy_holders.keys():
+		if int(duchy_holders[did]) == dead.id:
+			held_duchies.append(did)
+	if held_counties.is_empty() and held_duchies.is_empty():
+		return
+	var heir: SimCharacter = null
+	for cid in dead.children_ids:
+		var ch: SimCharacter = characters[cid]
+		if not ch.alive or ch.is_bastard or ch.disinherited or ch.denounced:
+			continue
+		if ch.realm_id != dead.realm_id or ch.age_years(tick) < ADULT_AGE:
+			continue
+		if heir == null or (not ch.is_female and heir.is_female) \
+				or (ch.is_female == heir.is_female and ch.birth_tick < heir.birth_tick):
+			heir = ch
+	if heir == null:
+		_escheat_titles(dead)
+		return
+	for pid in held_counties:
+		county_holders[pid] = heir.id
+	for did in held_duchies:
+		duchy_holders[did] = heir.id
+	if vassal_contracts.has(dead.id):
+		vassal_contracts[heir.id] = vassal_contracts[dead.id]  # the contract binds the line
+		vassal_contracts.erase(dead.id)
+	var realm: Realm = realms[dead.realm_id]
+	if realm.ruler_id >= 0 and realm.ruler_id != heir.id:
+		add_memory(heir, "confirmed in my inheritance", realm.ruler_id, 15.0, 0.5)
+	_log("%s inherits the lands of %s." % [full_name(heir), full_name(dead)])
+
+
+# ---------------------------------------------------------------- the Curia
+
+func bloc_of(c: SimCharacter) -> String:
+	## Personality is ideology: lords caucus by disposition. The
+	## unaligned default to the Traditionalists — the old ways ask
+	## nothing of a man but his silence.
+	var best := "Traditionalists"
+	var best_score := 0
+	for bloc in CURIA_BLOCS:
+		var score := 0
+		for t in CURIA_BLOCS[bloc]["traits"]:
+			if c.traits.has(t):
+				score += 1
+		if score > best_score:
+			best_score = score
+			best = bloc
+	return best
+
+
+func curia_vote(realm_id: int, matter: String) -> Dictionary:
+	## The Estate Curia: great matters need the landed lords' assent.
+	## Vote weight is counties held (+1 for a duchy); each lord votes his
+	## bloc's agenda, bent by his regard for the crown.
+	var members := landed_vassals(realm_id)
+	if members.size() < CURIA_MIN_MEMBERS:
+		return {"passed": true, "for": 0, "against": 0,
+			"detail": "too few landed lords — the crown rules alone"}
+	var votes_for := 0
+	var votes_against := 0
+	var against_names: Array = []
+	for c in members:
+		var weight: int = counties_of(c.id).size()
+		for did in duchy_holders:
+			if int(duchy_holders[did]) == c.id:
+				weight += 1
+		weight = maxi(weight, 1)
+		var stance := int(CURIA_BLOCS[bloc_of(c)]["agenda"].get(matter, 0))
+		var regard := vassal_opinion(c.id, realm_id)
+		if regard >= 40:
+			stance += 1  # loyalty bends ideology
+		elif regard <= FACTION_JOIN_OPINION:
+			stance -= 1  # spite does too
+		if stance > 0:
+			votes_for += weight
+		elif stance < 0:
+			votes_against += weight
+			against_names.append(full_name(c))
+	var passed := votes_for >= votes_against
+	return {"passed": passed, "for": votes_for, "against": votes_against,
+		"detail": ("carried %d to %d" % [votes_for, votes_against]) if passed
+			else ("defeated %d to %d — led by %s" % [votes_against, votes_for,
+				against_names[0] if not against_names.is_empty() else "the blocs"])}
+
+
+func sway_curia(realm_id: int, char_id: int) -> String:
+	## Horse-trading: the crown's gold warms a voting lord's regard.
+	var realm: Realm = realms[realm_id]
+	if realm.gold < 40.0:
+		return "Not enough gold — 40 needed."
+	if not characters.has(char_id) or characters[char_id].realm_id != realm_id:
+		return "No such lord."
+	realm.gold -= 40.0
+	if realm.ruler_id >= 0:
+		add_memory(characters[char_id], "the crown courts my vote", realm.ruler_id, 25.0, 2.0)
+	_log("The crown spends 40 gold courting %s's voice in the Curia." % full_name(characters[char_id]))
+	return ""
+
+
+# ---------------------------------------------------------------- the Faction Engine
+
+func faction_strength(f: Dictionary) -> float:
+	## Men the faction could field: its lords' county levies and personal
+	## followings, or — for a populist rising — the oppressed land itself.
+	var total := 0.0
+	if str(f["type"]) == "populist":
+		for pid in f["provinces"]:
+			total += float(map.provinces[pid].levy) * 1.5
+		return total
+	for cid in f["members"]:
+		var c: SimCharacter = characters.get(cid)
+		if c == null or not c.alive:
+			continue
+		for pid in counties_of(cid):
+			total += float(map.provinces[pid].levy)
+		total += c.martial * 2.0
+	return total
+
+
+func faction_of(char_id: int) -> Dictionary:
+	for f in factions:
+		if f["members"].has(char_id):
+			return f
+	return {}
+
+
+func visible_factions(realm_id: int) -> Array:
+	## What the crown can actually see: overt factions, and covert ones
+	## the Spymaster has dug up. The rest conspire in the dark.
+	var out: Array = []
+	for f in factions:
+		if int(f["realm"]) == realm_id and (not bool(f["covert"]) or bool(f["discovered"])):
+			out.append(f)
+	return out
+
+
+func bribe_faction_member(char_id: int) -> String:
+	## Preemptive politics: a discovered conspirator can be bought.
+	var f := faction_of(char_id)
+	if f.is_empty():
+		return "They conspire with no one."
+	if bool(f["covert"]) and not bool(f["discovered"]):
+		return "The crown does not know of any conspiracy."  # no acting on hidden knowledge
+	var c: SimCharacter = characters[char_id]
+	var realm: Realm = realms[int(f["realm"])]
+	if realm.gold < 60.0:
+		return "Not enough gold — 60 needed."
+	realm.gold -= 60.0
+	f["members"].erase(char_id)
+	if realm.ruler_id >= 0:
+		add_memory(c, "the crown's gold bought my patience", realm.ruler_id, 30.0, 1.5)
+	_log("%s takes the crown's gold and abandons the %s faction." % [
+		full_name(c), FACTION_LABELS[str(f["type"])]])
+	return ""
+
+
+func _factions_tick() -> void:
+	_tyranny_decay()
+	for realm: Realm in realms:
+		if realm.ruler_id < 0:
+			continue
+		_faction_maintenance(realm)
+		_faction_formation(realm)
+		_populist_unrest(realm)
+		_faction_discovery(realm)
+		_faction_ultimatums(realm)
+
+
+func _tyranny_decay() -> void:
+	for realm: Realm in realms:
+		realm.tyranny = maxf(0.0, realm.tyranny - TYRANNY_DECAY)
+
+
+func _faction_maintenance(realm: Realm) -> void:
+	## The appeased and the dead leave; empty conspiracies dissolve.
+	for f in factions.duplicate():
+		if int(f["realm"]) != realm.id:
+			continue
+		if str(f["type"]) == "populist":
+			var still: Array = []
+			for pid in f["provinces"]:
+				var p = map.provinces[pid]
+				if p.owner == realm.id and p.de_jure != realm.id:
+					still.append(pid)
+			f["provinces"] = still
+			if still.size() < 2:
+				factions.erase(f)
+			continue
+		var kept: Array = []
+		for cid in f["members"]:
+			var c: SimCharacter = characters.get(cid)
+			if c == null or not c.alive or c.realm_id != realm.id or c.denounced:
+				continue
+			if vassal_opinion(cid, realm.id) > 10:
+				_log("%s's grievances cool, and the conspiracy loses him." % full_name(c))
+				continue
+			if counties_of(cid).is_empty():
+				continue  # a stripped lord commands no rising
+			kept.append(cid)
+		f["members"] = kept
+		if kept.is_empty():
+			factions.erase(f)
+
+
+func _faction_formation(realm: Realm) -> void:
+	## Discontent landed lords conspire. The faction's cause follows the
+	## lord's situation: a claimant if the dynasty offers one, autonomy
+	## for a foreign-cultured march, liberty otherwise.
+	for c in landed_vassals(realm.id):
+		if c.id == realm.ruler_id or not faction_of(c.id).is_empty():
+			continue
+		if vassal_opinion(c.id, realm.id) > FACTION_JOIN_OPINION:
+			continue
+		var chance := 0.08 + ai_weight(c, "scheming") * 0.001 + ai_weight(c, "aggression") * 0.0005
+		if rng.randf() > chance:
+			continue
+		var ruler: SimCharacter = characters[realm.ruler_id]
+		var ftype := "liberty"
+		var claimant := _find_claimant(realm, ruler)
+		if claimant != null:
+			ftype = "claimant"
+		elif c.culture != ruler.culture and counties_of(c.id).size() >= 2:
+			ftype = "independence"
+		# join a standing faction of the same cause before founding a new one
+		var joined := false
+		for f in factions:
+			if int(f["realm"]) == realm.id and str(f["type"]) == ftype and not f["members"].has(c.id):
+				f["members"].append(c.id)
+				joined = true
+				break
+		if not joined:
+			factions.append({"realm": realm.id, "type": ftype, "members": [c.id], "provinces": [],
+				"covert": true, "discovered": false,
+				"claimant": claimant.id if claimant != null else -1})
+		_log_covert(realm, "%s enters a %s conspiracy against the crown." % [
+			full_name(c), FACTION_LABELS[ftype]])
+
+
+func _find_claimant(realm: Realm, ruler: SimCharacter) -> SimCharacter:
+	## A rival with better blood: an aggrieved or passed-over adult of the
+	## ruling dynasty who is not the ruler.
+	for c in characters.values():
+		if not c.alive or c.id == ruler.id or c.realm_id != realm.id:
+			continue
+		if root_house_id(c.dynasty_id) != root_house_id(ruler.dynasty_id):
+			continue
+		if c.age_years(tick) < ADULT_AGE or c.is_bastard or c.denounced or c.bought_off:
+			continue
+		if c.aggrieved:
+			return c
+		for m in c.memories:
+			if str(m["type"]) == "passed over":
+				return c
+	return null
+
+
+func _populist_unrest(realm: Realm) -> void:
+	## Conquered land remembers its own: two or more counties still flying
+	## older banners rise together (culturally oppressed, per the design).
+	var oppressed: Array = []
+	for p in map.provinces:
+		if p.owner == realm.id and p.de_jure != realm.id and tick - p.held_since >= 24:
+			oppressed.append(p.id)
+	if oppressed.size() < 2:
+		return
+	for f in factions:
+		if int(f["realm"]) == realm.id and str(f["type"]) == "populist":
+			f["provinces"] = oppressed
+			return
+	factions.append({"realm": realm.id, "type": "populist", "members": [], "provinces": oppressed,
+		"covert": true, "discovered": false, "claimant": -1})
+	_log_covert(realm, "In the conquered counties, older banners pass from hand to hand after dark.")
+
+
+func _log_covert(realm: Realm, text: String) -> void:
+	## Covert politics is only chronicled where the player could know it —
+	## realm 1's conspiracies stay dark until they surface.
+	if realm.id == 0:
+		_log(text)
+
+
+func _faction_discovery(realm: Realm) -> void:
+	## The intelligence game: only a seated Spymaster finds the cabal
+	## before it finds you.
+	var spy := council_member(realm.id, "Spymaster")
+	if spy == null:
+		return
+	for f in factions:
+		if int(f["realm"]) != realm.id or not bool(f["covert"]) or bool(f["discovered"]):
+			continue
+		if rng.randf() < 0.04 + spy.intrigue * 0.008:
+			f["discovered"] = true
+			if realm.id == 0:
+				_log("[b]The Spymaster uncovers a %s conspiracy[/b] — %d %s, mustering %d men in secret." % [
+					FACTION_LABELS[str(f["type"])],
+					maxi(f["members"].size(), f["provinces"].size()),
+					"lords" if not f["members"].is_empty() else "counties",
+					int(faction_strength(f))])
+
+
+func _faction_ultimatums(realm: Realm) -> void:
+	## Strength past the threshold turns the cabal overt: an ultimatum
+	## lands on the throne, however inconvenient the hour.
+	for f in factions.duplicate():
+		if int(f["realm"]) != realm.id or not bool(f["covert"]):
+			continue
+		var cap := float(levy_capacity(realm.id))
+		if faction_strength(f) < cap * FACTION_OVERT_FRACTION:
+			continue
+		f["covert"] = false
+		f["discovered"] = true
+		_raise_ultimatum(realm, f)
+
+
+func _faction_demand_text(f: Dictionary) -> String:
+	match str(f["type"]):
+		"liberty":
+			return "lighter taxation and a gentler crown"
+		"claimant":
+			var cl: SimCharacter = characters.get(int(f["claimant"]))
+			return "the crown itself — for %s" % (full_name(cl) if cl != null else "a rival claimant")
+		"independence":
+			return "marcher autonomy: their own coin, their own walls, no levies owed"
+		"populist":
+			return "the return of the conquered counties to their rightful realm"
+	return "concessions"
+
+
+func _raise_ultimatum(realm: Realm, f: Dictionary) -> void:
+	var strength := int(faction_strength(f))
+	var demand := _faction_demand_text(f)
+	var fac := f
+	var r := realm
+	_log("[b]ULTIMATUM:[/b] a %s faction steps into the open in %s — %d men strong, demanding %s." % [
+		FACTION_LABELS[str(f["type"])], realm.name, strength, demand])
+	raise_event(realm.id, realm.ruler_id, "The %s Ultimatum" % FACTION_LABELS[str(f["type"])],
+		"The conspiracy is a conspiracy no longer. %d men stand behind a demand for %s. Concede, or meet them in the field." % [
+			strength, demand],
+		[{"label": "Concede — the crown bends", "base": 10, "ai": {"patience": 0.3, "aggression": -0.3},
+			"effect": func() -> void: _concede_faction(r, fac)},
+		{"label": "Refuse — let treason be answered in the field", "base": 20, "ai": {"aggression": 0.4},
+			"effect": func() -> void: _civil_war(r, fac)}])
+
+
+func _concede_faction(realm: Realm, f: Dictionary) -> void:
+	match str(f["type"]):
+		"liberty":
+			realm.tax_law = "light"
+			realm.tyranny = maxf(0.0, realm.tyranny - 20.0)
+			_log("[b]The crown bends:[/b] taxation is lightened and old injuries pardoned. The lords disperse, satisfied.")
+		"claimant":
+			var cl: SimCharacter = characters.get(int(f["claimant"]))
+			if cl != null and cl.alive:
+				var old_id := realm.ruler_id
+				realm.ruler_id = cl.id
+				cl.aggrieved = false
+				if old_id >= 0 and characters[old_id].alive:
+					add_memory(characters[old_id], "stole my crown", cl.id, -80.0, 1.0)
+				_log("[b]The crown bends: %s abdicates, and %s takes the throne the faction demanded.[/b]" % [
+					full_name(characters[old_id]) if old_id >= 0 else "the ruler", full_name(cl)])
+			else:
+				_log("The claimant is dead — the faction's demand dies with them.")
+		"independence":
+			# True secession waits for the multi-realm engine; the marches
+			# win autonomy so complete it is independence in all but name.
+			for cid in f["members"]:
+				var contract := contract_of(int(cid))
+				for priv in ["marcher_lord", "coinage_rights"]:
+					if not contract["privileges"].has(priv):
+						contract["privileges"].append(priv)
+			_log("[b]The crown bends:[/b] the marches win their own coin and keep their own levies — independent in all but the maps.")
+		"populist":
+			for pid in f["provinces"]:
+				var p = map.provinces[pid]
+				var back: int = p.de_jure
+				p.owner = back
+				p.held_since = tick
+				county_holders.erase(pid)
+				_log("%s returns to %s — the risen folk tear down the crown's banners themselves." % [
+					p.name, realm_name_of(back)])
+	for cid in f["members"]:
+		var c: SimCharacter = characters.get(int(cid))
+		if c != null and c.alive and realm.ruler_id >= 0:
+			add_memory(c, "the crown yielded to our demand", realm.ruler_id, 20.0, 1.0)
+	factions.erase(f)
+
+
+func realm_name_of(realm_id: int) -> String:
+	if realm_id >= 0 and realm_id < map.realms.size():
+		return map.realm_display_name(realm_id)
+	return "no crown"
+
+
+func _civil_war(realm: Realm, f: Dictionary) -> void:
+	## Treason answered in the field: the rebel muster meets the realm's
+	## standing armies in one pitched battle, resolved by the real sim.
+	var rebel_men := int(faction_strength(f))
+	var rebel_roster: Array = []
+	while rebel_men > 0 and rebel_roster.size() < 14:
+		if rebel_roster.size() % 3 == 0 and rebel_men >= 36:
+			rebel_roster.append({"kind": "sword", "soldiers": 36})
+			rebel_men -= 36
+		else:
+			var n := mini(rebel_men, 48)
+			rebel_roster.append({"kind": "levy", "soldiers": n})
+			rebel_men -= n
+	var loyal_roster: Array = []
+	var sources: Array = []   # [army, regiment index] per loyal roster entry
+	for a: Army in armies:
+		if a.realm_id != realm.id:
+			continue
+		for i in a.regiments.size():
+			loyal_roster.append({"kind": a.regiments[i]["kind"], "soldiers": int(a.regiments[i]["soldiers"])})
+			sources.append([a, i])
+	if loyal_roster.is_empty():
+		loyal_roster.append({"kind": "levy", "soldiers": 24})  # the palace guard, and hope
+	var ruler_martial := 0
+	if realm.ruler_id >= 0:
+		ruler_martial = characters[realm.ruler_id].martial
+	var rebel_lead := 0
+	for cid in f["members"]:
+		var c: SimCharacter = characters.get(int(cid))
+		if c != null and c.alive:
+			rebel_lead = maxi(rebel_lead, c.martial)
+	var sim := BattleSim.new()
+	sim.setup_from_rosters(loyal_roster, rebel_roster, ruler_martial, rebel_lead,
+		[str(realm.name).trim_prefix("Kingdom of "), "Rebel"])
+	sim.run_headless()
+	# the realm's armies carry their civil-war dead home
+	for i in sources.size():
+		for reg: BattleSim.Regiment in sim.regiments:
+			if reg.side == 0 and reg.roster_index == i:
+				var a: Army = sources[i][0]
+				a.regiments[sources[i][1]]["soldiers"] = reg.soldiers if reg.alive() else 0
+	for a: Army in armies.duplicate():
+		if a.realm_id != realm.id:
+			continue
+		var kept: Array = []
+		for reg in a.regiments:
+			if int(reg["soldiers"]) > 0:
+				kept.append(reg)
+		a.regiments = kept
+		if kept.is_empty():
+			armies.erase(a)
+	if sim.winner == 0:
+		_log("[b]The rebellion is broken in the field.[/b] The crown's banners stand over the wreck of the %s faction." % FACTION_LABELS[str(f["type"])])
+		for cid in f["members"]:
+			var c: SimCharacter = characters.get(int(cid))
+			if c == null or not c.alive:
+				continue
+			# attainder first: a traitor's land never passes to his heirs
+			for pid in counties_of(c.id):
+				county_holders.erase(pid)
+			for did in duchy_holders.keys():
+				if int(duchy_holders[did]) == c.id:
+					duchy_holders.erase(did)
+			if rng.randf() < 0.4:
+				_log("%s is taken and hanged for rebellion." % full_name(c))
+				_kill(c, "was hanged for rebellion")
+			else:
+				if realm.ruler_id >= 0:
+					add_memory(c, "stripped for my treason", realm.ruler_id, -60.0, 1.0)
+				_log("%s is stripped of every title and spared — a mercy, and a warning." % full_name(c))
+		if str(f["type"]) == "populist":
+			for pid in f["provinces"]:
+				map.provinces[pid].held_since = tick  # the rising crushed, the clock reset
+			realm.tyranny = minf(100.0, realm.tyranny + 10.0)
+		factions.erase(f)
+	else:
+		_log("[b]The crown's host is beaten by its own vassals.[/b] The demand is granted at sword-point.")
+		realm.gold = maxf(0.0, realm.gold - 60.0)
+		realm.tyranny = maxf(0.0, realm.tyranny - 30.0)
+		_concede_faction(realm, f)
+
+
+# ---------------------------------------------------------------- monthly grievances
+
+func _vassal_politics_tick() -> void:
+	## Council snubs, privilege demands, and the great feuds that drag
+	## the liege into judgment — the slow politics between the crises.
+	for realm: Realm in realms:
+		if realm.ruler_id < 0 or realm.government == "tribal":
+			continue  # tribal power is personal; these are legal institutions
+		_council_snub_tick(realm)
+		_privilege_demand_tick(realm)
+		_court_trial_tick(realm)
+
+
+func _council_snub_tick(realm: Realm) -> void:
+	## Powerful vassals expect seats. A duke or great lord passed over
+	## for a lesser man voices the grievance exactly once.
+	for c in landed_vassals(realm.id):
+		if council_snubbed.has(c.id) or has_privilege(c.id, "guaranteed_seat"):
+			continue
+		var is_great := counties_of(c.id).size() >= 2
+		for did in duchy_holders:
+			if int(duchy_holders[did]) == c.id:
+				is_great = true
+		if not is_great:
+			continue
+		var seated := false
+		for seat in COUNCIL_SEATS:
+			if int(realm.council.get(seat, -1)) == c.id:
+				seated = true
+		if seated:
+			continue
+		for seat in COUNCIL_SEATS:
+			var holder := council_member(realm.id, seat)
+			if holder != null and int(c.get(SEAT_STAT[seat])) > int(holder.get(SEAT_STAT[seat])) + 3:
+				council_snubbed[c.id] = true
+				add_memory(c, "snubbed for the council", realm.ruler_id, -20.0, 1.0)
+				if realm.id == 0:
+					_log("%s expected a council seat — and marks the lesser man who holds it." % full_name(c))
+				break
+
+
+func _privilege_demand_tick(realm: Realm) -> void:
+	## Privilege creep: a lord with leverage — the crown at war needs his
+	## levies — demands an addendum, not gold.
+	if not at_war:
+		return
+	var lords := landed_vassals(realm.id)
+	if lords.is_empty():
+		return  # no rng draw when there is no one to demand (keeps history stable)
+	if rng.randf() > 0.06:
+		return
+	for c in lords:
+		if vassal_opinion(c.id, realm.id) > 20 or counties_of(c.id).size() < 2:
+			continue
+		var wanted := ""
+		for priv in PRIVILEGES:
+			if not has_privilege(c.id, str(priv)):
+				wanted = str(priv)
+				break
+		if wanted == "":
+			continue
+		var lord: SimCharacter = c
+		var pr := wanted
+		var r := realm
+		raise_event(realm.id, realm.ruler_id, "A Privilege Demanded",
+			"%s holds %d counties the war cannot spare — and knows it. The price of loyalty is written out: [b]%s[/b] (%s)." % [
+				full_name(c), counties_of(c.id).size(), PRIVILEGES[wanted]["label"], PRIVILEGES[wanted]["blurb"]],
+			[{"label": "Grant the addendum", "base": 15, "ai": {"patience": 0.3},
+				"effect": func() -> void: var _e := grant_privilege(lord.id, pr)},
+			{"label": "Refuse — the crown is not for sale", "base": 15, "ai": {"aggression": 0.3},
+				"effect": func() -> void:
+					add_memory(lord, "my price refused in wartime", r.ruler_id, -20.0, 1.5)
+					_log("%s withdraws, cold — the crown will remember the counties that march slowly." % full_name(lord))}])
+		return  # one demand a month is plenty
+
+
+func _court_trial_tick(realm: Realm) -> void:
+	## The Liege's Court Trial: when two great houses of the realm turn
+	## on each other, the map halts and the crown must judge.
+	if tick - last_trial_tick < 24:
+		return
+	var lords := landed_vassals(realm.id)
+	if lords.size() < 2:
+		return  # no rng draw without a possible feud (keeps history stable)
+	if rng.randf() > 0.1:
+		return
+	for i in lords.size():
+		for j in lords.size():
+			if i == j:
+				continue
+			var a: SimCharacter = lords[i]
+			var b: SimCharacter = lords[j]
+			if opinion_of(a.id, b.id) > -30:
+				continue
+			last_trial_tick = tick
+			_raise_arbitration(realm, a, b)
+			return
+
+
+func _raise_arbitration(realm: Realm, aggressor: SimCharacter, defender: SimCharacter) -> void:
+	var evidence := "The evidence favors %s" % full_name(defender if defender.diplomacy >= aggressor.diplomacy else aggressor)
+	var agg := aggressor
+	var def := defender
+	var r := realm
+	raise_event(realm.id, realm.ruler_id, "The Liege's Court",
+		"%s moves against %s, and the defender appeals to the crown's justice. Both stand before the Curia. %s — but the verdict is yours, and every bloc is watching." % [
+			full_name(aggressor), full_name(defender), evidence],
+		[{"label": "Side with %s — reward the strong" % full_name(aggressor), "base": 5, "ai": {"aggression": 0.3},
+			"effect": func() -> void:
+				add_memory(agg, "the crown upheld my cause", r.ruler_id, 30.0, 1.0)
+				add_memory(def, "denied the crown's justice", r.ruler_id, -40.0, 1.0)
+				r.tyranny = minf(100.0, r.tyranny + 5.0)
+				for c in landed_vassals(r.id):
+					if bloc_of(c) == "Constitutionalists" and c.id != agg.id:
+						add_memory(c, "a verdict bought by strength", r.ruler_id, -10.0, 1.0)
+				_log("[b]The verdict favors %s.[/b] The Constitutionalists file out without bowing." % full_name(agg))},
+		{"label": "Side with %s — uphold the law" % full_name(defender), "base": 15, "ai": {"patience": 0.2},
+			"effect": func() -> void:
+				add_memory(def, "the crown upheld my rights", r.ruler_id, 30.0, 1.0)
+				add_memory(agg, "humbled before the court", r.ruler_id, -40.0, 1.0)
+				if agg.traits.has("Wrathful") or agg.traits.has("Ambitious"):
+					for pid in counties_of(agg.id):
+						county_holders.erase(pid)
+					add_memory(agg, "branded an outlaw of the realm", r.ruler_id, -60.0, 0.5)
+					_log("[b]%s refuses the verdict and is branded a Realm Outlaw[/b] — stripped of every county at once." % full_name(agg))
+				else:
+					_log("[b]The verdict favors %s.[/b] The law holds; the realm exhales." % full_name(def))},
+		{"label": "Force a compromise (50 gold)", "base": 10, "ai": {"patience": 0.3},
+			"effect": func() -> void:
+				var spent := minf(50.0, r.gold)
+				r.gold -= spent
+				add_memory(agg, "the crown's compromise", r.ruler_id, 10.0, 1.0)
+				add_memory(def, "the crown's compromise", r.ruler_id, 10.0, 1.0)
+				add_memory(agg, "a feud settled at court", def.id, 15.0, 1.0)
+				add_memory(def, "a feud settled at court", agg.id, 15.0, 1.0)
+				_log("The crown spends %d gold splitting the difference — neither lord loves the verdict, and neither draws steel." % int(spent))}])
 
 
 # ---------------------------------------------------------------- dynasty (Module 2)
