@@ -1842,6 +1842,8 @@ func _refresh_character() -> void:
 		if realm.ruler_id == c.id:
 			title = ("Queen of %s" if c.is_female else "King of %s") % str(realm.name).trim_prefix("Kingdom of ")
 	if title == "":
+		title = world.cast_title_of(c.id)  # the Faction Cast wear their canonical crowns
+	if title == "":
 		title = "of %s" % str(world.dynasties[c.dynasty_id].name)
 	title_label.text = title
 	var traits_line := "No notable traits"
@@ -1866,7 +1868,7 @@ func _refresh_character() -> void:
 	if c.race != ("human" if c.realm_id == 0 else "orc"):
 		blood = " · %s" % CultureData.race_label(c.race)
 	var lines := "Age %d · %s%s\nDip %d · Mar %d · Stw %d\nInt %d · Lrn %d · Prw %d\n%s\nStress %d (%s)" % [
-		c.age_years(world.tick), str(world.realms[c.realm_id].name).trim_prefix("Kingdom of "),
+		c.age_years(world.tick), str(world.map.realm_display_name(c.realm_id)).trim_prefix("Kingdom of "),
 		blood, c.diplomacy, c.martial, c.stewardship, c.intrigue, c.learning, c.prowess,
 		traits_line, int(c.stress), stress_word]
 	# the Patron's ledger, shown only once it has an entry (Magic v1.0)
@@ -1874,9 +1876,10 @@ func _refresh_character() -> void:
 		lines += "\nCorruption %.1f" % c.corruption
 	if c.names_carried > 0:
 		lines += "\nNames carried: %d" % c.names_carried
-	var liege_id: int = world.realms[c.realm_id].ruler_id
-	if liege_id >= 0 and liege_id != c.id:
-		lines += "\nOpinion of liege: %+d" % world.opinion_of(c.id, liege_id)
+	if c.realm_id >= 0 and c.realm_id < world.realms.size():
+		var liege_id: int = world.realms[c.realm_id].ruler_id
+		if liege_id >= 0 and liege_id != c.id:
+			lines += "\nOpinion of liege: %+d" % world.opinion_of(c.id, liege_id)
 	info_label.text = lines
 
 	for child in family_box.get_children():
@@ -1971,9 +1974,18 @@ func _on_marry() -> void:
 
 func _on_province_clicked(province_id: int) -> void:
 	var owner: int = world.map.provinces[province_id].owner
-	var ruler_id: int = world.realms[owner].ruler_id
-	if ruler_id >= 0:
-		selected_id = ruler_id
+	if owner < 0:
+		return
+	if owner < world.realms.size():
+		var ruler_id: int = world.realms[owner].ruler_id
+		if ruler_id >= 0:
+			selected_id = ruler_id
+			_refresh()
+		return
+	# a cast realm: clicking its land brings up its canonical crown
+	var cr: SimCharacter = world.cast_ruler_of(owner)
+	if cr != null:
+		selected_id = cr.id
 		_refresh()
 
 

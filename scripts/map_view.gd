@@ -157,6 +157,21 @@ func _draw() -> void:
 		var fsize := 18 if count >= 6 else 11
 		draw_string(font, spos + Vector2(-110, 5), label, HORIZONTAL_ALIGNMENT_CENTER, 220, fsize, Color(0, 0, 0, 0.5))
 		draw_string(font, spos + Vector2(-110, 3), label, HORIZONTAL_ALIGNMENT_CENTER, 220, fsize, REALM_INK[r.id])
+		# who actually rules here (Faction Cast v1.0): the live crowns and
+		# the canonical cast alike — the map reads as people, not territory
+		var ruler_line := ""
+		if r.id < world.realms.size():
+			var rid: int = world.realms[r.id].ruler_id
+			if rid >= 0:
+				var rc = world.characters[rid]
+				ruler_line = "%s %s" % ["Queen" if rc.is_female else "King", world.full_name(rc)]
+		elif world.cast_rulers.has(r.id):
+			var cr = world.cast_ruler_of(r.id)
+			if cr != null and cr.alive:
+				ruler_line = "%s %s" % [str(world.cast_rulers[r.id]["title"]), world.full_name(cr)]
+		if ruler_line != "":
+			draw_string(font, spos + Vector2(-110, fsize + 4), ruler_line,
+				HORIZONTAL_ALIGNMENT_CENTER, 220, 10, Color(REALM_INK[r.id], 0.85))
 	# the dead lands are named too
 	_draw_region_label(font, "THE ASHFIELDS", "ashfields")
 	_draw_region_label(font, "AURATH RUINS", "aurath")
