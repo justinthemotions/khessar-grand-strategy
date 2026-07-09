@@ -3,14 +3,31 @@
 How land is legally held in the Khessar Grand Strategy prototype. Map generation in
 `scripts/world_map.gd`, rules in `scripts/world.gd`, UI in the Realm tab + map tooltip.
 
-## 1. The map (`world_map.gd`)
+## 1. The map (`world_map.gd` + `data/khessar_map_data.gd`)
 
-A seeded, fictional continent: a 5×6 jittered lattice carved against a noisy ellipse —
-~22 land provinces with 8-sided polygons, generated deterministically from its own RNG
-seed (777) so the map never disturbs character-history RNG. Each `Province`:
-`{id, name, owner (de facto realm), de_jure (rightful realm), held_since (tick),
-duchy, polygon, center, tax (1.2–3.2), levy (12–35), neighbors[]}`.
-Adjacency = lattice cells sharing an edge. Names from realm-flavored syllable pools.
+The hand-authored continent of **Khessar**, traced from Justin's Khessar_mapv2
+illustration: 60 provinces in 8 west-east bands between hand-drawn boundary polylines,
+assembled deterministically (seed 777 touches only generated names and border jitter,
+never character-history RNG). Each `Province`:
+`{id, name, owner (de facto realm, -1 = unclaimed), de_jure, held_since (tick), duchy,
+polygon, center, tax (1.2–3.2), levy (12–35), neighbors[], terrain, coastal,
+cultural_region, silence_touched, ruined, special_feature}`.
+Adjacency comes from the band tables, then a blocklist severs the Carath mountain wall
+(two passes only: Ashford, Marn's Crossing) and seals the deep Elven forests to 2–3
+gate provinces per house. Names from nine cultural-region syllable pools
+(`data/province_name_pools.gd`); canonical settlements (Vael, Pellar, Kharak-Dum,
+Saren-Vesh, Durn…) are hand-placed and reserved.
+
+**Twelve realm records** (`WorldMap.MapRealm`, per the Faction Map at Year Zero v1.0)
+carry name, government, capital, founding house, and named Year Zero ruler — only
+realms 0 (Magistocracy of Vael) and 1 (Karn-Vol Clan) are simulated live; the rest are
+setting data until later modules. Uncontrolled land: the Ashfields (silence_touched,
+Durn is Caeris's seat), the Aurath ruins (ruined), and two sealed Dwarven holds
+(ruined = LOCKED, not dead). The calendar is the Silence calendar: tick 0 =
+"Year 0, Month 1 of the Silence". Allocation: Vael 18, free cities 12, Drevak orcs 8
+(Karn-Vol + Vor-Grim), dwarves 4, elves 6 (Veldarin/Thaladris), southern reach 5,
+Ashfields 4, Aurath 3. The canonical Halvenard-Veil / Aurath-Voss blood feud is live
+from setup inside the Vael court.
 
 ## 2. The title pyramid
 
@@ -57,9 +74,12 @@ are forgotten. Conquest is an investment, not an instant paint job.
 
 ## 5. Government paradigms (`GOVERNMENTS`, `Realm.government`)
 
-- **Feudal** (Aldmark): power rests on contracts. Steady land yields; duchies and
-  counties grantable as above.
-- **Tribal** (Sarova): power is personal. Income ×0.75 ("herds and tribute, not
+- **Feudal** (Pellar, Carath, Dunmore, Kharak-Dum): power rests on contracts. Steady
+  land yields; duchies and counties grantable as above.
+- **Administrative** (Magistocracy of Vael), **Merchant Republic** (Halven, Saren-Vesh,
+  the Compact), **Clan** (the Elven houses): placeholder strings on the realm records —
+  they behave feudal until their modules land.
+- **Tribal** (Karn-Vol, Vor-Grim): power is personal. Income ×0.75 ("herds and tribute, not
   ledgers and tolls"); **cannot grant duchies** ("power is personal, not legal");
   +15 flat AI aggression; levy capacity gains `ruler.martial × 6 + dynasty renown / 50`
   — a famous warlord fields a horde, a weak heir inherits a warband.
