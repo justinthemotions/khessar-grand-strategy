@@ -83,6 +83,16 @@ static func _build() -> void:
 		"eulogy": "whose door was never barred",
 		"mods": {"tax_efficiency_mult": 0.95, "court_opinion_baseline": 10.0}}))
 
+	# --- personality: cultural attitude axis (Cross-Cultural Marriage v1.0) ---
+	_add(TraitData.make("Syncretist", "personality", {"dip": 2, "lrn": 1},
+		{"opposite": "Purist", "ai": {"patience": 10},
+		"eulogy": "who set two traditions at one table",
+		"mods": {"syncretism_gain": 2.0, "cross_culture_spouse_opinion": 25.0}}))
+	_add(TraitData.make("Purist", "personality", {"lrn": 1, "dip": -1},
+		{"opposite": "Syncretist", "ai": {"orthodoxy": 20, "patience": 5},
+		"eulogy": "who kept the old ways whole",
+		"mods": {"syncretism_gain": -3.0, "cross_culture_spouse_opinion": -30.0}}))
+
 	# --- personality: operational dispositions (imperial hooks) ---
 	_add(TraitData.make("Paranoid", "personality", {"int": 2, "dip": -2},
 		{"ai": {"scheming": 10, "patience": 10},
@@ -102,11 +112,26 @@ static func _build() -> void:
 	_add(TraitData.make("Comely", "congenital", {"dip": 2}, {"inherit": 0.30}))
 	_add(TraitData.make("Homely", "congenital", {"dip": -2}, {"inherit": 0.25}))
 
+	# --- congenital: household heritage (Cross-Cultural Marriage v1.0) ---
+	# Bicultural is raised, not rolled: assigned to children of syncretism-
+	# path households by SimWorld, never by blood inheritance (inherit 0).
+	_add(TraitData.make("Bicultural", "congenital", {"dip": 5},
+		{"eulogy": "at home in both their parents' worlds"}))
+
 	# --- health ---
 	_add(TraitData.make("Wounded", "health", {"prw": -4, "mar": -1}))
 	_add(TraitData.make("Ailing", "health", {"prw": -2, "stw": -1}))
+	# long-reign fatigue: a ruler past their race's span rules a court that
+	# stopped hoping for advancement a generation ago
+	_add(TraitData.make("Long-Reigned", "health", {"stw": -1, "dip": -1},
+		{"eulogy": "who outlived their own era",
+		"mods": {"court_opinion_baseline": -10.0}}))
 
 	# --- coping (stress scars) ---
 	_add(TraitData.make("Drunkard", "coping", {"stw": -2, "mar": -1}))
 	_add(TraitData.make("Reclusive", "coping", {"dip": -3, "lrn": 1}))
 	_add(TraitData.make("Irritable", "coping", {"dip": -2, "int": 1}))
+	# the failure mode of syncretism: a child who never consented to the
+	# household's cultural negotiation (Cross-Cultural Marriage v1.0)
+	_add(TraitData.make("Cross-Sworn", "coping", {"dip": -1, "int": 1},
+		{"eulogy": "who belonged wholly to neither world"}))
