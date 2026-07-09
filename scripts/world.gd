@@ -47,6 +47,10 @@ const LEGACIES := {
 	"Golden Ledgers":   {"cost": 250.0, "blurb": "+10% realm income while the dynasty holds the crown"},
 	"Blood of the Wolf": {"cost": 350.0, "blurb": "Children of the blood are born to war: +1 Martial, +1 Prowess at birth; +8% levy capacity while ruling"},
 	"Unbending Oaths":  {"cost": 500.0, "blurb": "Kin stand by kin: +15 opinion between dynasty members, and burdens weigh lighter"},
+	# Cross-Cultural Marriage (v1.0): a dynasty declares where it stands
+	# on the blending the Silence made possible. Mutually exclusive.
+	"The Syncretic Charter": {"cost": 300.0, "blurb": "The house commits to cultural blending: syncretism ripens 25% faster in its marriages", "excludes": "The Preserving Line"},
+	"The Preserving Line":   {"cost": 250.0, "blurb": "The house keeps the old ways whole: no marriage of this blood will ever hybridize", "excludes": "The Syncretic Charter"},
 }
 
 # Dynasty Head Powers: what the patriarch's word costs the house's Renown.
@@ -65,6 +69,10 @@ const MYTHOS := {
 	"Kin-Eater":           {"blurb": "A house that devours its own: -10 opinion from all outsiders"},
 	"Whispered Poisoners": {"blurb": "Two dead kings whisper their name: -10 opinion abroad, but their plots weave faster"},
 	"Blood of Kings":      {"blurb": "Forty years unbroken on a throne: +5 opinion from all, +1 renown a month"},
+	# Cross-Cultural Marriage (v1.0): what a bloodline's marriages say about it
+	"Compact-Bound":       {"blurb": "A Human-Orc marriage runs in this blood: +20 opinion from the clans, -10 from Aelindran traditionalists"},
+	"Half-Blooded Line":   {"blurb": "Three cross-race marriages in the line: +10 opinion from the half-races, -5 from Purists"},
+	"Pure of Blood":       {"blurb": "The line has never married across race, and says so: +15 opinion from Purists, -10 from the half-races"},
 }
 const KIN_CRUELTY_THRESHOLD := 3   # disinherits/denouncements before the Kin-Eater stain
 const POISONINGS_THRESHOLD := 2
@@ -180,6 +188,11 @@ var next_army_id: int = 0
 var battle_ready: bool = false     # two hostile armies have met — a battle must be fought
 var pending_battle: Array = []     # [army_id of realm 0, army_id of realm 1]
 var blood_feuds: Array = []        # [root_a, root_b] pairs — schismatic splits, inherited forever
+# Cross-Cultural Marriage (v1.0): every cross-culture wedding opens a
+# household record — its path (imposition/syncretism/parallelism), the
+# syncretism clock, and whether Hybridization has been decided.
+var cross_marriages: Array = []    # [{husband, wife, path, progress, threshold, decided}]
+var culture_drift: Dictionary = {} # province id -> {target, progress 0..100} (1%/month toward a hybrid)
 var county_holders: Dictionary = {}  # province id -> character id (granted county titles)
 var duchy_holders: Dictionary = {}   # duchy id -> character id
 
@@ -206,6 +219,7 @@ class Dynasty:
 	var kin_cruelty: int = 0          # disinherits + denouncements by the head
 	var poisonings: int = 0           # successful assassinations under this blood
 	var crown_months: int = 0         # months a member has held a crown
+	var cross_race_marriages: int = 0 # weddings across race lines under this blood
 
 	func _init(p_id: int, p_name: String) -> void:
 		id = p_id
@@ -332,6 +346,7 @@ func _spawn(realm: Realm, dyn_id: int, female: bool, age: int) -> SimCharacter:
 	var birth := tick - age * 12 - rng.randi_range(0, 11)
 	var c := _create_character(_pick_name(realm, female), female, birth, dyn_id, realm.id)
 	_roll_stats(c)
+	_apply_racial_baseline(c)
 	c.genome = Genetics.founder(rng)
 	_assign_founder_traits(c)
 	return c
@@ -350,9 +365,21 @@ func _create_character(p_name: String, female: bool, birth: int, dyn_id: int, re
 	# simulated Vael court is the two great noble houses — Aelindran-
 	# cultured per the Roster ("their loyalty is political; their culture
 	# is older"); the border clan practices the Karn-Vol subvariant.
+	# Race is blood (Cross-Cultural Marriage v1.0): the Vael houses are
+	# Human, the clan is Orc; births override this from the parents.
 	c.culture = "aelindran" if realm_id == 0 else "karn_vol"
+	c.race = "human" if realm_id == 0 else "orc"
 	characters[c.id] = c
 	return c
+
+
+func _apply_racial_baseline(c: SimCharacter) -> void:
+	## Small racial stat baselines from the Cultural Roster (race is
+	## biology; culture is tradition). Applied once, after stats roll.
+	var mods: Dictionary = CultureData.RACES.get(c.race, {}).get("stats", {})
+	for k in mods:
+		var prop: String = STAT_PROPS[k]
+		c.set(prop, clampi(int(c.get(prop)) + int(mods[k]), 1, 30))
 
 
 func _roll_stats(c: SimCharacter) -> void:
@@ -379,6 +406,8 @@ func advance_month() -> void:
 	_bastards_tick()
 	_deaths()
 	_auto_marriages()
+	_syncretism_tick()
+	_culture_drift_tick()
 	_stress_relief_tick()
 	_renown_tick()
 	_cadet_branch_tick()
@@ -430,9 +459,16 @@ func _make_child(father: SimCharacter, mother: SimCharacter) -> SimCharacter:
 	var female := rng.randf() < 0.5
 	var realm: Realm = realms[father.realm_id]
 	var child := _create_character(_pick_name(realm, female), female, tick, father.dynasty_id, father.realm_id)
+	# the biology layer: races combine (Cross-Cultural Marriage v1.0 §2)
+	child.race = CultureData.child_race(father.race, mother.race)
 	_blend_stats(child, father, mother)
+	_apply_racial_baseline(child)
 	child.genome = Genetics.inherit(rng, father.genome, mother.genome)
 	_inherit_traits(child, father, mother)
+	# the cultural layer: a syncretism-path household raises its children
+	# in both worlds — the Bicultural trait is upbringing, not blood
+	if father.culture != mother.culture and _marriage_record(father.id, mother.id).get("path", "") == "syncretism":
+		_add_trait(child, "Bicultural")
 	if has_legacy(root_house_id(father.dynasty_id), "Blood of the Wolf"):
 		child.martial = clampi(child.martial + 1, 1, 30)
 		child.prowess = clampi(child.prowess + 1, 1, 30)
@@ -486,18 +522,29 @@ func _bastards_tick() -> void:
 func _deaths() -> void:
 	var doomed: Array = []
 	for c in characters.values():
-		if c.alive and rng.randf() < _death_chance(c.age_years(tick)):
+		if not c.alive:
+			continue
+		var age: int = c.age_years(tick)
+		if rng.randf() < _death_chance(age, c.race):
 			doomed.append(c)
+		# long-reign fatigue (Cross-Cultural Marriage v1.0): a life run
+		# 20% past its race's span has outlived its own political era
+		elif age > int(CultureData.race_lifespan(c.race) * 1.2) and _can_add_trait(c, "Long-Reigned"):
+			_add_trait(c, "Long-Reigned")
+			_log("%s has outlived their era — the court serves, but no longer hopes." % full_name(c))
 	for c in doomed:
 		_kill(c, "has died")
 
 
-func _death_chance(age: int) -> float:
+func _death_chance(age: int, race: String = "human") -> float:
+	## Mortality curves scale to the race's lifespan (v1.0 biology layer):
+	## the aging pivot sits where a Human's 45 sits against a Human's 78.
 	var q := 0.0004
 	if age < 5:
 		q += 0.002
-	if age > 45:
-		var over := float(age - 45)
+	var pivot := float(CultureData.race_lifespan(race)) * (45.0 / 78.0)
+	if float(age) > pivot:
+		var over := float(age) - pivot
 		q += over * over * 0.00004
 	return q
 
@@ -1444,19 +1491,237 @@ func marry(groom_id: int, bride_id: int) -> String:
 	add_memory(b, "wedding", g.id, 40.0, 1.0)
 	add_stress(g, -10.0, "wedded")
 	add_stress(b, -10.0, "wedded")
-	# Cross-culture matches carry their cultures' mutual regard into the
-	# marriage (Cultural Roster v1.0 acceptance tables) — the couple's
-	# opinion of each other starts warmer or colder for it.
 	if g.culture != b.culture:
-		var acc := float(CultureData.marriage_acceptance(g.culture, b.culture))
-		if acc != 0.0:
-			add_memory(g, "a match across cultures", b.id, acc, 2.0)
-			add_memory(b, "a match across cultures", g.id, acc, 2.0)
+		_open_cross_marriage(g, b)
+	if g.race != b.race:
+		_record_cross_race_marriage(g, b)
 	_log("[b]Wedding bells:[/b] %s weds %s." % [full_name(g), full_name(b)])
 	if cross_realm:
 		marriage_alliances.append([g.id, b.id])
 		_log("[b]The marriage binds %s and %s in alliance.[/b]" % [realms[0].name, realms[1].name])
 	return ""
+
+
+# ------------------------------------------- cross-cultural marriage (v1.0)
+
+func marriage_acceptance_score(g: SimCharacter, b: SimCharacter) -> int:
+	## The proposal-time acceptance basis: the cultures' mutual regard
+	## (Cultural Roster tables) shaded by each spouse's own attitude
+	## toward marrying outward (Syncretist +25 / Purist -30).
+	if g.culture == b.culture:
+		return 0
+	var total := float(CultureData.marriage_acceptance(g.culture, b.culture))
+	total += (trait_add(g, "cross_culture_spouse_opinion")
+		+ trait_add(b, "cross_culture_spouse_opinion")) * 0.5
+	return int(total)
+
+
+func _household_path(g: SimCharacter, b: SimCharacter) -> String:
+	## Which of the doc's four household states this marriage enters.
+	## Parallelism needs two Purists (two courts under one roof); one
+	## Purist — or a cold match with no Syncretist to bridge it — means
+	## Imposition; everyone else genuinely blends. Reverse Imposition
+	## waits for a prestige system that can invert the household.
+	var g_purist := g.traits.has("Purist")
+	var b_purist := b.traits.has("Purist")
+	if g_purist and b_purist:
+		return "parallelism"
+	if g_purist or b_purist:
+		return "imposition"
+	if g.traits.has("Syncretist") or b.traits.has("Syncretist"):
+		return "syncretism"
+	return "syncretism" if marriage_acceptance_score(g, b) >= 0 else "imposition"
+
+
+func _open_cross_marriage(g: SimCharacter, b: SimCharacter) -> void:
+	var path := _household_path(g, b)
+	var acc := marriage_acceptance_score(g, b)
+	if acc != 0:
+		add_memory(g, "a match across cultures", b.id, float(acc), 2.0)
+		add_memory(b, "a match across cultures", g.id, float(acc), 2.0)
+	match path:
+		"imposition":
+			# the bride joins her husband's court; his culture rules the hall
+			add_memory(b, "my traditions kept to private rooms", g.id, -20.0, 1.0)
+			_log("%s's hall keeps %s ways — %s learns to practice hers behind closed doors." % [
+				full_name(g), CultureData.culture_label(g.culture), full_name(b)])
+		"syncretism":
+			add_memory(g, "a household of two traditions", b.id, 10.0, 1.0)
+			add_memory(b, "a household of two traditions", g.id, 10.0, 1.0)
+			_log("Two traditions share one table: the household of %s and %s honors both %s and %s ways." % [
+				full_name(g), full_name(b), CultureData.culture_label(g.culture), CultureData.culture_label(b.culture)])
+		"parallelism":
+			_log("Two courts under one roof: %s and %s keep their traditions apart — and exhausting." % [
+				full_name(g), full_name(b)])
+	cross_marriages.append({"husband": g.id, "wife": b.id, "path": path,
+		"progress": 0.0, "threshold": CultureData.syncretism_months(g.culture, b.culture),
+		"decided": false})
+
+
+func _record_cross_race_marriage(g: SimCharacter, b: SimCharacter) -> void:
+	## The mythos file notices marriages across race lines (v1.0 §6).
+	var races := [g.race, b.race]
+	for c: SimCharacter in [g, b]:
+		var root := root_house_id(c.dynasty_id)
+		if root < 0:
+			continue
+		var dyn: Dynasty = dynasties[root]
+		dyn.cross_race_marriages += 1
+		# a Human-Orc union is the Karn-Vol precedent made blood
+		if races.has("human") and (races.has("orc") or races.has("half_orc")):
+			_earn_mythos(root, "Compact-Bound")
+		# approximates the doc's "three consecutive generations"
+		if dyn.cross_race_marriages >= 3:
+			_earn_mythos(root, "Half-Blooded Line")
+
+
+func _marriage_record(a_id: int, b_id: int) -> Dictionary:
+	for m in cross_marriages:
+		if (int(m["husband"]) == a_id and int(m["wife"]) == b_id) \
+				or (int(m["husband"]) == b_id and int(m["wife"]) == a_id):
+			return m
+	return {}
+
+
+func _bicultural_children(g: SimCharacter, b: SimCharacter) -> Array:
+	var out: Array = []
+	for cid in g.children_ids:
+		var c: SimCharacter = characters.get(cid)
+		if c != null and c.alive and c.mother_id == b.id and c.traits.has("Bicultural"):
+			out.append(c)
+	return out
+
+
+func syncretism_gain(m: Dictionary) -> float:
+	## The doc's monthly accumulation formula, spouse-summed: base 1,
+	## Syncretist +2 / Purist -3, +1 for holding land of both cultures,
+	## +1 per living bicultural child, -5 while at war with the realm
+	## whose culture sits on the other side of the bed.
+	var g: SimCharacter = characters[int(m["husband"])]
+	var b: SimCharacter = characters[int(m["wife"])]
+	var gain := 1.0 + trait_add(g, "syncretism_gain") + trait_add(b, "syncretism_gain")
+	var held := realm_cultures(g.realm_id)
+	if held.has(g.culture) and held.has(b.culture):
+		gain += 1.0
+	gain += float(_bicultural_children(g, b).size())
+	if at_war and g.realm_id <= 1:
+		var enemy_culture: String = "aelindran" if g.realm_id == 1 else "karn_vol"
+		if g.culture == enemy_culture or b.culture == enemy_culture:
+			gain -= 5.0
+	return gain
+
+
+func _syncretism_threshold(m: Dictionary) -> float:
+	var g: SimCharacter = characters[int(m["husband"])]
+	var b: SimCharacter = characters[int(m["wife"])]
+	var threshold := float(m["threshold"])
+	# The Syncretic Charter: the dynasty has committed to the blending
+	if has_legacy(root_house_id(g.dynasty_id), "The Syncretic Charter") \
+			or has_legacy(root_house_id(b.dynasty_id), "The Syncretic Charter"):
+		threshold *= 0.75
+	return threshold
+
+
+func _syncretism_tick() -> void:
+	for m in cross_marriages:
+		var g: SimCharacter = characters.get(int(m["husband"]))
+		var b: SimCharacter = characters.get(int(m["wife"]))
+		if g == null or b == null or not g.alive or not b.alive or g.spouse_id != b.id:
+			continue
+		if str(m["path"]) == "parallelism":
+			# two courts under one roof: exhausting for both (v1.0 Path D)
+			add_stress(g, 1.0, "a divided household")
+			add_stress(b, 1.0, "a divided household")
+			continue
+		if str(m["path"]) != "syncretism" or bool(m["decided"]) or int(m["threshold"]) < 0:
+			continue
+		# The Preserving Line: this blood does not blend, ever
+		if has_legacy(root_house_id(g.dynasty_id), "The Preserving Line") \
+				or has_legacy(root_house_id(b.dynasty_id), "The Preserving Line"):
+			continue
+		m["progress"] = float(m["progress"]) + syncretism_gain(m)
+		if float(m["progress"]) >= _syncretism_threshold(m):
+			_raise_hybridization_event(m, g, b)
+
+
+func _raise_hybridization_event(m: Dictionary, g: SimCharacter, b: SimCharacter) -> void:
+	## The civilizational moment (v1.0 §4): decades of shared household
+	## have made something neither culture fully was. Adopt, delay, or
+	## reject — the pantheon that once blocked this choice is silent.
+	m["decided"] = true
+	var hybrid := CultureData.hybrid_of(g.culture, b.culture)
+	var hybrid_name := CultureData.hybrid_label(hybrid)
+	var years := int(float(m["progress"]) / 12.0)
+	var bicultural := _bicultural_children(g, b).size()
+	var rec := m
+	var hus := g
+	var wif := b
+	raise_event(g.realm_id, g.id, "A Culture is Born",
+		"%d years of marriage between %s (%s) and %s (%s). %d bicultural %s at their table. What the household practices is no longer either tradition — the world has a name for it now: [b]%s[/b]. The pantheon that once forbade this is silent." % [
+			years, full_name(g), CultureData.culture_label(g.culture),
+			full_name(b), CultureData.culture_label(b.culture),
+			bicultural, "child grows" if bicultural == 1 else "children grow", hybrid_name],
+		[{"label": "Adopt %s ways — both rosters, both worlds" % hybrid_name, "base": 30, "ai": {"patience": 0.2},
+			"effect": func() -> void: _adopt_hybrid(rec, hus, wif, hybrid)},
+		{"label": "Not yet — let the household ripen another twenty years", "base": 10, "ai": {"patience": 0.4},
+			"effect": func() -> void:
+				rec["decided"] = false
+				rec["threshold"] = int(rec["threshold"]) + 240
+				_log("The household of %s and %s keeps both traditions — and decides nothing, for now." % [full_name(hus), full_name(wif)])},
+		{"label": "Reject it — one hall, one tradition", "base": 0, "ai": {"orthodoxy": 1.0},
+			"effect": func() -> void: _reject_hybrid(rec, hus, wif)}])
+
+
+func _adopt_hybrid(_m: Dictionary, g: SimCharacter, b: SimCharacter, hybrid: String) -> void:
+	var hybrid_name := CultureData.hybrid_label(hybrid)
+	var parents: Array = [g.culture, b.culture]
+	g.culture = hybrid
+	b.culture = hybrid
+	for cid in g.children_ids:
+		var c: SimCharacter = characters.get(cid)
+		if c != null and c.alive and c.traits.has("Bicultural"):
+			c.culture = hybrid  # the bicultural children ARE the new culture
+	# the ruler's land follows the household, one percent a month
+	for p in map.provinces:
+		if p.owner == g.realm_id and parents.has(p.culture) and not culture_drift.has(p.id):
+			culture_drift[p.id] = {"target": hybrid, "progress": 0}
+	_log("[b]A new culture takes its name: %s.[/b] The household of %s and %s adopts it, and their lands begin to follow." % [
+		hybrid_name, full_name(g), full_name(b)])
+
+
+func _reject_hybrid(m: Dictionary, g: SimCharacter, b: SimCharacter) -> void:
+	m["path"] = "imposition"
+	m["progress"] = 0.0
+	add_memory(g, "the blending we renounced", b.id, -10.0, 1.0)
+	add_memory(b, "the blending we renounced", g.id, -10.0, 1.0)
+	# the children who grew up bicultural did not consent to the retreat
+	for c: SimCharacter in _bicultural_children(g, b):
+		if rng.randf() < 0.35 and _can_add_trait(c, "Cross-Sworn"):
+			_add_trait(c, "Cross-Sworn")
+			add_memory(c, "they made me two things, then chose one", g.id, -5.0, 0.5)
+			add_memory(c, "they made me two things, then chose one", b.id, -5.0, 0.5)
+			_log("%s grows Cross-Sworn — raised between two worlds, then told to pick." % full_name(c))
+	if rng.randf() < 0.5 and _can_add_trait(g, "Purist"):
+		_add_trait(g, "Purist")
+	_log("The household of %s and %s turns back: one hall, one tradition." % [full_name(g), full_name(b)])
+
+
+func _culture_drift_tick() -> void:
+	## Land under a hybrid-culture ruler drifts toward the household's
+	## ways at 1% a month (v1.0 §10); at 100% the province converts and
+	## its muster answers to both parent rosters.
+	var done: Array = []
+	for pid in culture_drift:
+		var d: Dictionary = culture_drift[pid]
+		d["progress"] = int(d["progress"]) + 1
+		if int(d["progress"]) >= 100:
+			var p = map.provinces[pid]
+			p.culture = str(d["target"])
+			done.append(pid)
+			_log("%s now follows %s ways — the drift of a generation is complete." % [
+				p.name, CultureData.hybrid_label(str(d["target"]))])
+	for pid in done:
+		culture_drift.erase(pid)
 
 
 func trait_cat(t: String) -> String:
@@ -1501,12 +1766,20 @@ func _add_trait(c: SimCharacter, t: String) -> void:
 		c.set(prop, clampi(int(c.get(prop)) + int(mods[k]), 1, 30))
 
 
+func _rollable_congenitals() -> Array:
+	## Bicultural is raised in a two-culture household, never rolled by
+	## chance — and no one at Year Zero was (the pantheon blocked it).
+	var out := _traits_of_cat("congenital")
+	out.erase("Bicultural")
+	return out
+
+
 func _assign_founder_traits(c: SimCharacter) -> void:
 	var personalities := _traits_of_cat("personality")
 	for i in 2:
 		_add_trait(c, personalities[rng.randi_range(0, personalities.size() - 1)])
 	if rng.randf() < 0.15:
-		var congenitals := _traits_of_cat("congenital")
+		var congenitals := _rollable_congenitals()
 		_add_trait(c, congenitals[rng.randi_range(0, congenitals.size() - 1)])
 
 
@@ -1526,7 +1799,7 @@ func _inherit_traits(child: SimCharacter, father: SimCharacter, mother: SimChara
 	while _count_cat(child, "personality") < 2:
 		_add_trait(child, personalities[rng.randi_range(0, personalities.size() - 1)])
 	if rng.randf() < 0.03:
-		var congenitals := _traits_of_cat("congenital")
+		var congenitals := _rollable_congenitals()
 		_add_trait(child, congenitals[rng.randi_range(0, congenitals.size() - 1)])
 
 
@@ -1624,6 +1897,10 @@ func opinion_of(a_id: int, b_id: int) -> int:
 	var total := 0.0
 	if a.spouse_id == b_id:
 		total += 25.0
+		# a cross-culture spouse is loved or resented by disposition
+		# (Syncretist +25 / Purist -30, Cross-Cultural Marriage v1.0)
+		if a.culture != b.culture:
+			total += trait_add(a, "cross_culture_spouse_opinion")
 	if a.father_id == b_id or a.mother_id == b_id or b.father_id == a_id or b.mother_id == a_id:
 		total += 20.0
 	elif a.dynasty_id == b.dynasty_id:
@@ -1647,6 +1924,26 @@ func opinion_of(a_id: int, b_id: int) -> int:
 		total -= 10.0
 	if has_mythos(rb, "Blood of Kings"):
 		total += 5.0
+	# the marriage mythos (Cross-Cultural Marriage v1.0 §6)
+	if ra != rb:
+		if has_mythos(rb, "Compact-Bound"):
+			if a.culture == "karn_vol" or a.culture == "drevak":
+				total += 20.0
+			elif a.culture == "aelindran":
+				total -= 10.0
+		if has_mythos(rb, "Half-Blooded Line"):
+			if a.race.begins_with("half_"):
+				total += 10.0
+			elif a.traits.has("Purist"):
+				total -= 5.0
+		if has_mythos(rb, "Pure of Blood"):
+			if a.traits.has("Purist"):
+				total += 15.0
+			elif a.race.begins_with("half_"):
+				total -= 10.0
+	# the Cross-Sworn resent the peace other Biculturals found
+	if a.traits.has("Cross-Sworn") and b.traits.has("Bicultural"):
+		total -= 15.0
 	if b.denounced:
 		total -= 30.0  # a branded house criminal is shunned by all
 	total += trait_add(b, "court_opinion_baseline")  # the Altruistic are simply liked
@@ -2354,12 +2651,20 @@ func buy_legacy(root_id: int, key: String) -> String:
 	var dyn: Dynasty = dynasties[root_id]
 	if dyn.legacies.has(key):
 		return "The dynasty already holds this legacy."
+	# a house cannot both charter the blending and forswear it
+	var excludes := str(LEGACIES[key].get("excludes", ""))
+	if excludes != "" and dyn.legacies.has(excludes):
+		return "The dynasty already holds %s — the two cannot coexist." % excludes
 	var cost: float = LEGACIES[key]["cost"]
 	if dyn.renown < cost:
 		return "Not enough Renown — %d needed." % int(cost)
 	dyn.renown -= cost
 	dyn.legacies.append(key)
 	_log("[b]%s claims a legacy: %s.[/b] %s." % [dyn.name, key, LEGACIES[key]["blurb"]])
+	# a line that forswears the blending — and has never practiced it —
+	# may claim the name for it (v1.0: "available on request")
+	if key == "The Preserving Line" and dyn.cross_race_marriages == 0:
+		_earn_mythos(root_id, "Pure of Blood")
 	return ""
 
 
