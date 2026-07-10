@@ -129,6 +129,16 @@ the Marn's Crossing threshold-shrine with his daughter **Alenna**
 cheese-house included); **Ariorwe Thaladris** gains Threshold-Sensitive
 — 120 carried names were always threshold-work.
 
+**Odric Vasse's arc** (Gazetteer v1.1 addendum): after his Month-9
+resignation he quietly practices Reformed among the hives (Month 16
+beat), and at Month 30 the Silent Path's teachers come to the bee-yard
+— *The Gathering at the Bee-Yard*, a genuinely open choice per Opus's
+ruling (no trait-matched rail; the dice or the player decide). In the
+canonical fixed-seed run the dice chose: **Odric Vasse becomes a
+founding teacher of the Silent Path at Year 2, Month 7** — the
+movement gains what it could not buy, legitimacy from the man who
+once held Vael's highest altar.
+
 Live mechanics: **Proper Death Received** (a practitioner attends every
 same-realm death at 85%/45%, family remembers the carved bird),
 **Threshold Rite vs Hollow Shades** (Gravewardens receive rather than

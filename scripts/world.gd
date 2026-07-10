@@ -438,6 +438,7 @@ var last_election: Dictionary = {}    # {winner, points {cand id: int}, refused}
 var pending_nomination: Dictionary = {} # {seat, nominee} — awaiting next tick's confirmation vote
 var rejected_nominees: Dictionary = {}  # char id -> tick the Council last refused them
 var anselm_id := -1                   # Grand Magister Anselm Vorontheim
+var odric_id := -1                    # Odric Vasse, Court Chaplain until Month 9 — then the bees
 var halloran_id := -1                 # Magister Halloran Verith, the Reformist wing
 var davriand_id := -1                 # Magister Davriand Karn, the Traditionalist wing
 var kreth_id := -1                    # Magister Kreth Anford, the moderate voice (dying by Year Six)
@@ -3598,10 +3599,12 @@ func _seed_administration() -> void:
 	magister_wing[anselm.id] = "neutral"
 	# his nephew — the dynasty's one Council-eligible spare. Placing him
 	# is Anselm's political puzzle (brief §4); he doesn't know it yet.
-	var sevrin := _admin_character("Sevrin", "House Vorontheim", false, 29, "human",
-		{"dip": 11, "mar": 6, "stw": 13, "int": 9, "lrn": 15, "prw": 6},
-		["Ambitious", "Methodical"], "Pragmatic")
-	sevrin.father_id = -1  # a brother's son; the brother is long dead
+	# Canonized per the Gazetteer v1.1 addendum: 34, a Records Sublevel
+	# deputy in the Magister's blue before he holds any seat.
+	var sevrin := _admin_character("Sevrin", "House Vorontheim", false, 34, "human",
+		{"dip": 16, "mar": 8, "stw": 20, "int": 14, "lrn": 20, "prw": 6},
+		["Methodical", "Ambitious", "Bureaucrat"], "Pragmatic")
+	sevrin.father_id = -1  # Anselm's brother's son; the brother died five years before the Silence
 	# the Vael Compact legacy (brief §6): the academy connection is real,
 	# and twelve years of the chair paid for the declaration
 	var vroot := root_house_id(anselm.dynasty_id)
@@ -3620,7 +3623,9 @@ func _seed_administration() -> void:
 		{"dip": 13, "mar": 14, "stw": 14, "int": 15, "lrn": 12, "prw": 12},
 		["Ambitious", "Brave"], "Opportunistic")
 	davriand_id = davriand.id
-	_seat_magister("Foreign Affairs", davriand.id, tick - 36)
+	# eight years at the borders — the Traditionalist standard-bearer's
+	# career started early and never slowed
+	_seat_magister("Foreign Affairs", davriand.id, tick - 96)
 	magister_wing[davriand.id] = "traditionalist"
 	# Seat 4 — Clerical Registry (now moot): the moderate voice
 	var kreth := _admin_character("Kreth", "House Anford", false, 62, "human",
@@ -3635,25 +3640,34 @@ func _seed_administration() -> void:
 	_seat_magister("Records Sublevel", architect_id, tick - 500)
 	if architect_id >= 0:
 		magister_wing[architect_id] = "silent"
-	# Seats 6-9 — the career administration (names Fable's, for the Gazetteer)
-	var maren := _admin_character("Maren", "House Solvey", true, 55, "human",
+	# Seats 6-9 — the career administration, canonized with backstories in
+	# the Gazetteer v1.1 addendum (ages per Opus's entries)
+	var maren := _admin_character("Maren", "House Solvey", true, 57, "human",
 		{"dip": 12, "mar": 4, "stw": 16, "int": 10, "lrn": 13, "prw": 3},
 		["Methodical", "Patient"], "Pragmatic")
 	_seat_magister("Chancellor", maren.id, tick - 180)
+	# Gazetteer v1.1: "firmly Reformist-aligned but low-key" — her votes
+	# follow Halloran through twenty-three years of loyalty, not through
+	# wing membership; she is never a standard-bearer
 	magister_wing[maren.id] = "neutral"
-	var corvin := _admin_character("Corvin", "House Draeth", false, 50, "human",
+	var corvin := _admin_character("Corvin", "House Draeth", false, 51, "human",
 		{"dip": 7, "mar": 16, "stw": 9, "int": 9, "lrn": 8, "prw": 11},
 		["Brave", "Stoic"], "Zealous")
 	_seat_magister("Master of War", corvin.id, tick - 120)
 	magister_wing[corvin.id] = "traditionalist"
-	var ellard := _admin_character("Ellard", "House Nym", false, 60, "human",
+	var ellard := _admin_character("Ellard", "House Nym", false, 59, "human",
 		{"dip": 9, "mar": 3, "stw": 10, "int": 11, "lrn": 17, "prw": 2},
 		["Methodical", "Compassionate"], "Broken")
 	_seat_magister("Chief Physician", ellard.id, tick - 150)
 	magister_wing[ellard.id] = "neutral"
-	var odric := _admin_character("Odric", "House Vasse", false, 60, "human",
+	# Odric Vasse: the seed's coin-flip historically landed Broken, and the
+	# Gazetteer v1.1 addendum canonized exactly that — the draw is still
+	# consumed (the arng stream must not shift) but the answer is fixed.
+	var _chaplain_roll := arng.randf()
+	var odric := _admin_character("Odric", "House Vasse", false, 61, "human",
 		{"dip": 12, "mar": 4, "stw": 8, "int": 7, "lrn": 14, "prw": 3},
-		["Patient"], "Zealous" if arng.randf() < 0.5 else "Broken")
+		["Patient", "Content"], "Broken")
+	odric_id = odric.id
 	_seat_magister("Court Chaplain", odric.id, tick - 100)
 	magister_wing[odric.id] = "neutral"
 	# off-council: the Chief Spymaster, who reports only upward
@@ -3665,6 +3679,7 @@ func _seed_administration() -> void:
 	add_memory(halloran, "shared cause", kreth.id, 25.0, 0.5)
 	add_memory(kreth, "shared cause", halloran.id, 25.0, 0.5)
 	add_memory(halloran, "a useful ally in the ledgers", maren.id, 15.0, 0.5)
+	add_memory(maren, "twenty-three years of shared work", halloran.id, 20.0, 0.5)
 	add_memory(davriand, "shared cause", corvin.id, 25.0, 0.5)
 	add_memory(corvin, "shared cause", davriand.id, 25.0, 0.5)
 	add_memory(halloran, "the wing across the table", davriand.id, -35.0, 0.5)
@@ -3869,6 +3884,22 @@ func election_candidates() -> Array:
 	return out
 
 
+func _wing_leader(wing: String) -> int:
+	## A wing's standard-bearer: the seated member with the strongest
+	## demonstrated competence. At Year Zero this is Halloran for the
+	## reformists and Davriand for the traditionalists, by construction.
+	var best := -1
+	var best_score := -1
+	for m in seated_magisters():
+		if str(magister_wing.get(m.id, "neutral")) != wing:
+			continue
+		var score: int = m.stewardship + m.learning + m.diplomacy
+		if score > best_score:
+			best = m.id
+			best_score = score
+	return best
+
+
 func _ballot_of(voter: SimCharacter, cands: Array) -> Array:
 	## One Magister's preferential ranking: opinion, wing loyalty,
 	## demonstrated competence, whatever was promised during the
@@ -3881,9 +3912,19 @@ func _ballot_of(voter: SimCharacter, cands: Array) -> Array:
 		var cw := str(magister_wing.get(cand.id, "neutral"))
 		if vw == cw and vw != "neutral":
 			s += 25.0
-		if cw == "reformist" or cw == "traditionalist":
-			# a wing's standard-bearer commands consideration beyond his
-			# bloc — the chamber respects a man who can already count votes
+		# tenure: the chamber does not hand the seal to a man it seated
+		# yesterday — Sevrin at two years is "junior" by canon's own word
+		s += minf(float(tick - int(magister_seats[magister_seat_of(cand.id)]["since"])), 120.0) / 12.0
+		# the Regent has held the seal through the whole crisis — the
+		# chamber has just watched him do the job
+		if int(admin_interregnum.get("regent", -1)) == cand.id:
+			s += 8.0
+		if (cw == "reformist" or cw == "traditionalist") and _wing_leader(cw) == cand.id:
+			# the Wing-Leader Standing principle (Gazetteer v1.1): faction
+			# organization is a first-class political skill — but the bloc's
+			# weight accrues to its standard-bearer, not to every member.
+			# The chamber respects the man who can already count votes; it
+			# does not mistake the counted votes for candidates.
 			var followers := 0
 			for m2 in seated_magisters():
 				if m2.id != cand.id and str(magister_wing.get(m2.id, "neutral")) == cw:
@@ -4529,6 +4570,13 @@ func _faith_beats() -> void:
 				_activate_faith("Aelindran Reformed", 0.0)
 				_shift_coherence("Aelindran Orthodox", -0.03)
 				_log("[b]Vesper's End gains formal recognition.[/b] Selene Tharn's unofficial temple is entered on a Free City charter roll, and the movement it anchors has a name now: Aelindran Reformed. Practice as its own reward — the saying of the prayer was always the priest's part; the hearing was someone else's.")
+			# Gazetteer v1.1: Odric practices Reformed after his resignation —
+			# quietly, among the hives, without ever announcing anything
+			var odric: SimCharacter = characters.get(odric_id)
+			if odric != null and odric.alive and magister_seat_of(odric_id) == "" \
+					and faith_of(odric) == "Aelindran Orthodox":
+				odric.faith = "Aelindran Reformed"
+				_log("Word from outside the walls: the beekeeper who was Court Chaplain keeps the offices still — the Reformed way now, said for their own sake, to no one in particular. He has not announced anything. He simply changed what the saying was for.")
 		30:
 			var f2: Dictionary = faiths["The Silent Path"]
 			if not bool(f2["active"]):
@@ -4540,6 +4588,33 @@ func _faith_beats() -> void:
 					_log("[b]The first teacher of the Silent Path.[/b] Mother Anra Halden — once priestess of Halvet, who set down the office in Year Two — begins receiving visitors at her cheese-house. Her teaching is short: the pantheon has already spoken, through their absence, and the ceremony was itself the message. The quiet gatherings multiply.")
 				else:
 					_log("[b]The Silent Path finds its first teachers[/b] — quiet gatherings in the Free Cities, holding the Silence itself to be the pantheon's final revelation. No temples. No offices. No further practice required, or possible.")
+			_raise_bee_yard_gathering()
+
+
+func _raise_bee_yard_gathering() -> void:
+	## Gazetteer v1.1: Silent Path teachers approach Odric Vasse from Year
+	## Two onward — a founding teacher's legitimacy, if he'll give it. His
+	## arc is genuinely open (Opus's ruling): no trait-matched rail here;
+	## the dice, or the player, decide.
+	var odric: SimCharacter = characters.get(odric_id)
+	if odric == null or not odric.alive or magister_seat_of(odric_id) != "":
+		return
+	if not bool(faiths["The Silent Path"]["active"]):
+		return
+	var who := odric
+	raise_event(0, odric.id, "The Gathering at the Bee-Yard",
+		"Three quiet visitors come to the beekeeper who was Court Chaplain. They do not ask him to pray. They ask him to teach — because a founding voice who once held the pantheon's highest seat in Vael would say, better than any argument could, that the Silence itself was the final sermon.",
+		[
+			{"label": "Teach — the absence was the message", "base": 3.0,
+				"effect": func() -> void:
+					_convert_faith(who, "The Silent Path")
+					_shift_coherence("The Silent Path", 0.05)
+					_shift_coherence("Aelindran Orthodox", -0.03)
+					_log("[b]Odric Vasse becomes a founding teacher of the Silent Path.[/b] The man who kept Vael's highest altar now teaches, gently, that no altar was ever the point — and his old office does the arguing for him. The movement gains what it could not buy: legitimacy.")},
+			{"label": "Decline — the bees still answer", "base": 3.0,
+				"effect": func() -> void:
+					_log("Odric Vasse hears the visitors out, feeds them, and sends them off with honey. He will not teach that nothing answers. Something does — it is small, and striped, and it was never the pantheon, and that is enough for him.")},
+		], false, false, true)
 
 
 func _coherence_tick() -> void:

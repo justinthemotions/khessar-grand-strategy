@@ -25,22 +25,26 @@ the clan, *King/Queen* for feudal crowns.
 | Seat | Holder | Age | Wing | Notes |
 |---|---|---|---|---|
 | Grand Magister | **Anselm Vorontheim** | 68 | — | Methodical, Content, Patient, Homely, **Broken**; 12 years in the chair |
-| Economic Affairs | **Halloran Verith** | 45 | reformist | Ambitious, Honest, Pragmatic |
-| Foreign Affairs | **Davriand Karn** | 40 | traditionalist | **Half-Orc**; Ambitious, Brave, Opportunistic |
+| Economic Affairs | **Halloran Verith** | 45 | reformist | Ambitious, Honest, Pragmatic — the Reformist standard-bearer |
+| Foreign Affairs | **Davriand Karn** | 40 | traditionalist | **Half-Orc**; Ambitious, Brave, Opportunistic; eight years at the borders |
 | Clerical Registry | **Kreth Anford** | 62 | reformist-leaning | Broken; scheduled to die by Year Six (Month 70) |
 | Records Sublevel | **Veril Ormand** | 77 | *silent* | Magic v1.0's Architect — the seat was always his |
-| Chancellor | Maren Solvey* | 55 | neutral | Anselm-loyal career administrator |
-| Master of War | Corvin Draeth* | 50 | traditionalist | Zealous garrison soldier |
-| Chief Physician | Ellard Nym* | 60 | neutral | Kreth's old confidant |
-| Court Chaplain | Odric Vasse* | 60 | — | Zealous **or** Broken, rolled at seed — see §6 |
+| Chancellor | **Maren Solvey** | 57 | neutral | Reformist-aligned through 23 years of loyalty to the ledgers — never a standard-bearer |
+| Master of War | **Corvin Draeth** | 51 | traditionalist | Zealous garrison soldier, Davriand-aligned |
+| Chief Physician | **Ellard Nym** | 59 | neutral | Kreth's old confidant; will fail to detect the poison, and carry it |
+| Court Chaplain | **Odric Vasse** | 61 | — | Patient, Content, **Broken** (the seed's coin-flip, now canon) — see §6 |
 
 Off-council: **Chief Spymaster Tess Mareck** (51, Intrigue 19) — no
 seat, reports only upward, knows more than she files. Also seeded:
-**Sevrin Vorontheim** (29, Learning 15), Anselm's nephew and the
-dynasty's one Council-eligible spare.
+**Sevrin Vorontheim** (34, Learning 20, Methodical/Ambitious/Bureaucrat,
+Pragmatic), Anselm's nephew, a Records Sublevel deputy and the dynasty's
+one Council-eligible spare.
 
-\* Names marked with an asterisk are Fable-invented for the brief's
-unnamed seats — **flagged for Opus's Gazetteer** to canonize or rename.
+All four once-unnamed seats — and Sevrin — are now **canonical per
+Opus's Gazetteer v1.1 addendum** (Post-Administrative Canon Updates),
+with ages, traits, and backstories reconciled into the seeds. Odric's
+Broken response is canon-fixed: the historical die is still consumed
+(the `arng` stream must not shift) but the answer no longer floats.
 
 House Vorontheim declares **The Vael Compact** legacy at setup (250 of
 its 280 renown) — the brief's §6 recommendation.
@@ -93,10 +97,17 @@ Vote**: preferential ballots, top five ranked, points 5-4-3-2-1, ties
 to seniority, office immediately — "no coronation; a signature, a
 seal, and the weight of eight opinions."
 
-Ballot scoring: opinion + wing loyalty (+25) + **wing-leader standing**
-(+8 per bloc follower — the chamber respects a man who can already
-count votes) + competence ((stw+lrn+dip)/3) + consolidation support +
-self (+60, +20 more if Ambitious).
+Ballot scoring: opinion + wing loyalty (+25) + **Wing-Leader Standing**
+(+8 per bloc follower, paid to the wing's *standard-bearer only* — the
+chamber respects the man who can already count votes; it does not
+mistake the counted votes for candidates) + **tenure** (up to +10 over
+ten seated years — the chamber does not hand the seal to a man it
+seated yesterday) + **the Regent's visibility** (+8: the chamber has
+just watched him do the job) + competence ((stw+lrn+dip)/3) +
+consolidation support + self (+60, +20 more if Ambitious). The
+Wing-Leader Standing principle is canonized in the Gazetteer v1.1
+addendum: *faction organization is a first-class political skill in
+the Magistocracy.*
 
 **Failed Council Vote Refusal** (the Administrative palace coup): a
 loser within 2 points, with Master-of-War friendship ≥ +40 and ≤ −30
@@ -126,17 +137,22 @@ the poisoning.
 
 ### The canonical fixed-seed run (seeds 1066/333/555/777/888)
 
-The Chaplain rolls **Broken** — Odric Vasse resigns in Month 9, and by
+Odric Vasse breaks **Broken** (canon) — resigns in Month 9, and by
 Month 13 the AI appointment machinery has nominated and confirmed
 **Sevrin Vorontheim** to the vacant Chaplain seat: *the brief's "place
 a nephew before the poisoning" puzzle resolved itself emergently.*
 Anselm dies at the autumn dinner; Kreth Anford (senior-most) stands
-Regent; and the first Council Election returns exactly the brief's
-three named candidates at the top of the count: **Halloran Verith 22 —
-Kreth Anford 19 — Davriand Karn 18.** Grand Magister Halloran Verith,
-the reformist, now holds the seal — with Davriand's wing intact,
-angry, and holding a grudge with eighty-eight years of sublevel
-history still buried beneath it.
+Regent; and the first Council Election returns exactly the Gazetteer's
+three named candidates in exactly its order: **Halloran Verith 22 —
+Kreth Anford 20 — Davriand Karn 19** (the v1.1 timeline's 22-19-18,
+re-derived one point apart after Sevrin's canonical stats entered the
+ballots — ordering, margins, and meaning preserved; flagged for Opus).
+Maren Solvey polls low-key at 15; Sevrin, junior at two years seated,
+finishes mid-pack — a candidate but not a leading one, per canon.
+Grand Magister Halloran Verith, the reformist, now holds the seal —
+governing from a plurality, with Davriand's wing intact, angry, and
+holding a grudge with eighty-eight years of sublevel history still
+buried beneath it.
 
 ## 7. Non-hereditary mechanics (brief §4, Phase 5)
 
