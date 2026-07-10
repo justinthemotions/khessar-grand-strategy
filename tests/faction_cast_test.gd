@@ -13,11 +13,19 @@ func _init() -> void:
 	world.auto_resolve_events = true
 
 	# --- 1. the live founders wear their canonical names ---
-	var garran: SimCharacter = world.characters[world.realms[0].ruler_id]
+	# (Administrative v1.0: realm 0's chair passed from the Halvenard-Veil
+	# placeholder to Grand Magister Anselm; Garran heads his House at 55.)
+	var garran: SimCharacter = null
+	for c in world.characters.values():
+		if world.full_name(c) == "Garran Halvenard-Veil":
+			garran = c
 	var vorak: SimCharacter = world.characters[world.realms[1].ruler_id]
-	assert(world.full_name(garran) == "Garran Halvenard-Veil", "the Vael crown is Garran Halvenard-Veil (got %s)" % world.full_name(garran))
+	assert(garran != null and garran.alive, "Garran Halvenard-Veil heads his House")
+	assert(garran.age_years(world.tick) == 55, "Garran is 55 at Year Zero, per the Faction Map")
+	assert(world.full_name(world.characters[world.realms[0].ruler_id]) == "Anselm Vorontheim",
+		"the Magistocracy's chair is Grand Magister Anselm Vorontheim")
 	assert(world.full_name(vorak) == "Vorak Karn-Vol", "the clan chief is Vorak Karn-Vol (got %s)" % world.full_name(vorak))
-	print("reconciliation ok — %s and %s, per the Faction Map" % [world.full_name(garran), world.full_name(vorak)])
+	print("reconciliation ok — %s (55) and %s, per the Faction Map; Anselm holds the chair" % [world.full_name(garran), world.full_name(vorak)])
 
 	# --- 2. the seven canonical crowns are seated ---
 	var expected := [

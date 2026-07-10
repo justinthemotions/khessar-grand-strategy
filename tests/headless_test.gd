@@ -152,6 +152,29 @@ func _init() -> void:
 	print("split/merge ok")
 
 	# --- Module 2: houses, renown, legacies, dynasty head powers ---
+	# Administrative v1.0: realm 0's chair is elected now, and the
+	# magistracy houses are two-man lines. Module 2's crown-and-blood
+	# mechanics are feudal by design — so for this block, hand the realm
+	# briefly back to its biggest noble house under the old law.
+	var admin_ruler_id: int = world.realms[0].ruler_id
+	world.realms[0].government = "feudal"
+	var best_root := -1
+	var best_adults := 0
+	for dyn in world.dynasties.values():
+		if world.root_house_id(dyn.id) != dyn.id:
+			continue
+		var head0 = world.house_head(dyn.id)
+		if head0 == null or head0.realm_id != 0 or world.is_cast(head0):
+			continue
+		var adults := 0
+		for c in world.dynasty_members(dyn.id):
+			if c.age_years(world.tick) >= 16 and c.realm_id == 0:
+				adults += 1
+		if adults > best_adults:
+			best_adults = adults
+			best_root = dyn.id
+	assert(best_root >= 0, "realm 0 must keep a noble dynasty")
+	world.realms[0].ruler_id = world.house_head(best_root).id
 	var ruler: SimCharacter = world.characters[world.realms[0].ruler_id]
 	var root: int = world.root_house_id(ruler.dynasty_id)
 	assert(root == ruler.dynasty_id, "founding houses must be their own root")
@@ -239,9 +262,17 @@ func _init() -> void:
 	for kid_id in ruler.children_ids:
 		var kid: SimCharacter = world.characters[kid_id]
 		var h2: SimCharacter = world.heir_of(0)
-		if kid.alive and kid.age_years(world.tick) >= 16 and (h2 == null or h2.id != kid.id):
+		# the same candidate later founds a schismatic branch, which asks
+		# for a trueborn man — pick one who qualifies for both tests
+		if kid.alive and not kid.is_female and not kid.is_bastard \
+				and kid.age_years(world.tick) >= 16 and (h2 == null or h2.id != kid.id):
 			younger = kid
 			break
+	if younger == null:
+		# the emergent family tree offered no spare son this run — raise one
+		younger = world._spawn(world.realms[0], ruler.dynasty_id, false, 24)
+		younger.father_id = ruler.id
+		ruler.children_ids.append(younger.id)
 	assert(younger != null, "no adult non-heir child for the bequest test")
 	var gold_before: float = world.realms[0].gold
 	var beq_err := world.grant_bequest(0, younger.id)
@@ -316,6 +347,10 @@ func _init() -> void:
 	assert(crowned_seen, "no coronation was ever chronicled")
 	print("interregnum ok — resolved, %s rules %s" % [
 		world.full_name(world.characters[world.realms[0].ruler_id]), world.realms[0].name])
+	# ...and the seal goes back to the Council (Administrative v1.0)
+	world.realms[0].government = "administrative"
+	if world.characters.has(admin_ruler_id) and world.characters[admin_ruler_id].alive:
+		world.realms[0].ruler_id = admin_ruler_id
 
 	# --- Module 3: the title pyramid, de jure drift, governments ---
 	assert(world.map.duchies.size() >= 4, "each realm should carve at least two duchies")

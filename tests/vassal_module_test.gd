@@ -99,11 +99,15 @@ func _init() -> void:
 	var lord_c = _adult(world, 0, [lord_a.id, lord_b.id])
 	var county_c := _own_county(world)
 	var _g3: String = world.grant_title("county", county_c, lord_c.id)
-	# force ideology: all three lords are Constitutionalists who hate war
+	# force ideology: all three lords are Constitutionalists who hate war.
+	# (Administrative v1.0 note: realm 0's crown is now Grand Magister
+	# Anselm, whom the lords bear no feud — so cool their regard below
+	# the loyalty-bends-ideology threshold to test the bloc's own vote.)
 	for lord in [lord_a, lord_b, lord_c]:
 		lord.traits.clear()
 		lord.traits.append("Honest")
 		lord.traits.append("Patient")
+		world.add_memory(lord, "no friend of the new chair", realm.ruler_id, -30.0, 0.1)
 	assert(world.bloc_of(lord_a) == "Constitutionalists", "Honest and Patient caucus for the law")
 	var vote: Dictionary = world.curia_vote(0, "war")
 	assert(not bool(vote["passed"]), "the Constitutionalists vote the war down: %s" % vote["detail"])

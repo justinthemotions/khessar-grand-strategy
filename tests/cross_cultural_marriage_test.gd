@@ -89,8 +89,9 @@ func _init() -> void:
 	world.setup()
 	for cid in world.characters:
 		var c = world.characters[cid]
-		if c.realm_id >= 2:
-			continue  # the Faction Cast carry their own canonical races (dwarf, elf...)
+		if world.is_cast(c):
+			continue  # the Faction Cast and the Council of Magisters carry
+			# their own canonical races (dwarf, elf, Davriand's half-orc blood...)
 		assert(c.race == ("human" if c.realm_id == 0 else "orc"), "the Vael court is Human, the clan is Orc")
 	print("Year Zero courts carry their canonical races")
 
