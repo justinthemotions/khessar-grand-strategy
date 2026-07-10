@@ -91,6 +91,34 @@ Interactive battles tick both from `BattleView._process`; **auto-resolve** calls
 `run_headless()` — `move_step(0.1)` per frame, a combat tick + AI step every 5 frames,
 both sides AI-controlled, same sim, instant result.
 
+## 4b. The battle interface: the unit card bar (`battle_view.gd`)
+
+A Total War-style card bar runs along the bottom of the battle screen, drawn
+immediate-mode in `_draw` like everything else in the view:
+
+- **The hero card** comes first (present when `sim.commanders[0]` is set): gold-framed,
+  crown notch, plumed portrait. Clicking it (`commander_selected`) turns the bottom-left
+  panel into the commander's sheet — name (`_cmdr_info` now carries `world.full_name`),
+  Martial/Intrigue/Prowess, traits, faith, oath-token state, and the battle's running
+  stress/corruption ledgers.
+- **One card per side-0 regiment**: remaining men over a green strength band
+  (`soldiers / start_soldiers`), a gold morale strip, an orange ammunition strip for
+  missile units (`ammo_start` records the starting pouch), the unit's own pixel soldier
+  as a portrait, and an **archetype glyph** in the TW-style bottom notch —
+  `_card_archetype` maps silence (`silence_kind`, a skull) / cavalry / caster
+  (`ward_shield`) / support (`aura_lead > 0`) / missile / spear (`bonus_cav ≥ 10`) /
+  sword, in that priority order.
+- **States on the card**: gold `»»` while charging; a white flag over a greyed card
+  when routed; a near-black shade and a skull once the regiment is dead or fled.
+  Cards persist after death, TW-style.
+- **Clicks**: a card click selects its regiment exactly like clicking the field (gold
+  frame + bottom-left panel); every other click inside the bar is consumed so strays
+  never reach the grass beneath. A right-drag order already in progress completes even
+  if the button lifts over the bar. Hovering a card names it above the bar.
+- **Geometry** lives in `_card_layout()` — a pure function of `size` + sim state
+  (cards shrink below 54px when the line outgrows the window), so the headless suite
+  asserts layout and click routing without a renderer.
+
 ## 5. Unit stats (`PRESETS`)
 
 | stat | levy | sword | cav | archer | meaning |
@@ -282,6 +310,10 @@ modules land).
   the reap-vs-threshold interaction, the Chaplain aura filter, conviction and
   oath-conflict arming, vigour, arcane fire vs the Returned, full Order-vs-Warden-Dead
   auto-battles, battle determinism, and the campaign recruit gates.
+- `tests/battle_ui_test.gd` (6 groups) validates the unit card bar (§4b): layout
+  geometry, the archetype glyph mapping, click routing (unit cards, the hero card,
+  consumed bar clicks), remaining-men/ammunition tracking, the commander panel, and
+  card shrinking on narrow windows — all headless, via `_card_layout()`.
 - Visual check: `--path . -- --battle-screenshot` boots straight into a battle and saves
   a PNG to `user://`.
 - The sim is deterministic given the same rosters; campaign RNG uses a fixed seed (1066),

@@ -2287,8 +2287,8 @@ func _cmdr_info(a) -> Dictionary:
 	if a == null or a.commander_id < 0:
 		return {}
 	var c: SimCharacter = world.characters[a.commander_id]
-	return {"martial": c.martial, "intrigue": c.intrigue, "prowess": c.prowess,
-		"traits": c.traits.duplicate(), "names": c.names_carried,
+	return {"name": world.full_name(c), "martial": c.martial, "intrigue": c.intrigue,
+		"prowess": c.prowess, "traits": c.traits.duplicate(), "names": c.names_carried,
 		"oath_intact": c.oath_token_intact, "faith": world.faith_of(c)}
 
 

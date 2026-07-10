@@ -5,6 +5,11 @@ extends Control
 ## floating banners with HP and morale bars, a unit panel bottom-left,
 ## and speed controls top-right. Left-click selects a regiment,
 ## right-click orders your (blue, side 0) regiments to move.
+## A Total War-style card bar runs along the bottom: the commander's
+## hero card, then one card per regiment — men remaining over a green
+## strength band, morale and ammunition strips, the unit's own pixel
+## soldier as a portrait, and an archetype glyph in the bottom notch.
+## Cards click to select, exactly like clicking the field.
 
 signal finished(winner_side: int, loser_loss_fraction: float)
 
@@ -19,6 +24,16 @@ const HORSE := Color("5f4630")
 const GOLD := Color("d9c07a")
 const HP_COLOR := Color("4f9e3c")
 const MORALE_COLOR := Color("d9b13a")
+
+# The card bar (TW-style unit cards along the bottom edge)
+const AMMO_COLOR := Color("d97b2f")
+const CARD_BG := Color("221d16")
+const CARD_BAND := Color("14110c")
+const CARD_INK := Color("d9c07a")
+const CARD_W := 54.0
+const CARD_H := 88.0
+const CARD_GAP := 5.0
+const BAR_PAD := 8.0
 
 var sim := BattleSim.new()
 var side_names: Array = ["Aldmark", "Sarova"]
@@ -41,6 +56,8 @@ var unit_status: Label
 var unit_stats: Label
 var end_box: CenterContainer
 var tactic_buttons: Dictionary = {}   # kind -> Button (the Battle Grid's command cards)
+var commander_selected := false       # the hero card is clicked — the panel shows him
+var ammo_start: Dictionary = {}       # regiment id -> starting ammunition (the orange strip)
 
 
 func start(roster_a: Array, roster_b: Array, lead_a: int, lead_b: int,
@@ -51,6 +68,9 @@ func start(roster_a: Array, roster_b: Array, lead_a: int, lead_b: int,
 	side_colors = p_side_colors
 	battle_title = p_title
 	sim.setup_from_rosters(roster_a, roster_b, lead_a, lead_b, side_names, cmdr_traits_a, cmdr_traits_b, terrain, ground)
+	for r: BattleSim.Regiment in sim.regiments:
+		if r.ammo > 0:
+			ammo_start[r.id] = r.ammo
 	sim.battle_ended.connect(_on_battle_ended)
 
 
@@ -97,9 +117,9 @@ func _ready() -> void:
 	unit_panel = PanelContainer.new()
 	unit_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
 	unit_panel.offset_left = 12.0
-	unit_panel.offset_top = -272.0
+	unit_panel.offset_top = -388.0
 	unit_panel.offset_right = 244.0
-	unit_panel.offset_bottom = -12.0
+	unit_panel.offset_bottom = -128.0  # clears the card bar below
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 3)
 	unit_panel.add_child(box)
@@ -176,22 +196,26 @@ func _gui_input(event: InputEvent) -> void:
 		mouse_now = event.position
 		return
 	if event is InputEventMouseButton:
+		# a drag in progress finishes wherever the button lifts — even over the bar
+		if event.button_index == MOUSE_BUTTON_RIGHT and not event.pressed and dragging:
+			dragging = false
+			_issue_order(drag_start, event.position)
+			return
+		if _card_click(event.position, event.button_index, event.pressed):
+			return
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			selected_id = -1
+			commander_selected = false
 			for r: BattleSim.Regiment in sim.regiments:
 				if r.alive() and _to_screen(r.pos).distance_to(event.position) < maxf(r.radius() * _scale(), 26.0):
 					selected_id = r.id
 					break
-		elif event.button_index == MOUSE_BUTTON_RIGHT:
-			if event.pressed:
-				if selected_id >= 0:
-					var r: BattleSim.Regiment = sim.regiments[selected_id]
-					if r.side == 0 and r.active():
-						dragging = true
-						drag_start = event.position
-			elif dragging:
-				dragging = false
-				_issue_order(drag_start, event.position)
+		elif event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+			if selected_id >= 0:
+				var r: BattleSim.Regiment = sim.regiments[selected_id]
+				if r.side == 0 and r.active():
+					dragging = true
+					drag_start = event.position
 
 
 func _issue_order(a: Vector2, b: Vector2) -> void:
@@ -287,6 +311,8 @@ func _draw() -> void:
 			draw_string(font, mouse_now + Vector2(12, -6), "%d files" % files,
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, GOLD)
 
+	_draw_card_bar()
+
 
 func _draw_regiment(r: BattleSim.Regiment) -> void:
 	var body: Color = side_colors[r.side]
@@ -308,8 +334,9 @@ func _draw_regiment(r: BattleSim.Regiment) -> void:
 		_draw_soldier(_to_screen(world), r.kind, body)
 
 
-func _draw_soldier(p: Vector2, kind: String, body: Color) -> void:
-	var s := _scale()
+func _draw_soldier(p: Vector2, kind: String, body: Color, s: float = -1.0) -> void:
+	if s < 0.0:
+		s = _scale()
 	if kind == "cav":
 		draw_rect(Rect2(p + Vector2(-5, -3) * s, Vector2(10, 4) * s), HORSE)
 		draw_rect(Rect2(p + Vector2(4, -5) * s, Vector2(3, 3) * s), HORSE)          # horse head
@@ -349,9 +376,239 @@ func _draw_banner(r: BattleSim.Regiment) -> void:
 	draw_rect(Rect2(bar_pos + Vector2(0, 4), Vector2(24.0 * mor, 3)), MORALE_COLOR)
 
 
+# ---------------------------------------------------------------- card bar
+
+func _card_layout() -> Dictionary:
+	## Where every card sits this frame. Pure geometry — the click handler
+	## and the draw pass both read it, so headless tests can too.
+	var mine: Array = sim.regiments.filter(func(r) -> bool: return r.side == 0)
+	var has_cmdr: bool = not (sim.commanders[0] as Dictionary).is_empty()
+	if mine.is_empty():
+		return {"bar": Rect2(), "cards": [], "commander": Rect2(), "has_commander": false, "card_w": CARD_W}
+	var n := mine.size() + (1 if has_cmdr else 0)
+	var hero_gap := 8.0 if has_cmdr else 0.0   # heroes sit apart from the line, TW-style
+	var card_w := CARD_W
+	var inner := float(n) * card_w + float(n - 1) * CARD_GAP + hero_gap
+	var avail := size.x - 24.0 - BAR_PAD * 2.0
+	if inner > avail:
+		card_w = maxf(30.0, (avail - float(n - 1) * CARD_GAP - hero_gap) / float(n))
+		inner = float(n) * card_w + float(n - 1) * CARD_GAP + hero_gap
+	var bar := Rect2(Vector2((size.x - inner) * 0.5 - BAR_PAD, size.y - CARD_H - BAR_PAD * 2.0 - 6.0),
+		Vector2(inner + BAR_PAD * 2.0, CARD_H + BAR_PAD * 2.0))
+	var x := bar.position.x + BAR_PAD
+	var y := bar.position.y + BAR_PAD
+	var cmdr_rect := Rect2()
+	if has_cmdr:
+		cmdr_rect = Rect2(Vector2(x, y), Vector2(card_w, CARD_H))
+		x += card_w + CARD_GAP + hero_gap
+	var cards: Array = []
+	for r: BattleSim.Regiment in mine:
+		cards.append({"rect": Rect2(Vector2(x, y), Vector2(card_w, CARD_H)), "id": r.id})
+		x += card_w + CARD_GAP
+	return {"bar": bar, "cards": cards, "commander": cmdr_rect, "has_commander": has_cmdr, "card_w": card_w}
+
+
+func _card_archetype(r: BattleSim.Regiment) -> String:
+	## Which glyph sits in the card's bottom notch — the unit's battlefield role.
+	if r.silence_kind:
+		return "silence"
+	if r.is_cav:
+		return "cavalry"
+	if r.ward_shield:
+		return "caster"
+	if r.aura_lead > 0.0:
+		return "support"
+	if r.rng_range > 0.0:
+		return "missile"
+	if r.bonus_cav >= 10.0:
+		return "spear"
+	return "sword"
+
+
+func _card_click(pos: Vector2, button: int, pressed: bool) -> bool:
+	## True when the click lands on the card bar — it is consumed there
+	## and never reaches the field beneath.
+	var lay := _card_layout()
+	var bar: Rect2 = lay["bar"]
+	if bar.size.x <= 0.0 or not bar.has_point(pos):
+		return false
+	if button == MOUSE_BUTTON_LEFT and pressed:
+		if bool(lay["has_commander"]) and (lay["commander"] as Rect2).has_point(pos):
+			commander_selected = true
+			selected_id = -1
+			return true
+		for c in lay["cards"]:
+			if (c["rect"] as Rect2).has_point(pos):
+				commander_selected = false
+				selected_id = int(c["id"])
+				return true
+	return true
+
+
+func _draw_card_bar() -> void:
+	var lay := _card_layout()
+	var bar: Rect2 = lay["bar"]
+	if bar.size.x <= 0.0:
+		return
+	draw_rect(bar, Color("14110ce0"))
+	draw_rect(bar, Color("3a2b1c"), false, 2.0)
+	var hover_text := ""
+	if bool(lay["has_commander"]):
+		var crect: Rect2 = lay["commander"]
+		_draw_commander_card(crect)
+		if crect.has_point(mouse_now):
+			hover_text = str(sim.commanders[0].get("name", "The Commander"))
+	for c in lay["cards"]:
+		var r: BattleSim.Regiment = sim.regiments[int(c["id"])]
+		_draw_unit_card(c["rect"] as Rect2, r)
+		if (c["rect"] as Rect2).has_point(mouse_now):
+			hover_text = "%s — %d men" % [r.label, r.soldiers]
+	if hover_text != "":
+		var font := get_theme_default_font()
+		var tw := font.get_string_size(hover_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+		var tp := Vector2(clampf(mouse_now.x - tw * 0.5, 8.0, size.x - tw - 8.0), bar.position.y - 10.0)
+		draw_rect(Rect2(tp + Vector2(-5, -14), Vector2(tw + 10, 19)), Color("14110cd8"))
+		draw_string(font, tp, hover_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, GOLD)
+
+
+func _draw_unit_card(rect: Rect2, r: BattleSim.Regiment) -> void:
+	var font := get_theme_default_font()
+	draw_rect(rect, CARD_BG)
+	# the number band: men remaining, over a green bar of the unit's strength
+	var band := Rect2(rect.position, Vector2(rect.size.x, 13.0))
+	var hp := clampf(float(r.soldiers) / maxf(1.0, float(r.start_soldiers)), 0.0, 1.0)
+	draw_rect(band, CARD_BAND)
+	draw_rect(Rect2(band.position, Vector2(band.size.x * hp, band.size.y)), HP_COLOR.darkened(0.15))
+	draw_string(font, band.position + Vector2(3, 10), str(r.soldiers),
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color.WHITE)
+	# thin strips beneath: morale (gold), then ammunition (orange, missile units)
+	var y := band.end.y + 1.0
+	var mor := clampf(r.morale() / BattleSim.START_MORALE, 0.0, 1.0)
+	draw_rect(Rect2(Vector2(rect.position.x, y), Vector2(rect.size.x, 2.0)), CARD_BAND)
+	draw_rect(Rect2(Vector2(rect.position.x, y), Vector2(rect.size.x * mor, 2.0)), MORALE_COLOR)
+	y += 3.0
+	if r.rng_range > 0.0:
+		var am := clampf(float(r.ammo) / maxf(1.0, float(ammo_start.get(r.id, maxi(r.ammo, 1)))), 0.0, 1.0)
+		draw_rect(Rect2(Vector2(rect.position.x, y), Vector2(rect.size.x, 2.0)), CARD_BAND)
+		draw_rect(Rect2(Vector2(rect.position.x, y), Vector2(rect.size.x * am, 2.0)), AMMO_COLOR)
+		y += 3.0
+	# the portrait: the unit's own pixel soldier at parade scale
+	var portrait := Rect2(Vector2(rect.position.x, y), Vector2(rect.size.x, rect.end.y - y))
+	draw_rect(portrait, (side_colors[r.side] as Color).darkened(0.62))
+	var ps := minf(3.4, portrait.size.y / 17.0)
+	_draw_soldier(Vector2(portrait.get_center().x, portrait.end.y - 6.0), r.kind, side_colors[r.side], ps)
+	if r.charging_ticks > 0 and r.active():
+		draw_string(font, Vector2(rect.end.x - 17.0, band.end.y + 15.0), "»»",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, GOLD)
+	# fallen and broken states shade the whole card
+	if not r.alive():
+		draw_rect(rect, Color(0.05, 0.04, 0.03, 0.78))
+		_draw_skull(rect.get_center(), 7.0)
+	elif r.routed:
+		draw_rect(rect, Color(0.45, 0.45, 0.45, 0.45))
+		_draw_white_flag(rect.get_center())
+	# archetype notch at the card's foot, TW-style
+	var nc := Vector2(rect.get_center().x, rect.end.y - 1.0)
+	draw_circle(nc, 9.0, CARD_BAND)
+	draw_arc(nc, 9.0, PI, TAU, 16, Color("6b5a3a"), 1.5)
+	_draw_arch_icon(nc + Vector2(0, -2.5), _card_archetype(r))
+	if r.id == selected_id:
+		draw_rect(rect, GOLD, false, 2.0)
+	else:
+		draw_rect(rect, Color("3a2b1c"), false, 1.0)
+
+
+func _draw_commander_card(rect: Rect2) -> void:
+	var font := get_theme_default_font()
+	draw_rect(rect, CARD_BG)
+	var band := Rect2(rect.position, Vector2(rect.size.x, 13.0))
+	draw_rect(band, Color("3a2b1c"))
+	draw_string(font, band.position + Vector2(3, 10), "CMDR", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, GOLD)
+	var portrait := Rect2(rect.position + Vector2(0, 14.0), Vector2(rect.size.x, rect.size.y - 14.0))
+	draw_rect(portrait, (side_colors[0] as Color).darkened(0.5))
+	var base := Vector2(portrait.get_center().x, portrait.end.y - 7.0)
+	var ps := minf(3.4, portrait.size.y / 17.0)
+	_draw_soldier(base, "sword", side_colors[0], ps)
+	# the plume marks him out among his own
+	draw_line(base + Vector2(0.0, -9.0) * ps, base + Vector2(-3.0, -13.0) * ps, GOLD, 2.5)
+	var nc := Vector2(rect.get_center().x, rect.end.y - 1.0)
+	draw_circle(nc, 9.0, CARD_BAND)
+	draw_arc(nc, 9.0, PI, TAU, 16, GOLD, 1.5)
+	_draw_arch_icon(nc + Vector2(0, -2.5), "crown")
+	if commander_selected:
+		draw_rect(rect, GOLD, false, 2.0)
+	else:
+		draw_rect(rect, GOLD.darkened(0.35), false, 1.0)
+
+
+func _draw_skull(c: Vector2, s: float) -> void:
+	draw_circle(c, s, Color("d8d2c4"))
+	draw_rect(Rect2(c + Vector2(-s * 0.45, s * 0.5), Vector2(s * 0.9, s * 0.5)), Color("d8d2c4"))
+	draw_rect(Rect2(c + Vector2(-s * 0.5, -s * 0.3), Vector2(s * 0.35, s * 0.4)), CARD_BAND)
+	draw_rect(Rect2(c + Vector2(s * 0.15, -s * 0.3), Vector2(s * 0.35, s * 0.4)), CARD_BAND)
+
+
+func _draw_white_flag(c: Vector2) -> void:
+	draw_line(c + Vector2(-2, 10), c + Vector2(-2, -10), Color("3a2b1c"), 2.0)
+	draw_rect(Rect2(c + Vector2(-1, -10), Vector2(11, 7)), Color("e8e2d4"))
+
+
+func _draw_arch_icon(c: Vector2, t: String) -> void:
+	match t:
+		"sword":
+			draw_line(c + Vector2(-3.5, 3.5), c + Vector2(3.5, -3.5), CARD_INK, 1.6)
+			draw_line(c + Vector2(-2.5, -1.0), c + Vector2(0.5, 2.0), CARD_INK, 1.4)
+		"spear":
+			draw_line(c + Vector2(0, 4.5), c + Vector2(0, -3.0), CARD_INK, 1.4)
+			draw_colored_polygon(PackedVector2Array([
+				c + Vector2(0, -5.5), c + Vector2(-2.2, -2.2), c + Vector2(2.2, -2.2)]), CARD_INK)
+		"missile":
+			draw_arc(c + Vector2(-1.0, 0), 4.5, -PI * 0.45, PI * 0.45, 10, CARD_INK, 1.5)
+			draw_line(c + Vector2(0.4, -4.4), c + Vector2(0.4, 4.4), CARD_INK, 1.0)
+		"cavalry":
+			draw_arc(c + Vector2(0, 0.5), 4.0, PI * 1.05, PI * 1.95, 10, CARD_INK, 1.8)
+			draw_line(c + Vector2(-3.8, 1.4), c + Vector2(-3.8, 3.4), CARD_INK, 1.8)
+			draw_line(c + Vector2(3.8, 1.4), c + Vector2(3.8, 3.4), CARD_INK, 1.8)
+		"caster":
+			draw_line(c + Vector2(0, -5), c + Vector2(0, 5), CARD_INK, 1.2)
+			draw_line(c + Vector2(-5, 0), c + Vector2(5, 0), CARD_INK, 1.2)
+			draw_line(c + Vector2(-3, -3), c + Vector2(3, 3), CARD_INK, 1.0)
+			draw_line(c + Vector2(-3, 3), c + Vector2(3, -3), CARD_INK, 1.0)
+		"support":
+			draw_line(c + Vector2(-2, 5), c + Vector2(-2, -5), CARD_INK, 1.2)
+			draw_rect(Rect2(c + Vector2(-1, -5), Vector2(6, 4)), CARD_INK)
+		"silence":
+			_draw_skull(c + Vector2(0, -0.5), 3.5)
+		"crown":
+			draw_colored_polygon(PackedVector2Array([
+				c + Vector2(-5, 3), c + Vector2(-5, -2), c + Vector2(-2.5, 0.5), c + Vector2(0, -3.5),
+				c + Vector2(2.5, 0.5), c + Vector2(5, -2), c + Vector2(5, 3)]), CARD_INK)
+
+
 # ---------------------------------------------------------------- HUD
 
 func _refresh_unit_panel() -> void:
+	if commander_selected and not (sim.commanders[0] as Dictionary).is_empty():
+		var info: Dictionary = sim.commanders[0]
+		unit_panel.visible = true
+		unit_name.text = str(info.get("name", "The Commander"))
+		unit_status.text = "Commander of %s" % str(side_names[0])
+		unit_status.add_theme_color_override("font_color", GOLD)
+		var lines := "Martial  %d\nIntrigue  %d\nProwess  %d" % [
+			int(info.get("martial", 0)), int(info.get("intrigue", 0)), int(info.get("prowess", 0))]
+		var traits: Array = info.get("traits", [])
+		if not traits.is_empty():
+			lines += "\nTraits: %s" % ", ".join(PackedStringArray(traits))
+		if str(info.get("faith", "")) != "":
+			lines += "\nFaith: %s" % str(info.get("faith"))
+		if traits.has("Oath-Sworn"):
+			lines += "\nOath-token: %s" % ("whole" if bool(info.get("oath_intact", true)) else "BROKEN")
+		if float(sim.commander_stress[0]) > 0.0:
+			lines += "\nStress taken: %.1f" % float(sim.commander_stress[0])
+		if float(sim.commander_corruption[0]) > 0.0:
+			lines += "\nCorruption taken: %.1f" % float(sim.commander_corruption[0])
+		unit_stats.text = lines
+		return
 	if selected_id < 0 or selected_id >= sim.regiments.size():
 		unit_panel.visible = false
 		return
