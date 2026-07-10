@@ -52,6 +52,12 @@ var corruption_marks: int = 0      # thresholds crossed at 5/10/15: 0..3
 var names_carried: int = 0         # Song-Marked: dead-names carried between the fires
 var oath_token_intact: bool = true # Oath-Sworn: the sworn object, still whole
 
+# Religion & the Silence (Module 9 v1.0): what this soul answers to now,
+# and the God of Thresholds' quiet ledger (addendum).
+var faith: String = ""             # faith name; "" falls back by culture (SimWorld.faith_of)
+var threshold_binding_bonus_permanent: float = 0.0  # earned rite by rite, capped at +0.6
+var wooden_birds_carved: int = 0   # Gravewarden-Sworn: one per dead received
+
 # The Memory Log: typed, decaying opinions of other characters.
 # Entries: {"type": String, "subject": int, "value": float, "tick": int, "decay": float(/year)}
 var memories: Array = []

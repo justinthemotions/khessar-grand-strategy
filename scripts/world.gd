@@ -332,6 +332,31 @@ const PRIMAL_TERRAIN := {
 const CORRUPTION_ASHFIELDS_MONTHLY := 0.05
 const CORRUPTION_RUINED_MONTHLY := 0.02
 
+# Religion & the Silence (Module 9 v1.0, Opus's mini-brief 2026-07-08).
+# Not a religion module: the module that models the collapse of religious
+# authority and the successor institutions rising in the vacuum.
+const FAITH_CAP := 15                 # brief §4: the continent carries no more doctrines than this
+const FAITH_NAMES: Array[String] = ["Aelindran Orthodox", "Aelindran Reformed",
+	"The Silent Path", "The Brushgate Order", "The Vael Rationalist Faith"]
+# cultures the five faiths never covered keep their own practices as
+# character-level labels (brief §2: Druidic/primal deferred to v1.1)
+const FOLK_FAITHS := {"karn_vol": "the Drevak Rites", "drevak": "the Drevak Rites",
+	"veldarin": "the Elder Ways", "thaladris": "the Elder Ways",
+	"kharak_dum": "the Ward-Rites"}
+# heresy is the natural state (brief §4): names and tenets the vacuum writes
+const HERESY_NAMES: Array[String] = ["The Waiting Vigil", "The Doctrine of Embers",
+	"The Unanswered Office", "The Keepers of the Last Rite", "The Candle Schism",
+	"The Order of the Closed Sky", "The Penitents of the Third Hour",
+	"The New Litany", "The Quiet Communion", "The Gathered Remnant"]
+const HERESY_TENETS: Array[String] = [
+	"The Silence is a door, not a wall.",
+	"The rites must change or die with the sky.",
+	"Only the laity can carry what the priesthood dropped.",
+	"The pantheon sleeps, and can be woken by the right observance.",
+	"The old calendar of rites is abolished; only the dead-days remain.",
+	"No ordination survives the Silence; every believer is their own priest.",
+]
+
 var rng := RandomNumberGenerator.new()
 var tick: int = 0                  # months since Year Zero of the Silence
 var characters: Dictionary = {}    # id -> SimCharacter
@@ -424,6 +449,22 @@ var central_secret_state: String = "buried"  # buried|revealed|contained|destroy
 var patron_network_broken: bool = false      # Ending 3: the anchor is ash
 var faith_failures: Dictionary = {}   # char id -> failed prayers this year (Faith Crisis at 3)
 var silence_mark_deaths: Dictionary = {}  # root house id -> members lost bearing Corruption Marks
+
+# Religion & the Silence (Module 9 v1.0): every faith die rolls on `frng`
+# (own seed, like the map's, the magic's, the cast's, and the Council's);
+# the seeded canonical practitioners are `faith_cast` — the fixed-seed
+# history never feels the theology.
+var frng := RandomNumberGenerator.new()
+var faith_cast: Dictionary = {}       # char id -> true — seeded practitioners (Halvar, Alenna, Anra)
+var faiths: Dictionary = {}           # name -> {active, coherence, equilibrium, membership, orthodoxy_alignment, tenets, authorities, parent, founded, pressure}
+var patron_state: String = "dormant"  # the covert non-faith: dormant -> building -> active -> revealed (or broken)
+var prayer_fails_ever: Dictionary = {}  # char id -> lifetime failed prayers (faith-change preconditions, brief §6)
+var orthodoxy_snapshot: Dictionary = {} # char id -> orthodoxy weight at last yearly reading (Faith Consideration, brief §5)
+var faith_change_cooldown: Dictionary = {}  # char id -> tick a conversion chain last reached them
+var cathedral_repurposed := false     # the Cathedral Question is asked once
+var halvar_id := -1                   # Halvar Stenn, the Gravewarden Order's most respected living member
+var alenna_id := -1                   # Alenna Stenn, his daughter — the practice inheriting
+var anra_id := -1                     # Mother Anra Halden of Halvet — the Silent Path's first teacher
 
 # The event framework: choice events with trait-weighted AI resolution.
 var pending_events: Array = []       # events awaiting the player's decision
@@ -571,6 +612,9 @@ func setup() -> void:
 	# itself — Anselm Vorontheim takes the chair the Halvenard-Veil head
 	# has been keeping warm, and the Council of Magisters sits.
 	_seed_administration()
+	# Religion & the Silence v1.0: five faiths at Year Zero, the orthodoxy
+	# axis goes live, and the God of Thresholds walks in the world.
+	_seed_faiths()
 
 
 func _seed_house(realm: Realm, house_name: String, ruling: bool) -> void:
@@ -680,6 +724,7 @@ func advance_month() -> void:
 	_magic_tick()
 	_cast_tick()
 	_admin_tick()
+	_religion_tick()
 	_diplomacy_tick()
 	_ai_diplomacy()
 	_economy()
@@ -742,6 +787,14 @@ func _make_child(father: SimCharacter, mother: SimCharacter) -> SimCharacter:
 		child.martial = clampi(child.martial + 2, 1, 30)
 		child.intrigue = clampi(child.intrigue + 2, 1, 30)
 		child.corruption = 2.0
+	# Module 9: children inherit the parent faith by default (brief §3);
+	# the God of Thresholds' blessing at the cradle rides its own dice
+	child.faith = father.faith if father.faith != "" else mother.faith
+	if not child.traits.has("Threshold-Sensitive"):
+		for parent: SimCharacter in [father, mother]:
+			if parent.traits.has("Threshold-Sensitive") and frng.randf() < 0.03:
+				_add_trait(child, "Threshold-Sensitive")
+				break
 	child.father_id = father.id
 	child.mother_id = mother.id
 	father.children_ids.append(child.id)
@@ -858,6 +911,8 @@ func _kill(c: SimCharacter, cause: String) -> void:
 		silence_mark_deaths[dead_root] = int(silence_mark_deaths.get(dead_root, 0)) + 1
 		if int(silence_mark_deaths[dead_root]) >= 2:
 			_earn_mythos(dead_root, "Silence-Scarred")
+	# Module 9 addendum: a practitioner receives the dead at the threshold
+	_threshold_on_death(c)
 	_inherit_titles(c)  # Module 4: lordships are hereditary; no heir → escheat
 	_epitaph(c)
 	for realm in realms:
@@ -3060,8 +3115,12 @@ func _add_trait(c: SimCharacter, t: String) -> void:
 func _rollable_congenitals() -> Array:
 	## Bicultural is raised in a two-culture household, never rolled by
 	## chance — and no one at Year Zero was (the pantheon blocked it).
+	## Threshold-Sensitive enters the world seeded canonically (Module 9
+	## addendum) and travels only by blood — never the founder dice, or
+	## every fixed-seed history would reshuffle.
 	var out := _traits_of_cat("congenital")
 	out.erase("Bicultural")
+	out.erase("Threshold-Sensitive")
 	return out
 
 
@@ -3325,10 +3384,11 @@ func _best_unpracticed(realm_id: int, stat: String) -> SimCharacter:
 # straight from KhessarMapData.REALMS' canonical strings (Faction Map).
 
 func is_cast(c: SimCharacter) -> bool:
-	## Outside the main stream's dice: the map-realm cast, and the seeded
-	## Council of Magisters (Administrative v1.0 — their fates are
-	## politics and scheduled beats, never the monthly actuarial rolls).
-	return c != null and (c.realm_id >= 2 or admin_cast.has(c.id))
+	## Outside the main stream's dice: the map-realm cast, the seeded
+	## Council of Magisters (Administrative v1.0), and the canonical
+	## threshold practitioners (Module 9 — their fates are scheduled
+	## beats and theology, never the monthly actuarial rolls).
+	return c != null and (c.realm_id >= 2 or admin_cast.has(c.id) or faith_cast.has(c.id))
 
 
 func _map_realm_named(name_part: String) -> int:
@@ -4118,25 +4178,66 @@ func _admin_beats() -> void:
 
 
 func _chaplain_crisis() -> void:
-	## Brief Phase 6 (Magic doc §4.3): the most fragile seat breaks
-	## first. Zealous doubles down at the altar; Broken walks away.
+	## Module 9 §8 (via the Administrative brief's Phase 6): the most
+	## fragile seat on the Council breaks first — and how it breaks is now
+	## a choice with up to five faces. The AI walks its trait-matched path
+	## (base 16 clears every jitter); the player holds all of them.
 	if chaplain_crisis_fired or not magister_seats.has("Court Chaplain"):
 		return
 	chaplain_crisis_fired = true
 	var chap: SimCharacter = characters.get(int(magister_seats["Court Chaplain"]["holder"]))
 	if chap == null or not chap.alive:
 		return
-	if chap.traits.has("Zealous"):
-		magister_wing[chap.id] = "traditionalist"
-		var dav: SimCharacter = characters.get(davriand_id)
-		if dav != null and dav.alive:
-			add_memory(chap, "the only wing that still kneels", davriand_id, 20.0, 0.5)
-			add_memory(dav, "a useful conviction", chap.id, 15.0, 0.5)
-		add_stress(chap, 20.0, "prayers into a silent sky")
-		_log("[b]The Court Chaplain redoubles.[/b] %s answers the Silence with more rite, not less — dawn offices, doubled fasts, and a seat that now votes with Davriand Karn's wing. The Council's arithmetic shifts by one." % full_name(chap))
-	else:
-		magister_seats["Court Chaplain"] = {"holder": -1, "since": tick}
-		_log("[b]The Court Chaplain resigns.[/b] %s sets the seal on the altar cloth, walks out the river gate, and takes up beekeeping outside the walls. The bees, he says, still answer. The Council's arithmetic shrinks by one seat until a name can be agreed." % full_name(chap))
+	var who := chap
+	var zeal := chap.traits.has("Zealous")
+	var broken := chap.traits.has("Broken")
+	var prag := chap.traits.has("Pragmatic")
+	var options: Array = [
+		{"label": "Intensify the practice — the rites must not waver", "base": 16.0 if zeal else 2.0,
+			"ai": {"orthodoxy": 0.2},
+			"effect": func() -> void:
+				magister_wing[who.id] = "traditionalist"
+				var dav: SimCharacter = characters.get(davriand_id)
+				if dav != null and dav.alive:
+					add_memory(who, "the only wing that still kneels", davriand_id, 20.0, 0.5)
+					add_memory(dav, "a useful conviction", who.id, 15.0, 0.5)
+				var hal: SimCharacter = characters.get(halloran_id)
+				if hal != null and hal.alive:
+					add_memory(hal, "a reactionary at the altar", who.id, -15.0, 1.0)
+				add_stress(who, 20.0, "prayers into a silent sky")
+				_shift_coherence("Aelindran Orthodox", 0.05)
+				_log("[b]The Court Chaplain redoubles.[/b] %s answers the Silence with more rite, not less — dawn offices, doubled fasts, and a seat that now votes with Davriand Karn's wing. The Council's arithmetic shifts by one." % full_name(who))},
+		{"label": "Set down the office — the bees still answer", "base": 16.0 if broken else 1.0,
+			"effect": func() -> void:
+				magister_seats["Court Chaplain"] = {"holder": -1, "since": tick}
+				_shift_coherence("Aelindran Orthodox", -0.05)
+				_log("[b]The Court Chaplain resigns.[/b] %s sets the seal on the altar cloth, walks out the river gate, and takes up beekeeping outside the walls. The bees, he says, still answer. The Council's arithmetic shrinks by one seat until a name can be agreed." % full_name(who))},
+		{"label": "Cross to the Reformed practice — the saying is ours; the hearing never was", "base": 16.0 if prag else 2.5,
+			"effect": func() -> void:
+				_activate_faith("Aelindran Reformed", 0.15)
+				_shift_coherence("Aelindran Orthodox", -0.10)
+				_convert_faith(who, "Aelindran Reformed")
+				for m in seated_magisters():
+					if str(magister_wing.get(m.id, "neutral")) == "traditionalist":
+						add_memory(m, "the altar turned reformer", who.id, -20.0, 1.0)
+				_log("[b]The Court Chaplain crosses to the Reformed practice.[/b] %s keeps the seat and the candles both — and now teaches that the saying of the rite was always the priest's whole responsibility. The Traditionalist wing takes notes." % full_name(who))},
+		{"label": "Walk out — and teach what the Silence actually said", "base": 2.0 if broken else 0.0,
+			"effect": func() -> void:
+				magister_seats["Court Chaplain"] = {"holder": -1, "since": tick}
+				_activate_faith("The Silent Path", 0.0)
+				_shift_coherence("Aelindran Orthodox", -0.15)
+				_convert_faith(who, "The Silent Path")
+				_log("[b]The Court Chaplain leaves the government.[/b] %s abandons office and altar together, and takes a place in a quiet gathering that holds the Silence itself to be the pantheon's final word. The seat stands empty; the teaching does not." % full_name(who))},
+	]
+	if chap.traits.has("Threshold-Sensitive"):
+		# the addendum's fifth path: attend what still answers
+		options.append({"label": "Pivot to the thresholds — attend what still answers", "base": 18.0,
+			"effect": func() -> void:
+				_add_trait(who, "Gravewarden-Sworn")
+				_log("[b]The Court Chaplain turns to the thresholds.[/b] %s keeps the seat but sets aside the pantheon's coordination for the older practice — births witnessed, deaths received, crossings marked. That work, everyone has noticed, still answers." % full_name(who))})
+	raise_event(0, chap.id, "The Chaplain's Faith Crisis",
+		"The Court Chaplain's prayers have failed all year, and the failure is now a matter of Council record. The altar is cold, the offices thinly attended — and the question can no longer be tabled: what is the seat *for* now?",
+		options, false, false, true)
 
 
 func _raise_anselm_questions() -> void:
@@ -4220,6 +4321,760 @@ func _poisoning_beat() -> void:
 	_kill(a, "is poisoned at the Council's autumn dinner —")
 
 
+# --------------------------------- Religion & the Silence (Module 9 v1.0)
+# Opus's mini-brief (2026-07-08): NOT a religion module — the module that
+# models the collapse of pre-Silence religious authority and the successor
+# institutions rising in the vacuum. Five faiths at Year Zero, heresy as
+# the natural state, the orthodoxy AI axis live as the decision-scoring
+# spine — and the God of Thresholds (addendum) running underneath it all,
+# the one theology that never went silent. All faith dice roll on `frng`
+# (own seed); the canonical practitioners are `faith_cast`.
+
+func _add_faith(fname: String, active: bool, coherence: float, equilibrium: float,
+		membership: float, alignment: float, tenets: Array, authorities: Array,
+		parent: String = "") -> void:
+	faiths[fname] = {"name": fname, "active": active, "coherence": coherence,
+		"equilibrium": equilibrium, "membership": membership,
+		"orthodoxy_alignment": alignment, "tenets": tenets,
+		"authorities": authorities, "parent": parent, "founded": tick,
+		"pressure": 0.0}
+
+
+func faith_of(c: SimCharacter) -> String:
+	## What a soul answers to: the recorded faith, or the culture's
+	## default where no conversion has ever been asked of them.
+	if c == null:
+		return ""
+	if c.faith != "":
+		return c.faith
+	return _default_faith_of(c)
+
+
+func _default_faith_of(c: SimCharacter) -> String:
+	## Brief §2: the Magistocracy's academics and reformists have quietly
+	## secularized; the uncovered cultures keep their own practices; the
+	## rest of the continent is (still, at Year Zero) Aelindran Orthodox.
+	if str(magister_wing.get(c.id, "")) == "reformist" or c.traits.has("Academy-Sworn"):
+		return "The Vael Rationalist Faith"
+	if FOLK_FAITHS.has(c.culture):
+		return str(FOLK_FAITHS[c.culture])
+	return "Aelindran Orthodox"
+
+
+func _faith_character(p_name: String, house_name: String, female: bool, age: int,
+		realm_id: int, race: String, stats: Dictionary, traits: Array,
+		response: String) -> SimCharacter:
+	## A seeded canonical practitioner: a real soul whose fate is theology
+	## and scheduled beats, never the actuarial tables.
+	var dyn: Dynasty = null
+	for d: Dynasty in dynasties.values():
+		if d.name == house_name:
+			dyn = d
+			break
+	if dyn == null:
+		dyn = Dynasty.new(dynasties.size(), house_name)
+		dynasties[dyn.id] = dyn
+	var c := _create_character(p_name, female, tick - age * 12 - frng.randi_range(0, 11), dyn.id, realm_id)
+	c.race = race
+	for k in stats:
+		c.set(STAT_PROPS[k], clampi(int(stats[k]), 1, 30))
+	c.genome = Genetics.founder(frng)
+	for t in traits:
+		_add_trait(c, str(t))
+	_add_trait(c, response)
+	faith_cast[c.id] = true
+	return c
+
+
+func _seed_faiths() -> void:
+	## Year Zero: five faiths per the brief's §2, the Patron network as a
+	## covert non-faith, and the God of Thresholds' canonical practitioners.
+	frng.seed = 999
+	_add_faith("Aelindran Orthodox", true, 0.60, 0.55, 0.60, 0.90,
+		["The pantheon exists and receives prayer.",
+		"Rite must be performed correctly regardless of visible response.",
+		"The Silence is a test, a chastisement, or a temporary condition.",
+		"Heresy must be actively opposed."],
+		["the Vael cathedral", "the Pellar cathedral", "Halven's parish network",
+		"roughly 200 circuit priests"])
+	_add_faith("Aelindran Reformed", false, 0.50, 0.70, 0.0, 0.30,
+		["Rite must be performed correctly regardless of divine response.",
+		"The Silence's nature is unknown but not disqualifying.",
+		"Ordination is community recognition, not divine mandate.",
+		"Alternative traditions may be complementary rather than heretical."],
+		["Vesper's End (Selene Tharn's unofficial temple)",
+		"Halvet's post-priestess community"])
+	_add_faith("The Silent Path", false, 0.35, 0.38, 0.0, -0.20,
+		["The pantheon has spoken finally through their absence.",
+		"The ceremony was itself the message; prayer is now meaningless.",
+		"Institutional religion is a form of denial.",
+		"The world's ordering must be secular from this point forward."],
+		["quiet gatherings, not temples"])
+	_add_faith("The Brushgate Order", true, 0.85, 0.85, 0.005, -0.10,
+		["The body remembers what the gods forgot.",
+		"Be present with what is dying.",
+		"Practice is discipline, not devotion.",
+		"Race is irrelevant; discipline is universal."],
+		["local mentor networks", "roughly 200 wandering practitioners"])
+	_add_faith("The Vael Rationalist Faith", true, 0.75, 0.75, 0.17, 0.00,
+		["Institutions produce legitimacy through demonstrated effectiveness.",
+		"Divine mandate is not required for governance.",
+		"Scholarly reason is the foundation of political authority.",
+		"Religion is a private matter; public authority is secular."],
+		["the Vael Council of Magisters", "the Vael academies", "the Iron Library"])
+	# every living soul takes a starting faith (brief Phase 2)
+	for c in characters.values():
+		if c.alive and c.faith == "":
+			c.faith = _default_faith_of(c)
+	# --- the God of Thresholds (addendum §2.7): the canonical practitioners ---
+	# Halvar Stenn, the Order's most respected living member, keeps the
+	# threshold-shrine work along the Marn's Crossing road; his daughter
+	# carries the practice in the blood.
+	var halvar := _faith_character("Halvar", "House Stenn", false, 50, 0, "half_orc",
+		{"dip": 12, "mar": 9, "stw": 8, "int": 7, "lrn": 11, "prw": 12},
+		["Patient", "Stoic", "Gravewarden-Sworn"], "Pragmatic")
+	halvar_id = halvar.id
+	halvar.faith = "Aelindran Orthodox"  # the Order works under Aelindran auspices; its practice is its own
+	var alenna := _faith_character("Alenna", "House Stenn", true, 20, 0, "half_orc",
+		{"dip": 10, "mar": 5, "stw": 7, "int": 8, "lrn": 12, "prw": 8},
+		["Compassionate", "Threshold-Sensitive"], "Pragmatic")
+	alenna_id = alenna.id
+	alenna.faith = "Aelindran Orthodox"
+	alenna.father_id = halvar.id
+	halvar.children_ids.append(alenna.id)
+	# Mother Anra Halden of Halvet — she left religious office in Year Two
+	# of the Silence, and the Silent Path will find her (canon, Faction Map)
+	var pellar := _map_realm_named("Pellar")
+	if pellar >= 0:
+		var anra := _faith_character("Anra", "House Halden", true, 44, pellar, "human",
+			{"dip": 13, "mar": 3, "stw": 9, "int": 8, "lrn": 14, "prw": 3},
+			["Compassionate", "Patient"], "Broken")
+		anra_id = anra.id
+		anra.culture = "free_city"
+		anra.faith = "Aelindran Orthodox"
+	# Ariorwe Thaladris: 120 names carried is long-timescale threshold-work
+	# (the Faction Cast promotion to canon) — the blood was always sensitive
+	var thaladris := _map_realm_named("Thaladris")
+	var ariorwe := cast_ruler_of(thaladris)
+	if ariorwe != null and not ariorwe.traits.has("Threshold-Sensitive"):
+		_add_trait(ariorwe, "Threshold-Sensitive")
+	_log("[b]The faiths of Khessar at Year Zero:[/b] the Aelindran pantheon still holds six souls in ten — institutionally dominant, doctrinally fracturing, and six years into a sky that does not answer. The Magistocracy's chambers have quietly stopped expecting it to. The Brushgate Order's discipline needs no answer. And along the roads, the Gravewardens' carved birds still cross their dead properly — the one practice the Silence never touched.")
+	_log("Halvar Stenn works the threshold-shrine on the Marn's Crossing road — the Gravewarden Order's most respected living member, receiving the dead of two peoples. His daughter Alenna feels the crossings before others see them.")
+
+
+func faith_rec(fname: String) -> Dictionary:
+	return faiths.get(fname, {})
+
+
+func active_faiths() -> Array:
+	var out: Array = []
+	for fname in faiths:
+		if bool(faiths[fname]["active"]):
+			out.append(faiths[fname])
+	return out
+
+
+func _shift_coherence(fname: String, amount: float) -> void:
+	if not faiths.has(fname):
+		return
+	var f: Dictionary = faiths[fname]
+	if not bool(f["active"]):
+		return
+	f["coherence"] = clampf(float(f["coherence"]) + amount, 0.01, 0.99)
+
+
+func _activate_faith(fname: String, coherence_bonus: float) -> void:
+	## A movement crosses from data record to living faith (brief §2).
+	if not faiths.has(fname):
+		return
+	var f: Dictionary = faiths[fname]
+	if bool(f["active"]):
+		_shift_coherence(fname, coherence_bonus)
+		return
+	f["active"] = true
+	f["founded"] = tick
+	f["coherence"] = clampf(float(f["coherence"]) + coherence_bonus, 0.01, 0.99)
+	if float(f["membership"]) <= 0.0:
+		f["membership"] = 0.01 if fname == "Aelindran Reformed" else 0.005
+
+
+func _religion_tick() -> void:
+	## The monthly theology: coherence drifts, membership bleeds, heresy
+	## pressure accumulates, and the thresholds are attended.
+	if faiths.is_empty():
+		return
+	_faith_beats()
+	_coherence_tick()
+	_membership_tick()
+	_heresy_tick()
+	_patron_state_tick()
+	_ai_threshold_rejection_tick()
+	if tick % 3 == 0:
+		_cathedral_tick()
+		_threshold_maintenance_tick()
+		_compact_ceremony_tick()
+	if tick % 6 == 3:
+		_faith_change_tick()
+	if tick % 12 == 0 and tick > 0:
+		_faith_consideration_tick()
+
+
+func _faith_beats() -> void:
+	## The scheduled canonical arc (brief §2): the successor movements
+	## arrive on the clock the Faction Map wrote for them.
+	match tick:
+		16:
+			var f: Dictionary = faiths["Aelindran Reformed"]
+			if not bool(f["active"]):
+				_activate_faith("Aelindran Reformed", 0.0)
+				_shift_coherence("Aelindran Orthodox", -0.03)
+				_log("[b]Vesper's End gains formal recognition.[/b] Selene Tharn's unofficial temple is entered on a Free City charter roll, and the movement it anchors has a name now: Aelindran Reformed. Practice as its own reward — the saying of the prayer was always the priest's part; the hearing was someone else's.")
+		30:
+			var f2: Dictionary = faiths["The Silent Path"]
+			if not bool(f2["active"]):
+				_activate_faith("The Silent Path", 0.0)
+				_shift_coherence("Aelindran Orthodox", -0.03)
+				var anra: SimCharacter = characters.get(anra_id)
+				if anra != null and anra.alive:
+					anra.faith = "The Silent Path"
+					_log("[b]The first teacher of the Silent Path.[/b] Mother Anra Halden — once priestess of Halvet, who set down the office in Year Two — begins receiving visitors at her cheese-house. Her teaching is short: the pantheon has already spoken, through their absence, and the ceremony was itself the message. The quiet gatherings multiply.")
+				else:
+					_log("[b]The Silent Path finds its first teachers[/b] — quiet gatherings in the Free Cities, holding the Silence itself to be the pantheon's final revelation. No temples. No offices. No further practice required, or possible.")
+
+
+func _coherence_tick() -> void:
+	## Brief §3: coherence drifts toward each faith's equilibrium; the
+	## pantheon's equilibrium itself erodes under the Silence.
+	var orth: Dictionary = faiths["Aelindran Orthodox"]
+	orth["equilibrium"] = maxf(0.25, float(orth["equilibrium"]) - 0.02 / 12.0)
+	for fname in faiths:
+		var f: Dictionary = faiths[fname]
+		if not bool(f["active"]):
+			continue
+		var coh := float(f["coherence"])
+		coh += (float(f["equilibrium"]) - coh) * 0.03
+		# a Zealous crown publicly keeping the faith steadies it
+		for realm: Realm in realms:
+			var r: SimCharacter = characters.get(realm.ruler_id)
+			if r != null and r.alive and r.traits.has("Zealous") and faith_of(r) == str(fname):
+				coh += 0.002
+		# a Broken chaplain in visible office bleeds the pantheon's credit
+		if str(fname) == "Aelindran Orthodox" and magister_seats.has("Court Chaplain"):
+			var chap: SimCharacter = characters.get(int(magister_seats["Court Chaplain"]["holder"]))
+			if chap != null and chap.alive and chap.traits.has("Broken"):
+				coh -= 0.002
+		f["coherence"] = clampf(coh, 0.01, 0.99)
+
+
+func _membership_tick() -> void:
+	## Brief §3: the pantheon bleeds roughly two points a year (faster as
+	## coherence fails); the successors grow toward their projections.
+	var orth: Dictionary = faiths["Aelindran Orthodox"]
+	# roughly -2% a year of what remains, a little faster as coherence
+	# fails — proportional, so the bleed slows as the faithful thin out:
+	# total collapse is the endgame cascade's job, not the drift's
+	orth["membership"] = maxf(0.03, float(orth["membership"]) * (1.0 - (0.02 / 12.0) * minf(1.2, 1.5 - float(orth["coherence"]))))
+	var ref: Dictionary = faiths["Aelindran Reformed"]
+	if bool(ref["active"]) and float(ref["coherence"]) >= 0.45:
+		ref["membership"] = minf(0.20, float(ref["membership"]) + 0.15 / 108.0)
+	var sil: Dictionary = faiths["The Silent Path"]
+	if bool(sil["active"]):
+		sil["membership"] = minf(0.10, float(sil["membership"]) + 0.06 / 108.0)
+	var brush: Dictionary = faiths["The Brushgate Order"]
+	brush["membership"] = minf(0.02, float(brush["membership"]) + 0.003 / 12.0)
+	var rat: Dictionary = faiths["The Vael Rationalist Faith"]
+	var gm := grand_magister()
+	if gm != null and (faith_of(gm) == "The Vael Rationalist Faith" or str(magister_wing.get(gm.id, "")) == "reformist"):
+		rat["membership"] = minf(0.35, float(rat["membership"]) + 0.005 / 12.0)
+	elif gm != null and str(magister_wing.get(gm.id, "")) == "traditionalist":
+		rat["membership"] = maxf(0.05, float(rat["membership"]) - 0.002 / 12.0)
+	# rulers who publicly practice a faith draw their people after them
+	for realm: Realm in realms:
+		var r: SimCharacter = characters.get(realm.ruler_id)
+		if r == null or not r.alive:
+			continue
+		var rf: Dictionary = faiths.get(faith_of(r), {})
+		if not rf.is_empty() and bool(rf["active"]):
+			rf["membership"] = minf(0.90, float(rf["membership"]) + 0.005 / 12.0)
+	# heretical branches live and die by their coherence
+	for fname in faiths:
+		var f: Dictionary = faiths[fname]
+		if str(f["parent"]) != "" and bool(f["active"]):
+			f["membership"] = maxf(0.0, float(f["membership"]) + (float(f["coherence"]) - 0.35) * 0.0008)
+
+
+func _heresy_tick() -> void:
+	## Brief §4: heresy pressure accumulates as (1 - coherence) ×
+	## membership × 0.001 monthly; past 1.0 a new branch tries to form.
+	## Most heresies collapse within their first decade.
+	var active_count := 0
+	for fname in faiths:
+		if bool(faiths[fname]["active"]):
+			active_count += 1
+	for fname in faiths.keys():
+		var f: Dictionary = faiths[fname]
+		if not bool(f["active"]) or float(f["membership"]) < 0.02:
+			continue
+		f["pressure"] = float(f["pressure"]) + (1.0 - float(f["coherence"])) * (float(f["membership"]) * 100.0) * 0.001
+		if float(f["pressure"]) >= 1.0:
+			f["pressure"] = 0.0
+			if active_count >= FAITH_CAP:
+				_log("A new heresy stirs within %s — and is absorbed before it can organize. The continent already carries every doctrine it can hold." % str(fname))
+			else:
+				_raise_heretical_branch(str(fname))
+				return  # one schism a month is all the chronicle can take
+	# the collapse of the failed branches
+	for fname in faiths.keys():
+		var f: Dictionary = faiths[fname]
+		if str(f["parent"]) == "" or not bool(f["active"]):
+			continue
+		if tick - int(f["founded"]) > 120 and (float(f["coherence"]) < 0.20 or float(f["membership"]) < 0.01):
+			f["active"] = false
+			var parent: Dictionary = faiths.get(str(f["parent"]), {})
+			if not parent.is_empty():
+				parent["membership"] = minf(0.90, float(parent["membership"]) + float(f["membership"]) * 0.5)
+			_log("[b]%s collapses.[/b] The teachers scatter, the gatherings thin, and the remnant drifts home to %s — the usual fate of a doctrine born in a vacuum." % [str(fname), str(f["parent"])])
+			return
+
+
+func _unused_heresy_name() -> String:
+	var pool: Array = []
+	for n in HERESY_NAMES:
+		if not faiths.has(n):
+			pool.append(n)
+	if pool.is_empty():
+		return ""
+	return str(pool[frng.randi_range(0, pool.size() - 1)])
+
+
+func _spawn_heresy(parent_name: String, bname: String, legitimized: bool) -> void:
+	var parent: Dictionary = faiths[parent_name]
+	var share := 0.02 + frng.randf() * 0.03  # 2-5% of the parent walks (brief §4)
+	var taken := float(parent["membership"]) * share
+	parent["membership"] = maxf(0.0, float(parent["membership"]) - taken)
+	var tenets: Array = (parent["tenets"] as Array).duplicate()
+	var swaps := 1 + (1 if frng.randf() < 0.5 else 0)
+	for i in swaps:
+		if tenets.is_empty():
+			break
+		tenets[frng.randi_range(0, tenets.size() - 1)] = HERESY_TENETS[frng.randi_range(0, HERESY_TENETS.size() - 1)]
+	_add_faith(bname, true, 0.35 + (0.10 if legitimized else 0.0), 0.40, taken,
+		float(parent["orthodoxy_alignment"]) * 0.5, tenets,
+		["a charismatic teaching circle"], parent_name)
+	_log("[b]A new heretical branch: %s.[/b] Born out of %s's fracturing doctrine — no divine authority remains to say which reading of the Silence is correct, so every reading finds its congregation." % [bname, parent_name])
+
+
+func _raise_heretical_branch(parent_name: String) -> void:
+	var bname := _unused_heresy_name()
+	if bname == "":
+		return
+	# heresies inside the realm-0-dominant faiths reach the crown's table;
+	# the rest of the continent schisms without asking anyone
+	if parent_name != "Aelindran Orthodox" and parent_name != "The Vael Rationalist Faith":
+		_spawn_heresy(parent_name, bname, false)
+		return
+	var pname := parent_name
+	var hname := bname
+	var ruler_id: int = realms[0].ruler_id
+	var ruler: SimCharacter = characters.get(ruler_id)
+	raise_event(0, ruler_id, "A New Heresy: %s" % bname,
+		"A teaching circle calling itself %s has split from %s — new tenets, a charismatic voice, and congregations forming faster than the registries can record them. There is no divine authority left to rule which reading of the Silence is correct. There is, however, a crown." % [bname, parent_name],
+		[
+			{"label": "Denounce the heresy from every pulpit", "base": 3.0,
+				"ai": {"orthodoxy": 1.0},
+				"effect": func() -> void:
+					var r2: SimCharacter = characters.get(realms[0].ruler_id)
+					var lrn := 10.0 if r2 == null else float(r2.learning)
+					if frng.randf() < 0.35 + lrn * 0.015:
+						_shift_coherence(pname, -0.03)
+						_log("[b]The denouncement holds.[/b] %s is read out from every pulpit the crown can reach, its teachers dispersed before the movement can organize. The suppression costs the parent doctrine some of its own credit — force is what a faith uses when argument has stopped working." % hname)
+					else:
+						_spawn_heresy(pname, hname, true)
+						_log("The denouncement fails — and fails publicly. Every pulpit that read the proscription has now advertised the teaching, and %s emerges legitimized by the attention." % hname)},
+			{"label": "Let it find its level", "base": 2.5, "ai": {"patience": 0.5},
+				"effect": func() -> void:
+					_shift_coherence(pname, -0.02)
+					_spawn_heresy(pname, hname, false)},
+		], false, false, true)
+
+
+func _cathedral_tick() -> void:
+	## Brief §7: the cathedral ceremonies — success builds coherence,
+	## failure spends it. Quarterly, alongside the devotions.
+	var orth: Dictionary = faiths["Aelindran Orthodox"]
+	var priest: SimCharacter = null
+	for c in characters.values():
+		if c.alive and c.realm_id == 0 and c.traits.has("Faith-Practicing") and faith_of(c) == "Aelindran Orthodox":
+			priest = c
+			break
+	if priest != null:
+		var p = province_of_character(priest)
+		if frng.randf() < faith_reliability(priest, p):
+			_shift_coherence("Aelindran Orthodox", 0.01)
+			if frng.randf() < 0.15:
+				_log("The cathedral ceremony holds — %s carries the great rite through whole, and for a season the doctrine remembers what it was." % full_name(priest))
+		else:
+			_shift_coherence("Aelindran Orthodox", -0.002)
+	# the Cathedral Question is asked exactly once, when the Reformed
+	# movement outnumbers the orthodoxy it grew out of
+	var ref: Dictionary = faiths["Aelindran Reformed"]
+	if not cathedral_repurposed and bool(ref["active"]) and float(ref["membership"]) > float(orth["membership"]):
+		cathedral_repurposed = true
+		raise_event(0, realms[0].ruler_id, "The Cathedral Question",
+			"The Reformed congregations now outnumber the Orthodox ones — and the Vael cathedral stands mostly empty at the old offices. A petition reaches the Council: let the building serve the practice people actually keep.",
+			[
+				{"label": "Convert the cathedral to Reformed use", "base": 3.0,
+					"effect": func() -> void:
+						_shift_coherence("Aelindran Reformed", 0.05)
+						_shift_coherence("Aelindran Orthodox", -0.05)
+						_log("[b]The Vael cathedral passes to the Reformed practice.[/b] The candles are relit under new instruction — the saying is ours; the hearing never was. The remaining Orthodox clergy call it theft with paperwork.")},
+				{"label": "The old faith keeps its house", "base": 2.0, "ai": {"orthodoxy": 0.8},
+					"effect": func() -> void:
+						_shift_coherence("Aelindran Orthodox", 0.02)
+						_log("The petition is declined: the cathedral remains Orthodox, however thin the congregation. Some buildings are kept for what they meant, not what they hold.")},
+			], false, false, true)
+
+
+# ------------------------------------------- faith change (brief §6)
+
+func _faith_judges() -> Array:
+	## Who reacts to a public conversion: crowned heads and seated Magisters.
+	var out: Array = []
+	var seen := {}
+	for realm: Realm in realms:
+		var r: SimCharacter = characters.get(realm.ruler_id)
+		if r != null and r.alive:
+			out.append(r)
+			seen[r.id] = true
+	for m in seated_magisters():
+		if not seen.has(m.id):
+			out.append(m)
+			seen[m.id] = true
+	for rid in cast_rulers:
+		var cr := cast_ruler_of(int(rid))
+		if cr != null and cr.alive and not seen.has(cr.id):
+			out.append(cr)
+	return out
+
+
+func _convert_faith(c: SimCharacter, to_name: String) -> void:
+	## A public reshaping of identity, with the opinion web to match
+	## (brief §6). Not a menu selection: only event chains reach here.
+	var from := faith_of(c)
+	if from == to_name:
+		return
+	c.faith = to_name
+	var from_rec: Dictionary = faiths.get(from, {})
+	if not from_rec.is_empty():
+		from_rec["membership"] = maxf(0.0, float(from_rec["membership"]) - 0.002)
+	var to_rec: Dictionary = faiths.get(to_name, {})
+	if not to_rec.is_empty():
+		to_rec["membership"] = minf(0.90, float(to_rec["membership"]) + 0.002)
+	for judge in _faith_judges():
+		var j: SimCharacter = judge
+		if j.id == c.id:
+			continue
+		var jf := faith_of(j)
+		if jf == to_name:
+			add_memory(j, "one of ours now", c.id, 15.0, 1.0)
+		elif jf == "Aelindran Orthodox":
+			var sting := -15.0
+			if to_name == "Aelindran Reformed":
+				sting = -20.0
+			elif to_name == "The Silent Path":
+				sting = -30.0
+			add_memory(j, "abandoned the pantheon", c.id, sting, 1.0)
+		elif jf == "The Vael Rationalist Faith" and to_name == "The Silent Path":
+			add_memory(j, "a secular ally, of a kind", c.id, 10.0, 1.0)
+		elif jf == "Aelindran Reformed" and to_name == "Aelindran Orthodox":
+			add_memory(j, "went back to the empty altar", c.id, -10.0, 1.0)
+	# a Grand Magister's conversion shakes the chamber (brief §6)
+	if c.id == realms[0].ruler_id and str(realms[0].government) == "administrative" \
+			and not magister_seats.is_empty():
+		var division := magister_vote("the chair's public conversion", c.id, -2.0)
+		if not bool(division.get("passed", true)):
+			realms[0].tyranny = minf(100.0, realms[0].tyranny + 5.0)
+			_log("[b]The chamber does not follow the chair.[/b] The Grand Magister's conversion to %s is entered over a recorded Council majority against — the kind of division a vote of no confidence is made of." % to_name)
+			# and if three Magisters are angry enough, the motion moves itself
+			call_no_confidence()
+
+
+func _faith_change_tick() -> void:
+	## Semiannual: the conversion chains scan for souls at their own
+	## thresholds (brief §6). At most one conversion event per pass —
+	## faith change should feel like weather, not machinery.
+	for c in characters.values():
+		if not c.alive or c.age_years(tick) < ADULT_AGE:
+			continue
+		if c.realm_id != 0 and c.realm_id != 1 and not admin_cast.has(c.id):
+			continue
+		if tick - int(faith_change_cooldown.get(c.id, -999)) < 60:
+			continue
+		var cur := faith_of(c)
+		# Reformed Conversion: a Pragmatic Orthodox soul who has watched prayer fail
+		if cur == "Aelindran Orthodox" and c.traits.has("Pragmatic") \
+				and bool(faiths["Aelindran Reformed"]["active"]) \
+				and (int(prayer_fails_ever.get(c.id, 0)) >= 1 or frng.randf() < 0.04) \
+				and frng.randf() < 0.15:
+			faith_change_cooldown[c.id] = tick
+			_raise_conversion(c, "Aelindran Reformed",
+				"A Reformed teacher passes through, and their argument will not leave %s alone: the saying of the rite was always the priest's whole part. The hearing was someone else's — and its absence indicts no one." % full_name(c),
+				"Cross to the Reformed practice", "Keep the old faith whole")
+			return
+		# Silent Path Acceptance: a Broken soul with three failures behind them
+		if (cur == "Aelindran Orthodox" or cur == "Aelindran Reformed") and c.traits.has("Broken") \
+				and bool(faiths["The Silent Path"]["active"]) \
+				and int(prayer_fails_ever.get(c.id, 0)) >= 3 and frng.randf() < 0.20:
+			faith_change_cooldown[c.id] = tick
+			_raise_conversion(c, "The Silent Path",
+				"A quiet gathering has been meeting near %s's door, and their teaching names the weight exactly: the pantheon has already spoken, through their absence. No further practice is required. Or possible." % full_name(c),
+				"Accept the Silent Path", "The candles stay lit")
+			return
+		# Secular Rationalist Adoption: the academy's people, following their ledgers
+		if cur == "Aelindran Orthodox" and c.traits.has("Pragmatic") and c.realm_id == 0 \
+				and (c.traits.has("Academy-Sworn") or magister_seat_of(c.id) != "" \
+				or has_mythos(root_house_id(c.dynasty_id), "Vael-Educated")) \
+				and frng.randf() < 0.12:
+			faith_change_cooldown[c.id] = tick
+			_raise_conversion(c, "The Vael Rationalist Faith",
+				"%s has kept the outward observances for years while the actual conviction migrated to the ledgers: institutions earn legitimacy by working. The academies teach it. The Council practices it. Saying it aloud is all that remains." % full_name(c),
+				"Adopt the Rationalist position publicly", "Keep the observances")
+			return
+		# the Zealous road home: Reformed and Rationalist converts pulled back
+		if (cur == "Aelindran Reformed" or cur == "The Vael Rationalist Faith") \
+				and c.traits.has("Zealous") and frng.randf() < 0.15:
+			faith_change_cooldown[c.id] = tick
+			_raise_conversion(c, "Aelindran Orthodox",
+				"%s's compromise has stopped holding. The reformed argument was tidy, the rationalist one tidier — and neither survives the hour before dawn, when the old rites are the only thing shaped like the ache. The pantheon is silent. The pantheon is still *there*." % full_name(c),
+				"Return to the Orthodox rite", "The compromise stands")
+			return
+		# Brushgate Adoption: exposure to a practitioner, any response (trait, not faith)
+		if not c.traits.has("Brushgate-Trained") and frng.randf() < 0.02:
+			var mentor: SimCharacter = null
+			for o in characters.values():
+				if o.alive and o.realm_id == c.realm_id and o.id != c.id and o.traits.has("Brushgate-Trained"):
+					mentor = o
+					break
+			if mentor != null:
+				faith_change_cooldown[c.id] = tick
+				var who: SimCharacter = c
+				raise_event(c.realm_id, c.id, "The Brushgate Forms",
+					"%s has watched %s at the morning forms long enough to ask. The answer is characteristically short: the body remembers what the gods forgot. The teaching is open to anyone willing to be present with what is dying." % [full_name(c), full_name(mentor)],
+					[
+						{"label": "Learn the discipline", "base": 2.5, "ai": {"patience": 0.6},
+							"effect": func() -> void:
+								_add_trait(who, "Brushgate-Trained")
+								_log("%s takes up the Brushgate discipline — the faith they keep is their own business; the practice asks only presence." % full_name(who))},
+						{"label": "Decline — the mornings are spoken for", "base": 2.0,
+							"effect": func() -> void: pass},
+					], false, false, true)
+				return
+
+
+func _raise_conversion(c: SimCharacter, to_name: String, text: String,
+		adopt_label: String, refuse_label: String) -> void:
+	var who := c
+	var target := to_name
+	var to_align := float(faiths.get(to_name, {}).get("orthodoxy_alignment", 0.0))
+	var cur_align := float(faiths.get(faith_of(c), {}).get("orthodoxy_alignment", 0.0))
+	# the orthodoxy axis scores the choice (brief §5): moving toward the
+	# pantheon suits the Zealous; moving away suits the Opportunistic —
+	# a full alignment gap times a Zealous +30 clears every jitter
+	var adopt_w := to_align - cur_align
+	raise_event(c.realm_id, c.id, "A Faith Reconsidered",
+		text,
+		[
+			{"label": adopt_label, "base": 2.0, "ai": {"orthodoxy": adopt_w, "patience": 0.1},
+				"effect": func() -> void:
+					_convert_faith(who, target)
+					_log("[b]%s publicly adopts %s.[/b] The realm's religious weather shifts by one soul — and everyone watching recalculates." % [full_name(who), target])},
+			{"label": refuse_label, "base": 2.5, "ai": {"orthodoxy": -adopt_w},
+				"effect": func() -> void: pass},
+		], false, false, true)
+
+
+func _faith_consideration_tick() -> void:
+	## Brief §5: a character whose orthodoxy weight has moved more than 20
+	## points since the last yearly reading faces the question directly.
+	var candidate: SimCharacter = null
+	var drop := false
+	for c in characters.values():
+		if not c.alive or c.age_years(tick) < ADULT_AGE:
+			continue
+		if c.realm_id != 0 and c.realm_id != 1 and not admin_cast.has(c.id):
+			continue
+		var cur := ai_weight(c, "orthodoxy")
+		var had: bool = orthodoxy_snapshot.has(c.id)
+		var snap := float(orthodoxy_snapshot.get(c.id, cur))
+		orthodoxy_snapshot[c.id] = cur
+		if not had or candidate != null:
+			continue
+		if cur - snap <= -20.0 and faith_of(c) == "Aelindran Orthodox":
+			candidate = c
+			drop = true
+		elif cur - snap >= 20.0 and faith_of(c) != "Aelindran Orthodox" \
+				and not FOLK_FAITHS.values().has(faith_of(c)):
+			candidate = c
+	if candidate == null or tick - int(faith_change_cooldown.get(candidate.id, -999)) < 60:
+		return
+	faith_change_cooldown[candidate.id] = tick
+	if drop:
+		var to := "The Vael Rationalist Faith" if candidate.realm_id == 0 else \
+			("The Silent Path" if bool(faiths["The Silent Path"]["active"]) else "Aelindran Reformed")
+		if not bool(faiths.get(to, {}).get("active", false)):
+			return
+		_raise_conversion(candidate, to,
+			"The year has moved something in %s that the old faith no longer covers. What they actually believe and what they publicly practice have come apart — and the gap is starting to show." % full_name(candidate),
+			"Let the change be public", "Hold to the old faith")
+	else:
+		_raise_conversion(candidate, "Aelindran Orthodox",
+			"The year has carried %s back toward the pantheon — silent or not, it is the only thing the ache was ever shaped like." % full_name(candidate),
+			"Return to the Orthodox rite", "Stay the newer course")
+
+
+func _patron_state_tick() -> void:
+	## Brief §2.6: the covert non-faith has an activation state, not a
+	## coherence — dormant, building, active, revealed (or broken).
+	if patron_network_broken:
+		if patron_state != "broken":
+			patron_state = "broken"
+		return
+	var order := ["dormant", "building", "active", "revealed"]
+	var bound := 0
+	var exposed := false
+	for c in characters.values():
+		if c.alive and c.traits.has("Patron-Bound"):
+			bound += 1
+	for s in secrets:
+		if str(s["type"]) == "patron_bargain_signed":
+			var subj: SimCharacter = characters.get(int(s["subject"]))
+			for rid in s["known"]:
+				if subj == null or int(rid) != subj.realm_id:
+					exposed = true
+	if central_secret_state == "revealed" or central_secret_state == "leveraged":
+		exposed = true
+	var target := "dormant"
+	if exposed:
+		target = "revealed"
+	elif bound >= 3:
+		target = "active"
+	elif bound >= 1:
+		target = "building"
+	if order.find(target) > order.find(patron_state):
+		patron_state = target
+		if target == "revealed":
+			_log("[b]The Patron network stands revealed.[/b] What the bargain-holders were part of finally has a name spoken above a whisper — and every faith on the continent must now say something about it.")
+
+
+# ------------------------------------------- the God of Thresholds (addendum)
+
+func threshold_practitioner(realm_id: int) -> SimCharacter:
+	## The realm's working threshold-hand: Gravewarden-Sworn first, the
+	## Threshold-Sensitive as the untrained fallback.
+	var fallback: SimCharacter = null
+	for c in characters.values():
+		if not c.alive or c.realm_id != realm_id or c.age_years(tick) < ADULT_AGE:
+			continue
+		if c.traits.has("Gravewarden-Sworn"):
+			return c
+		if fallback == null and c.traits.has("Threshold-Sensitive"):
+			fallback = c
+	return fallback
+
+
+func _threshold_on_death(dead: SimCharacter) -> void:
+	## "Proper Death Received": a practitioner attends the crossing, names
+	## the dead properly, carves the bird. The one practice that never
+	## stopped working.
+	if faiths.is_empty():
+		return
+	var pr := threshold_practitioner(dead.realm_id)
+	if pr == null or pr.id == dead.id:
+		return
+	var chance := 0.85 if pr.traits.has("Gravewarden-Sworn") else 0.45
+	if frng.randf() >= chance:
+		return
+	pr.threshold_binding_bonus_permanent = minf(0.6, pr.threshold_binding_bonus_permanent + 0.02)
+	pr.wooden_birds_carved += 1
+	if dead.spouse_id >= 0:
+		var sp: SimCharacter = characters.get(dead.spouse_id)
+		if sp != null and sp.alive:
+			add_memory(sp, "they carved the bird for our dead", pr.id, 5.0, 1.0)
+	for kid_id in dead.children_ids:
+		var kid: SimCharacter = characters.get(kid_id)
+		if kid != null and kid.alive:
+			add_memory(kid, "they carved the bird for our dead", pr.id, 5.0, 1.0)
+	if is_ruler(dead.id) or frng.randf() < 0.10:
+		_log("%s receives %s at the threshold — the name said properly, the crossing witnessed, a carved bird left with the family. That rite, whatever else has failed, still answers." % [full_name(pr), full_name(dead)])
+
+
+func _threshold_maintenance_tick() -> void:
+	## "Bird Carving": the Order's quarterly discipline — stress worked
+	## into wood, one bird per dead received.
+	for c in characters.values():
+		if not c.alive or not c.traits.has("Gravewarden-Sworn"):
+			continue
+		add_stress(c, -4.0, "carving the birds")
+		c.wooden_birds_carved += 1
+		if frng.randf() < 0.05:
+			_log("%s spends the quarter's quiet hours carving — %d wooden birds now, one for every crossing witnessed." % [full_name(c), c.wooden_birds_carved])
+
+
+func _compact_ceremony_tick() -> void:
+	## The Marn's Crossing compact ceremony (addendum): a threshold-hand
+	## present at the quarterly exchange steadies what treaties cannot.
+	if at_war:
+		return
+	var pr := threshold_practitioner(0)
+	if pr == null:
+		return
+	var r0: SimCharacter = characters.get(realms[0].ruler_id)
+	var r1: SimCharacter = characters.get(realms[1].ruler_id)
+	if r0 == null or r1 == null or not r0.alive or not r1.alive:
+		return
+	add_memory(r0, "the crossing rites held", r1.id, 2.0, 2.0)
+	add_memory(r1, "the crossing rites held", r0.id, 2.0, 2.0)
+	if frng.randf() < 0.04:
+		_log("The quarterly compact ceremony at Marn's Crossing is held under %s's threshold-observance — both delegations watch the same rite performed for both peoples' dead, and leave a little slower to reach for their knives." % full_name(pr))
+
+
+func threshold_rejection(warden_id: int, target_id: int) -> String:
+	## The Threshold Rejection Ritual (addendum): a Gravewarden resolves
+	## what the Patron requires to remain incomplete. Costs the warden 15
+	## stress; reduces the target's Corruption meter by 1.0 on success.
+	## Marks already paid for remain — the ritual works the meter, not
+	## the flesh.
+	var g: SimCharacter = characters.get(warden_id)
+	var t: SimCharacter = characters.get(target_id)
+	if g == null or not g.alive or not g.traits.has("Gravewarden-Sworn"):
+		return "Only a Gravewarden-Sworn hand can perform the rejection rite."
+	if t == null or not t.alive or t.corruption <= 0.0:
+		return "There is nothing on that soul's ledger to reject."
+	add_stress(g, 15.0, "the rejection rite")
+	if frng.randf() < 0.85:
+		t.corruption = maxf(0.0, t.corruption - 1.0)
+		_log("[b]%s performs the Threshold Rejection over %s[/b] — the incomplete transition the bargain fed on is witnessed, named, and closed. The ledger lightens by a measure. The marks already paid for remain." % [full_name(g), full_name(t)])
+		return "The rejection holds: their corruption recedes by a measure."
+	_log("%s attempts the Threshold Rejection over %s — and the rite slips. Whatever holds that soul's transitions open held this time." % [full_name(g), full_name(t)])
+	return "The rite slips — the corruption holds."
+
+
+func _ai_threshold_rejection_tick() -> void:
+	## The Order does not wait to be asked: a warden who sees a heavy
+	## ledger works it, at their own cost.
+	for g in characters.values():
+		if not g.alive or not g.traits.has("Gravewarden-Sworn") or g.stress > 120.0:
+			continue
+		var worst: SimCharacter = null
+		for t in characters.values():
+			if t.alive and t.id != g.id and t.realm_id == g.realm_id and t.corruption >= 5.0:
+				if worst == null or t.corruption > worst.corruption:
+					worst = t
+		if worst != null and frng.randf() < 0.10:
+			threshold_rejection(g.id, worst.id)
+		return
+
+
 func live_ruler_title(realm_id: int, c: SimCharacter) -> String:
 	## What a live realm's crown is actually called (Administrative
 	## v1.0): the Magistocracy elects a Grand Magister; the clan follows
@@ -4249,11 +5104,13 @@ func province_of_character(c: SimCharacter):
 	return null
 
 
-func faith_reliability(c: SimCharacter, p) -> float:
+func faith_reliability(c: SimCharacter, p, threshold: bool = false) -> float:
 	## The Cleric geography formula (doc §4.3): base × the ground's
 	## dampening × shared attention × the caster's answer to the Silence.
 	## The world's remaining faith works — sometimes, in specific places,
-	## when the right conditions align.
+	## when the right conditions align. Module 9 adds the caster's faith's
+	## coherence to the chain — and threshold castings (deaths, oaths,
+	## births, crossings) run on the older theology that never went silent.
 	var damp := FAITH_DAMPENING_BASE
 	if p != null:
 		if p.silence_touched:
@@ -4262,6 +5119,10 @@ func faith_reliability(c: SimCharacter, p) -> float:
 			damp = FAITH_DAMPENING_LIBRARY
 		elif str(p.special_feature) == "sealed_hold":
 			damp = FAITH_DAMPENING_WARDSTONE  # the Kharak-Dum wards still hold a little sky up
+	if threshold:
+		# the God of Thresholds attends transitions everywhere — even the
+		# Ashfields' sky cannot stop a properly witnessed crossing
+		damp = maxf(damp, 0.55)
 	var r := trait_mult(c, "faith_channel_reliability_baseline") * damp
 	# shared attention: every ten faithful in the hall stand in for the sky
 	var crowd := 0
@@ -4273,6 +5134,13 @@ func faith_reliability(c: SimCharacter, p) -> float:
 		if c.traits.has(resp):
 			r *= float(RESPONSE_FAITH_MULT[resp])
 			break
+	# a fracturing doctrine prays worse (Module 9 §3): coherence reads
+	# through into every channel the faith's members attempt
+	var fr: Dictionary = faiths.get(faith_of(c), {})
+	if not fr.is_empty() and bool(fr["active"]):
+		r *= 0.6 + 0.5 * float(fr["coherence"])
+	if threshold:
+		r *= trait_mult(c, "threshold_binding_strength") + c.threshold_binding_bonus_permanent
 	return clampf(r, 0.0, 1.0)
 
 
@@ -4348,6 +5216,13 @@ func _silence_encounter(c: SimCharacter, p) -> void:
 	## A Hollow Shade, a Settled village, a thing that should not stand
 	## in daylight. Most souls break a little; the Brushgate sit with it.
 	_add_secret(c.id, "silence_encounter_witnessed")
+	if c.traits.has("Gravewarden-Sworn") and frng.randf() < 0.85:
+		# the Threshold Rite (Module 9 addendum): the Shade is not fought —
+		# it is received, named, and properly crossed
+		c.threshold_binding_bonus_permanent = minf(0.6, c.threshold_binding_bonus_permanent + 0.02)
+		c.wooden_birds_carved += 1
+		_log("[b]A Hollow Shade rises near %s[/b] — and %s performs the Threshold Rite. The Shade is received, named, and crossed. No blade was drawn." % [p.name, full_name(c)])
+		return
 	if c.traits.has("Brushgate-Trained"):
 		add_stress(c, 10.0, "sitting with a manifestation")
 		_log("[b]Something manifests near %s[/b] — and %s sits with it until it passes. The Brushgate way." % [p.name, full_name(c)])
@@ -4438,6 +5313,7 @@ func _faith_tick() -> void:
 		else:
 			add_stress(c, 5.0, "praying into the silence")
 			faith_failures[c.id] = int(faith_failures.get(c.id, 0)) + 1
+			prayer_fails_ever[c.id] = int(prayer_fails_ever.get(c.id, 0)) + 1  # Module 9: the lifetime ledger
 			if int(faith_failures[c.id]) >= 3:
 				faith_failures.erase(c.id)
 				_raise_faith_crisis(c)
@@ -4691,6 +5567,12 @@ func _ending_revealed() -> void:
 	for lord: SimCharacter in landed_vassals(0):
 		if realms[0].ruler_id >= 0:
 			add_memory(lord, "their crowns knew", realms[0].ruler_id, -40.0, 1.0)
+	# Module 9 §10: the reveal cascade lands on the faiths — catastrophic
+	# for the pantheon and for institutional legitimacy, validation for
+	# the teachers who said the gods had already spoken
+	_shift_coherence("Aelindran Orthodox", -0.30)
+	_shift_coherence("The Vael Rationalist Faith", -0.30)
+	_shift_coherence("The Silent Path", 0.15)
 	_log("[b]THE TRUTH IS PUBLISHED.[/b] The Magistocracy caused the Silence — bought it, signed for it, profited by it. Its legitimacy does not survive the reading. The old noble houses are suddenly the only authority anyone remembers trusting.")
 
 
@@ -5718,14 +6600,16 @@ func eligible_singles(female: bool) -> Array:
 # the spot by the decider's personality — the same trait AI weights
 # (aggression / scheming / greed / patience) score every option.
 
-func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array, magic: bool = false, admin: bool = false) -> void:
+func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array, magic: bool = false, admin: bool = false, faith: bool = false) -> void:
 	if options.is_empty():
 		return
 	# magic-born events resolve on the magic RNG (Magic v1.0), Council
-	# events on the Council's (Administrative v1.0) — the main history
-	# stream never feels either system's bookkeeping
+	# events on the Council's (Administrative v1.0), faith events on the
+	# theology's (Module 9) — the main history stream never feels any
+	# system's bookkeeping
 	var ev := {"id": next_event_id, "realm_id": realm_id, "decider": decider_id,
-		"title": title, "text": text, "options": options, "magic": magic, "admin": admin}
+		"title": title, "text": text, "options": options, "magic": magic, "admin": admin,
+		"faith": faith}
 	next_event_id += 1
 	if realm_id != 0 or auto_resolve_events:
 		_ai_resolve_event(ev)
@@ -5741,6 +6625,8 @@ func _ai_resolve_event(ev: Dictionary) -> void:
 	var jitter_rng: RandomNumberGenerator = rng
 	if bool(ev.get("admin", false)):
 		jitter_rng = arng
+	elif bool(ev.get("faith", false)):
+		jitter_rng = frng
 	elif bool(ev.get("magic", false)):
 		jitter_rng = mrng
 	var best := 0

@@ -48,6 +48,7 @@ var opt_commander: OptionButton
 var council_opts: Dictionary = {}
 var council_faces: Dictionary = {}
 var magister_label: Label  # the Council of Magisters readout (Administrative v1.0)
+var faith_label: Label     # the faiths-in-freefall readout (Module 9 v1.0)
 var opt_tax: OptionButton
 var opt_succession: OptionButton
 var btn_enact: Button
@@ -940,6 +941,16 @@ func _make_council_tab() -> ScrollContainer:
 	box.add_child(magister_label)
 	box.add_child(HSeparator.new())
 
+	# Religion & the Silence (Module 9): the faiths in freefall, and the
+	# successors rising in the vacuum.
+	box.add_child(_header("The Faiths of the Silence"))
+	box.add_child(_muted("Doctrine is contested — coherence and congregations shift by the month"))
+	faith_label = Label.new()
+	faith_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	faith_label.add_theme_font_size_override("font_size", 12)
+	box.add_child(faith_label)
+	box.add_child(HSeparator.new())
+
 	for seat in SimWorld.COUNCIL_SEATS:
 		box.add_child(_header(seat))
 		box.add_child(_muted(SEAT_BLURB[seat]))
@@ -1253,6 +1264,33 @@ func _refresh_magisters() -> void:
 			str(v["matter"]), int(v["ayes"]), int(v["nays"]),
 			"carried" if bool(v["passed"]) else "failed"]
 	magister_label.text = lines
+
+
+func _refresh_faiths() -> void:
+	## The faiths-in-freefall readout (Module 9 v1.0): coherence and
+	## congregations for every living doctrine, heresies included.
+	if faith_label == null:
+		return
+	if world.faiths.is_empty():
+		faith_label.text = ""
+		return
+	var lines := ""
+	for fname in world.faiths:
+		var f: Dictionary = world.faiths[fname]
+		if not bool(f["active"]):
+			continue
+		var branch := ""
+		if str(f["parent"]) != "":
+			branch = " (heresy of %s)" % str(f["parent"])
+		lines += "%s%s — coherence %d%% · about %d%% of the continent\n" % [
+			str(fname), branch, int(round(float(f["coherence"]) * 100.0)),
+			int(round(float(f["membership"]) * 100.0))]
+	match world.patron_state:
+		"revealed":
+			lines += "\nThe Patron Network — REVEALED. Every faith must now answer for what stood behind the Silence."
+		"broken":
+			lines += "\nThe Patron Network — broken. The anchor is ash; no new bargains will ever be made."
+	faith_label.text = lines.strip_edges()
 
 
 func _refresh_realm_tab() -> void:
@@ -1597,6 +1635,7 @@ func _refresh() -> void:
 		status_label.text = "COUNCIL ELECTION — stage %d of 5 · " % int(world.admin_interregnum["stage"]) \
 			+ status_label.text
 	_refresh_magisters()
+	_refresh_faiths()
 
 	_refresh_character()
 	_fill_singles(opt_groom, false)
@@ -1961,11 +2000,15 @@ func _refresh_character() -> void:
 		c.age_years(world.tick), str(world.map.realm_display_name(c.realm_id)).trim_prefix("Kingdom of "),
 		blood, c.diplomacy, c.martial, c.stewardship, c.intrigue, c.learning, c.prowess,
 		traits_line, int(c.stress), stress_word]
+	# what this soul answers to (Module 9 v1.0)
+	lines += "\nFaith: %s" % world.faith_of(c)
 	# the Patron's ledger, shown only once it has an entry (Magic v1.0)
 	if c.corruption > 0.0:
 		lines += "\nCorruption %.1f" % c.corruption
 	if c.names_carried > 0:
 		lines += "\nNames carried: %d" % c.names_carried
+	if c.wooden_birds_carved > 0:
+		lines += "\nWooden birds carved: %d" % c.wooden_birds_carved
 	if c.realm_id >= 0 and c.realm_id < world.realms.size():
 		var liege_id: int = world.realms[c.realm_id].ruler_id
 		if liege_id >= 0 and liege_id != c.id:

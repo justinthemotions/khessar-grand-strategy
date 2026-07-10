@@ -204,6 +204,25 @@ static func _build() -> void:
 		"silence_immunity": 0.5, "stress_gain_mult": 0.60,
 		"casualty_rate_mult": 0.85}}))
 
+	# --- the God of Thresholds (Module 9 addendum) ---
+	# An older theology that never went silent: practice is presence at
+	# the moment of transition, not petition. Threshold-Sensitive is
+	# congenital but NEVER rolled by chance at Year Zero (see
+	# _rollable_congenitals) — it enters the world seeded canonically and
+	# travels by blood at 5%, the rarity that makes it feel like weather.
+	_add(TraitData.make("Threshold-Sensitive", "congenital", {"lrn": 1, "int": 1},
+		{"inherit": 0.05,
+		"eulogy": "who felt the crossings before others saw them",
+		"ai": {"orthodoxy": 5, "patience": 15, "scheming": -5},
+		"mods": {"threshold_binding_strength": 1.20, "silence_immunity": 0.25,
+		"faith_channel_reliability_baseline": 1.10, "stress_gain_mult": 1.05}}))
+	_add(TraitData.make("Gravewarden-Sworn", "coping", {"dip": 1, "prw": 1, "lrn": 1},
+		{"eulogy": "who carved the birds for those who could not carry themselves",
+		"ai": {"orthodoxy": 10, "patience": 25, "aggression": -10},
+		"mods": {"threshold_binding_strength": 1.40, "silence_immunity": 0.40,
+		"faith_channel_reliability_baseline": 1.20, "stress_gain_mult": 0.85,
+		"corruption_gain_mult": 0.60, "panic_resistance": 0.20}}))
+
 	# --- health: the Corruption Marks (Magic Injection v1.0) ---
 	# The meter made flesh, at thresholds 5 / 10 / 15. Mark III grants
 	# full silence_immunity — sufficiently entity-adjacent that the
