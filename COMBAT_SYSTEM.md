@@ -16,7 +16,8 @@ deterministic critical layer.
   outcomes feed back into succession, memories, and stress.
 - **Deterministic expected-value resolution.** No to-hit dice. Damage each tick is a
   continuous expected value; the only RNG in the whole battle layer is campaign-side
-  (commander death rolls). Identical inputs always produce identical battles.
+  (commander death rolls) plus the battle-local casting-gate stream (§14.1).
+  Identical inputs always produce identical battles.
 - **Morale decides battles, not annihilation.** Units rout when morale hits zero;
   battles typically end with the loser at 40–60% casualties, not 0%.
 - **Casualties persist.** Survivors are written back to the campaign roster, so a lost
@@ -76,7 +77,8 @@ recruits when gold > 700. Aggression is trait-driven (+15 flat for tribal govern
 ## 4. Battle pipeline
 
 `BattleSim.setup_from_rosters(roster_a, roster_b, lead_bonus_a, lead_bonus_b, side_names,
-cmdr_traits_a=[], cmdr_traits_b=[])` builds `Regiment` objects from the campaign rosters.
+cmdr_traits_a=[], cmdr_traits_b=[], terrain="plains", ground={})` builds `Regiment`
+objects from the campaign rosters.
 Each keeps a `roster_index` pointing back to its campaign entry so survivors can be
 written back. `lead_bonus` is the commander's Martial stat: **leadership += martial × 0.5**
 for every regiment on that side (leadership drives morale regen, §7).
@@ -136,6 +138,11 @@ per_hit = max(ws × 35 / (35 + t.armour),  ws × 0.15)   # proportional armour, 
 damage → t = engaged_count × 0.12 × hit × per_hit × mult
 ```
 
+(Since the Tactical Combat pass, ma/ws/md also wear the fatigue penalty, and `mult`
+carries the Khessari layer: silence-born ×1.05 on their own ground, confusion ×0.7,
+oath-conflict ×1.10, threshold-work ×1.20 vs the Silence-born, and the EV critical
+layer — see §14.)
+
 Damage accumulates in a `dmg` dictionary and is applied simultaneously at the end of the
 tick (no first-strike advantage): `hp_pool −= damage × dmg_taken_mult`, then
 `soldiers = ceil(hp_pool / hp_per)`.
@@ -155,7 +162,7 @@ morale = 100 + morale_bonus − shock − flank_penalty − depletion
 depletion = (1 − soldiers/start_soldiers) × 70
 shock += (casualties_this_tick / soldiers_before) × 160 × shock_mult      # casualty shock
 shock += 10 on being charged
-shock −= leadership × 0.03 per tick                                       # regen
+shock −= effective_leadership × 0.03 per tick                             # regen (see §14.4)
 flank_penalty = 20 while flanked, 40 while struck in rear (recomputed each tick)
 ```
 
@@ -164,6 +171,9 @@ removed (`fled`) off-field. Routed units can't fight and don't rally. When one s
 active regiments the battle ends; if both are empty simultaneously, `winner = -1`
 (mutual ruin). Sudden mass casualties (a rear charge) can spike shock faster than
 leadership regen can bleed it off — that's the hammer-and-anvil kill condition.
+Exceptions since the Tactical Combat pass: Berserkers above their oath threshold,
+`oath_bound` regiments whose commander's token is whole, and `no_morale` Returned
+(§14.4).
 
 ## 8. The positional model (what makes tactics real)
 
@@ -199,6 +209,7 @@ ammo −= 1   (40 volleys total)
 Shields only block missiles **by facing arc** — full from the front, half flank, nothing
 rear — so maneuvering archers around a shieldwall is a real tactic. Melee parry is
 already inside `md`. Volley visuals are consumed from `sim.volleys` by the view.
+Arcane volleys (ward-shield retinues) strike Silence-born targets at ×1.4 (§14.3).
 
 ## 10. Commanders and trait hooks
 
@@ -253,8 +264,8 @@ modules land).
    units on the losing side lose a further 25% in the pursuit**; empty regiments are
    deleted; an army with no regiments is destroyed.
 3. `SimWorld.apply_battle_result`: war score swings `20 + 30 × loser_loss` toward the
-   winner; the beaten army retreats to its realm centroid; both commanders roll fate;
-   |score| ≥ 100 forces peace.
+   winner; the beaten army retreats to its realm centroid; both commanders roll fate
+   and collect the field's corruption and stress ledgers; |score| ≥ 100 forces peace.
 
 ## 12. Testing & debugging
 
