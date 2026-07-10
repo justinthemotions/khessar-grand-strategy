@@ -58,9 +58,11 @@ and the seeded Council characters are `admin_cast` — `is_cast()` now
 covers them, so every main-RNG per-character loop skips them. New
 guards went onto commander assignment, skirmish deaths, champion
 rosters, oath pools, plot target/asset selection, and the apothecary
-pick. **Veril Ormand deliberately stays in the main stream** — his
-natural death was always the Architect's Chamber clock, and guarding
-him now would reshuffle the fixed history.
+pick. **Veril Ormand deliberately stays in the main stream** — he
+draws his monthly dice as he always did. Since the Architect's Vigil
+pass, his *death* is canon rather than actuarial (Year Six, Month 72,
+per Opus's Vigil doc): the die is still consumed every month, but the
+answer belongs to the vigil's clock — see ARCHITECTS_VIGIL.md.
 
 One accepted divergence: realm 0's ruler is a different person with
 different traits, so realm-0 event choices and downstream history
@@ -144,11 +146,14 @@ a nephew before the poisoning" puzzle resolved itself emergently.*
 Anselm dies at the autumn dinner; Kreth Anford (senior-most) stands
 Regent; and the first Council Election returns exactly the Gazetteer's
 three named candidates in exactly its order: **Halloran Verith 22 —
-Kreth Anford 20 — Davriand Karn 19** (the v1.1 timeline's 22-19-18,
-re-derived one point apart after Sevrin's canonical stats entered the
-ballots — ordering, margins, and meaning preserved; flagged for Opus).
-Maren Solvey polls low-key at 15; Sevrin, junior at two years seated,
-finishes mid-pack — a candidate but not a leading one, per canon.
+Kreth Anford 21 — Davriand Karn 18** (the v1.1 timeline's 22-19-18;
+re-derived after Sevrin's canonical stats entered the ballots, then
+once more after the Architect's Vigil pass moved the main stream —
+ordering, Halloran's exact 22, and the plurality-without-mandate
+meaning all preserved; the second/third margins drift with the stream
+and remain flagged for Opus).
+Maren Solvey polls low-key at 13; Sevrin, junior at two years seated,
+finishes mid-pack at 12 — a candidate but not a leading one, per canon.
 Grand Magister Halloran Verith, the reformist, now holds the seal —
 governing from a plurality, with Davriand's wing intact, angry, and
 holding a grudge with eighty-eight years of sublevel history still

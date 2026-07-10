@@ -467,6 +467,24 @@ var halvar_id := -1                   # Halvar Stenn, the Gravewarden Order's mo
 var alenna_id := -1                   # Alenna Stenn, his daughter — the practice inheriting
 var anra_id := -1                     # Mother Anra Halden of Halvet — the Silent Path's first teacher
 
+# The Architect's Vigil (v1.0): Veril Ormand's five-phase reckoning with
+# the recipient who will not arrive (Opus's Vigil doc, 2026-07-08). All
+# vigil dice roll on `vrng` — seeded 112, the year the bargain was signed.
+# Veril himself stays in the main stream as ever, but his death is now the
+# canon's (Year Six), not the actuarial tables': the die is still drawn,
+# the answer is fixed. The old man keeps his own clock.
+var vrng := RandomNumberGenerator.new()
+var architect_phase := 0              # 1 confident waiting | 2 quiet uncertainty | 3 acknowledged crisis | 4 active recomposing | 5 termination | 6 the vigil is over
+var vigil_recipient := ""             # "" until a 5B delivery lands: marek|sevrin|halvar|sera|thessaly
+var vigil_contact := ""               # Phase 4 contact outcome: ""|received|intercepted
+var vigil_contact_target := ""        # who Veril reached for at Month 54
+var vigil_fragments := false          # the Spymaster's copy: truth in more hands than Veril chose
+var vigil_delivery_tick := -1         # the modified ritual's scheduled date (5B), -1 none
+var thessaly_id := -1                 # Thessaly Vorn — the Iron Library's discipline, post-Marek
+var marek_id := -1                    # Marek Vovel, Chief Archivist (dies Year Four, Vigil doc §2)
+var sera_id := -1                     # Sera Halvenard-Veil — Garran's eldest daughter, birth-date-corrected to 17 at setup
+var sevrin_id := -1                   # Sevrin Vorontheim (also a Vigil candidate)
+
 # The event framework: choice events with trait-weighted AI resolution.
 var pending_events: Array = []       # events awaiting the player's decision
 var next_event_id: int = 0
@@ -605,6 +623,20 @@ func setup() -> void:
 		# the Faction Map aged him so Sera reaches a canonical 23 by Year
 		# Six. A birth-date correction, not a dice roll.
 		garran.birth_tick = tick - 55 * 12 - 5
+		# ...and the daughter the aging was FOR (Architect's Vigil v1.0):
+		# Garran's eldest rolled daughter takes the canonical name and the
+		# canonical birth date — 17 at Year Zero, 23 by Year Six. The same
+		# corrections Garran himself got; no dice touched.
+		var eldest: SimCharacter = null
+		for cid in garran.children_ids:
+			var kid: SimCharacter = characters.get(cid)
+			if kid != null and kid.alive and kid.is_female:
+				if eldest == null or kid.birth_tick < eldest.birth_tick:
+					eldest = kid
+		if eldest != null:
+			eldest.name = "Sera"
+			eldest.birth_tick = tick - 17 * 12 - 5
+			sera_id = eldest.id
 	if realms[1].ruler_id >= 0:
 		characters[realms[1].ruler_id].name = "Vorak"
 	# ...and the map-only realms get their canonical crowns as real people
@@ -616,6 +648,9 @@ func setup() -> void:
 	# Religion & the Silence v1.0: five faiths at Year Zero, the orthodoxy
 	# axis goes live, and the God of Thresholds walks in the world.
 	_seed_faiths()
+	# The Architect's Vigil v1.0: Veril Ormand's clock starts — confident,
+	# patient, and wrong about who is coming.
+	_seed_vigil()
 
 
 func _seed_house(realm: Realm, house_name: String, ruling: bool) -> void:
@@ -726,6 +761,7 @@ func advance_month() -> void:
 	_cast_tick()
 	_admin_tick()
 	_religion_tick()
+	_vigil_tick()
 	_diplomacy_tick()
 	_ai_diplomacy()
 	_economy()
@@ -854,7 +890,12 @@ func _deaths() -> void:
 		if c.traits.has("Wasting"):
 			chance *= 4.0  # the Slow Weep does its patient, deniable work
 		if rng.randf() < chance:
-			doomed.append(c)
+			# The Architect's Vigil: Veril's death is Year Six canon (Vigil
+			# doc §2, Phase Five). The actuarial die is still drawn — the
+			# main stream must not shift — but the answer belongs to the
+			# vigil's own clock, not the tables.
+			if c.id != architect_id:
+				doomed.append(c)
 		# long-reign fatigue (Cross-Cultural Marriage v1.0): a life run
 		# 20% past its race's span has outlived its own political era
 		elif age > int(CultureData.race_lifespan(c.race) * 1.2) and _can_add_trait(c, "Long-Reigned"):
@@ -3337,9 +3378,11 @@ func _seed_magic() -> void:
 	# The Architect of Silence: Veril Ormand, the last surviving yes-vote
 	# of Year 112. An old magister who keeps to his chambers — and keeps
 	# the only complete record of what the Council bought, and with what.
+	# 77 at Year Zero, canonized in the Vigil doc §1 (83 at his Year Six
+	# death, matching the TTRPG's chamber) — a birth-date fact, not a die.
 	var house := Dynasty.new(dynasties.size(), "House Ormand")
 	dynasties[house.id] = house
-	var ormand := _create_character("Veril", false, tick - 71 * 12 - 5, house.id, 0)
+	var ormand := _create_character("Veril", false, tick - 77 * 12 - 5, house.id, 0)
 	ormand.learning = 18
 	ormand.intrigue = 13
 	ormand.stewardship = 10
@@ -3441,6 +3484,7 @@ func _seed_faction_cast() -> void:
 	var vovel := _cast_character("Marek", "House Vovel", false, 71, pellar, "human", "free_city",
 		{"dip": 10, "stw": 12, "mar": 3, "int": 13, "lrn": 20, "prw": 2},
 		["Methodical", "Honest", "Academy-Sworn"], "Pragmatic")
+	marek_id = vovel.id  # the Vigil watches the Iron Library (doc §2 Phase Four)
 	# --- Halven: the merchant-democrat First Voice ---
 	var halven := _map_realm_named("Halven")
 	var ferren := _cast_character("Ferren", "House Crannock-Vey", false, 58, halven, "human", "halveni",
@@ -3494,6 +3538,15 @@ func _seed_faction_cast() -> void:
 		{"dip": 13, "stw": 17, "mar": 5, "int": 14, "lrn": 12, "prw": 4},
 		["Ambitious", "Methodical"], "Opportunistic")
 	cast_rulers[saren] = {"id": vessa.id, "title": "First Councilor"}
+	# --- the Iron Library's discipline, seeded at the cast stream's tail
+	# (Architect's Vigil v1.0): Thessaly Vorn, Marek Vovel's archivist and
+	# eventual successor. Her creation draws after every existing cast die,
+	# so the fixed cast history never feels her. Stats are Fable-invented —
+	# flagged for the Gazetteer.
+	var thessaly := _cast_character("Thessaly", "House Vorn", true, 44, pellar, "human", "free_city",
+		{"dip": 9, "stw": 11, "mar": 2, "int": 12, "lrn": 21, "prw": 2},
+		["Methodical", "Patient", "Honest", "Academy-Sworn"], "Pragmatic")
+	thessaly_id = thessaly.id
 	_log("[b]The crowns of Khessar at Year Zero:[/b] Queen Eithne in Pellar, First Voice Ferren Crannock-Vey in Halven, Chieftain Grimkar Vor-Grim beyond the passes, King Grimhold Ironvault under Kharak-Dum, the Matriarchs Analinth Veldarin and Ariorwe Thaladris in their forests, and First Councilor Vessa Korren at Saren-Vesh. Every one of them woke to the same silent sky.")
 	_log("House Veldarin answers no letters — it has not for a hundred and eighty years, and a silent sky changes nothing.")
 
@@ -3528,6 +3581,14 @@ func _cast_tick() -> void:
 			_log("[b]The ward-stones of Kharak-Dum are going dark[/b] — one by one, oldest first. King Grimhold Ironvault orders the deep galleries sealed and the ward-speakers doubled. The wards held through the Silence itself; whatever is eating them now is patient.")
 		30:
 			_log("[b]Chieftain Grimkar Vor-Grim spits on the border compact.[/b] Word crosses the passes: the Vor-Grim call the Karn-Vol arrangement with the lowlanders a leash, and Grimkar has begun asking other clans what an unleashed north might take.")
+		44:
+			# The Vigil doc §2: Marek Vovel dies in Year Four — and the Iron
+			# Library, with all its correspondence discipline, passes to
+			# Thessaly Vorn. A scheduled beat, not a die.
+			var vov: SimCharacter = characters.get(marek_id)
+			if vov != null and vov.alive:
+				_kill(vov, "dies among the Iron Library's stacks, a catalogue unfinished,")
+				_log("[b]The Iron Library passes to Thessaly Vorn.[/b] Marek Vovel's archivist of twenty years takes the Chief Archivist's desk without ceremony — the correspondence goes out on schedule, and the Record does not miss a week.")
 		48:
 			var grimhold2 := cast_ruler_of(_map_realm_named("Kharak-Dum"))
 			if grimhold2 != null and grimhold2.alive:
@@ -3605,6 +3666,7 @@ func _seed_administration() -> void:
 		{"dip": 16, "mar": 8, "stw": 20, "int": 14, "lrn": 20, "prw": 6},
 		["Methodical", "Ambitious", "Bureaucrat"], "Pragmatic")
 	sevrin.father_id = -1  # Anselm's brother's son; the brother died five years before the Silence
+	sevrin_id = sevrin.id
 	# the Vael Compact legacy (brief §6): the academy connection is real,
 	# and twelve years of the chair paid for the declaration
 	var vroot := root_house_id(anselm.dynasty_id)
@@ -5150,6 +5212,384 @@ func _ai_threshold_rejection_tick() -> void:
 		return
 
 
+# --------------------------------------- The Architect's Vigil (v1.0)
+# Opus's Vigil doc (2026-07-08): the specific canonical shape of Veril
+# Ormand's last six years in a timeline where the Traveler he prepared
+# for does not exist. Five phases of dawning awareness (months 30, 42,
+# 54, 66), an evaluation of alternate recipients weighted by the world
+# the player shaped, a Phase Four contact, a Phase Five choice between
+# acceptance (5A — the chamber sealed, the truth escaping haphazardly)
+# and active delivery (5B — a modified ritual under desperate necessity),
+# and a Year Six death that was always the clock. All vigil dice roll on
+# `vrng` (seed 112 — the year the bargain was signed); Veril's own
+# monthly dice stay in the main stream, drawn as they always were.
+
+const ARCHITECT_DEATH_TICK := 72  # Year Six's last month: six years of maintenance, to the day
+
+var vigil_sealed := false  # Phase 5A taken: the chamber holds the truth until someone opens the door
+
+
+func _seed_vigil() -> void:
+	vrng.seed = 112
+	architect_phase = 1  # confident waiting: the preparation is on schedule; he does not yet know
+
+
+func vigil_candidates() -> Dictionary:
+	## The Vigil doc §6 Phase 2 weights, read live against the world. The
+	## player never picks Veril's recipient — but the landscape the player
+	## shaped is the landscape Veril observes.
+	var w := {}
+	var marek: SimCharacter = characters.get(marek_id)
+	if marek != null and marek.alive:
+		w["marek"] = 20.0  # +40 the Iron Library's protection, -20 the years he does not know he lacks
+	var sevrin: SimCharacter = characters.get(sevrin_id)
+	if sevrin != null and sevrin.alive:
+		var s := 15.0  # +25 the Pragmatic response, -10 the youth
+		if magister_seat_of(sevrin.id) != "":
+			s += 15.0  # +15 the Council seat: positioned inside the apparatus
+		w["sevrin"] = s
+	var halvar: SimCharacter = characters.get(halvar_id)
+	if halvar != null and halvar.alive:
+		var h := 25.0  # +30 the Order's structural opposition to the Patron, +10 respect, -15 the outsider
+		var birds := 0
+		for c in characters.values():
+			var who: SimCharacter = c
+			if who.alive:
+				birds += who.wooden_birds_carved
+		h += minf(10.0, float(birds) * 0.5)  # the Order's work, visible on every road Veril reads about
+		if patron_state == "active" or patron_state == "revealed":
+			h += 5.0  # the opposition finally has something to oppose in the open
+		w["halvar"] = h
+	var sera: SimCharacter = characters.get(sera_id)
+	if sera != null and sera.alive:
+		var e := 15.0  # +20 the House position, -20 the youth, +15 the Aelindran-Legitimate access
+		if has_mythos(root_house_id(sera.dynasty_id), "Aelindran-Legitimate"):
+			e += 10.0  # the old claim is already awake — the truth would land on a lit fuse
+		w["sera"] = e
+	var thessaly: SimCharacter = characters.get(thessaly_id)
+	if thessaly != null and thessaly.alive and (marek == null or not marek.alive):
+		w["thessaly"] = 35.0  # the Library's discipline, inherited whole — requires Vovel's death first
+	# the Iron Library Compact: a realm-0 House formally bound to the
+	# archive raises the archive's standing in Veril's ledgers
+	for d: Dynasty in dynasties.values():
+		if d.legacies.has("The Iron Library Compact"):
+			if w.has("marek"):
+				w["marek"] = float(w["marek"]) + 10.0
+			if w.has("thessaly"):
+				w["thessaly"] = float(w["thessaly"]) + 10.0
+			break
+	return w
+
+
+func _vigil_top_candidate() -> String:
+	var w := vigil_candidates()
+	var top := ""
+	var top_w := -INF
+	for k in w:
+		if float(w[k]) > top_w:
+			top_w = float(w[k])
+			top = str(k)
+	return top
+
+
+func _vigil_tick() -> void:
+	## The old man's clock (Vigil doc §2, §6). Runs after the theology's
+	## tick, every month, from Year Zero until the vigil ends.
+	if architect_id < 0 or architect_phase == 0 or architect_phase >= 6:
+		return
+	var a: SimCharacter = characters.get(architect_id)
+	if a == null:
+		return
+	if not a.alive and tick < ARCHITECT_DEATH_TICK and vigil_recipient == "" and not vigil_sealed:
+		return  # an unscheduled end — _architect_tick aborts the vigil and opens the chamber
+	if central_secret_state != "buried" and vigil_recipient == "" and not vigil_sealed:
+		# Loose pages or a containment leak preempted the arc: the truth
+		# is already loose, and there is nothing left to deliver.
+		architect_phase = 6
+		return
+	match tick:
+		30:
+			architect_phase = 2  # quiet uncertainty (doc §2 Phase Two)
+			_log("The Records Sublevel requests the Iron Library's correspondence indices — twice in one season, after thirty-four years of requesting nothing but the Year 112 files. The clerks fill the order and think no more of it. In the sublevel, an old man reads the lists of who has written to whom, and does not find the pattern he spent forty years learning to expect.")
+		42:
+			architect_phase = 3  # acknowledged crisis (doc §2 Phase Three)
+			_log("[b]The old man attends the full session.[/b] Veril Ormand takes his Records Sublevel seat for every sitting this month — the first time in living clerical memory — and says nothing, and watches the chamber the way an assessor watches a bridge. That evening his lamp burns past the third hour. The person he prepared for is not coming. He has stopped testing the conclusion. What remains is six volumes, a ritual with no one to receive it, and however many mornings are left.")
+			_log("Five names go into the second journal.")
+		54:
+			architect_phase = 4  # active recomposing (doc §2 Phase Four)
+			_vigil_contact_event()
+		66:
+			_vigil_phase5()
+	if vigil_delivery_tick > 0 and tick == vigil_delivery_tick and vigil_contact_target != "":
+		_vigil_delivery()
+	if tick == ARCHITECT_DEATH_TICK and a.alive:
+		_vigil_death(a)
+	# the post-death schedule (scheduled death only)
+	if tick == ARCHITECT_DEATH_TICK + 1 and vigil_fragments and central_secret_state == "buried" and vigil_sealed:
+		_vigil_fragments_escape()
+	if tick == ARCHITECT_DEATH_TICK + 2 and vigil_recipient != "":
+		_vigil_escape()
+	if tick == ARCHITECT_DEATH_TICK + 3 and vigil_sealed and central_secret_state == "buried":
+		_vigil_chamber_race()
+	# the recipients' slower roads
+	match vigil_recipient:
+		"thessaly":
+			if tick == ARCHITECT_DEATH_TICK + 14:
+				_shift_coherence("Aelindran Orthodox", -0.10)
+				_shift_coherence("The Vael Rationalist Faith", -0.10)
+				_log("[b]The Iron Library publishes its first paper on the Council of Year 112.[/b] 'On the Administrative Continuity of the Magistocracy' — dry as bone, footnoted like a fortress, and unanswerable. It names no bargain. It establishes who was in the room. The second paper is already being set.")
+			elif tick == ARCHITECT_DEATH_TICK + 26 and central_secret_state == "contained":
+				_ending_revealed_gradual()
+				architect_phase = 6
+		"halvar":
+			if tick == ARCHITECT_DEATH_TICK + 8 and central_secret_state == "contained":
+				_vigil_order_decides()
+		"sera":
+			if tick == ARCHITECT_DEATH_TICK + 8 and central_secret_state == "contained":
+				_vigil_house_moves()
+
+
+func _vigil_contact_event() -> void:
+	## Doc §6 Phase 3: at Month 54, Veril initiates contact with his
+	## top-weighted candidate. The crown sees the letter move — and what
+	## the crown does with a sealed letter is the player's lever on
+	## whether the contact succeeds.
+	var target := _vigil_top_candidate()
+	vigil_contact_target = target
+	if target == "":
+		vigil_contact = ""
+		_log("The Records Sublevel's lamp burns late, and no letters leave. There is no one left worth writing to.")
+		return
+	var titles := {"marek": "The Iron Library Contact", "thessaly": "The Iron Library Contact",
+		"sevrin": "The Council Approach", "halvar": "The Order Contact", "sera": "The House Delivery"}
+	var texts := {
+		"thessaly": "A letter leaves the Records Sublevel under Veril Ormand's personal seal — the first outbound correspondence from that office in the archive's living memory. It is addressed to Thessaly Vorn, Chief Archivist of the Iron Library at Pellar. The Spymaster's office flags it as a matter of course. The seal is unbroken. For now.",
+		"marek": "A letter leaves the Records Sublevel under Veril Ormand's personal seal — addressed to Marek Vovel of the Iron Library at Pellar. The Spymaster's office flags it as a matter of course. The seal is unbroken. For now.",
+		"sevrin": "Veril Ormand has requested a private audience with Sevrin Vorontheim — deputy of his own sublevel, whom he has passed in silence for two years. The request is on paper, in a slow precise hand, and it has to cross the Chancellor's desk to be scheduled. It sits there now.",
+		"halvar": "A message is moving through Gravewarden channels toward Marn's Crossing — from Vael, from a sender the Order's people describe only as 'the man below the Council.' The border post that noticed it awaits instruction.",
+		"sera": "Veril Ormand has written to House Halvenard-Veil — to the daughter, not the head. The courier is old, discreet, and paid in advance for silence. The Spymaster's office noticed anyway. The letter can arrive, arrive copied, or not arrive.",
+	}
+	raise_event(0, realms[0].ruler_id, str(titles.get(target, "A Letter from the Sublevel")),
+		str(texts.get(target, texts["thessaly"])),
+		[
+			{"label": "Let it pass unread — the Sublevel's business is its own", "base": 10.0,
+				"ai": {"patience": 0.2},
+				"effect": func() -> void:
+					vigil_contact = "received"
+					_log("The letter goes where it was sent. Somewhere, a reply is being considered.")},
+			{"label": "Have it copied in transit — then send it on", "base": 4.0,
+				"ai": {"scheming": 0.3},
+				"effect": func() -> void:
+					vigil_contact = "received"
+					vigil_fragments = true
+					_log("The letter arrives with its seal immaculate — resealed by professionals. The copy is in the Spymaster's files now: fragments of something much larger, in an old man's careful hand. The truth is in more hands than its keeper chose.")},
+			{"label": "Intercept it — nothing leaves that room unexamined", "base": 2.0,
+				"ai": {"aggression": 0.15, "scheming": 0.1},
+				"effect": func() -> void:
+					vigil_contact = "intercepted"
+					_log("The letter does not arrive. In the Records Sublevel, an old man counts the weeks a reply should take, then the weeks it should not, and writes one line in the second journal: 'The road is watched. I am — I am out of roads.'")},
+		], false, false, false, true)
+
+
+func _vigil_phase5() -> void:
+	## Doc §2 Phase Five: acceptance or active delivery. The decision is
+	## Veril's own — shaped by whether his contact was received, by the
+	## candidate's weight in his ledgers, and by one dice-breadth of the
+	## psychology no ledger holds.
+	architect_phase = 5
+	var w := vigil_candidates()
+	var viable := vigil_contact == "received" and vigil_contact_target != "" \
+		and w.has(vigil_contact_target) and float(w[vigil_contact_target]) >= 25.0
+	# one chance in ten that the standards he built for forty years refuse
+	# the substitute anyway (vrng — the vigil's own die)
+	if viable and vrng.randf() >= 0.10:
+		vigil_delivery_tick = tick + 3
+		_log("[b]A decision, forty years late.[/b] The recognition-pattern was built for someone who does not exist, and the man who built it has concluded that a delivery under desperate necessity beats a sealed room and a haphazard reader. In the second journal: 'I am — I am not choosing correctly. I am choosing.'")
+	else:
+		vigil_sealed = true
+		vigil_delivery_tick = -1
+		if vigil_contact == "intercepted":
+			_log("[b]The Sublevel goes quiet.[/b] The one road out was watched, and Veril Ormand will not spend the truth on a watched road. The six volumes are complete, cross-referenced, and unaccompanied. The chamber will keep them until someone opens the door. He writes the dates again, out of season, to verify they are still what he remembers.")
+		else:
+			_log("[b]The Sublevel goes quiet.[/b] Veril Ormand has concluded that no living candidate is the person he prepared for — and that a finished record matters more than a wrong delivery. The six volumes are complete, cross-referenced, and unaccompanied. The chamber will keep them until someone opens the door. He writes the dates again, out of season, to verify they are still what he remembers.")
+
+
+func _vigil_delivery() -> void:
+	## Doc §4: the modified ritual. Time, the recipient's preparation, and
+	## the old man's health all shape the form — but in every form, the
+	## documentation leaves the chamber while its keeper still breathes.
+	vigil_recipient = vigil_contact_target
+	vigil_delivery_tick = -1
+	match vigil_recipient:
+		"thessaly":
+			_log("[b]The Delivery: the Iron Library.[/b] A sealed crate leaves the Records Sublevel for Pellar under a supply-line waybill that took three weeks to falsify properly. Six hand-written volumes, cross-referenced, and a letter of instruction in a slow precise hand: how to hold them, when to publish, what each page will cost its reader. It ends: 'I have been keeping records. I have — I have wanted them to exist. They are yours now.' Thessaly Vorn reads the first volume in one sitting.")
+		"sevrin":
+			_log("[b]The Delivery: the deputy.[/b] Sevrin Vorontheim is called down past the door no deputy has passed in thirty-four years. The ritual is truncated — more explanation than recognition, an old man spending what breath he has on context and trusting the rest to grow. At the end: 'You will want to act on this within the year. Do not. Count the chamber first. You are — you are good at counting.'")
+		"halvar":
+			_log("[b]The Delivery: the threshold.[/b] The documentation goes out through Gravewarden channels, framed not as institutional record but as threshold-recognition: an incomplete transition, still standing open, and the Order's work unfinished until it closes. Halvar Stenn receives the volumes at Marn's Crossing, reads until the lamp fails, and carves, that evening, a bird for a man not yet dead.")
+		"sera":
+			_log("[b]The Delivery: an old House.[/b] Veril Ormand's letter to Sera Halvenard-Veil spends two pages on what the truth is and eleven on what it will do — to her House, to the Magistocracy, to every claim the old families ever set aside. The volumes follow by a quieter road. She is twenty-two years old, and she now holds the most dangerous document in Khessar.")
+		_:
+			_log("[b]The Delivery.[/b] The documentation leaves the Records Sublevel, and its keeper watches it go.")
+
+
+func _vigil_death(a: SimCharacter) -> void:
+	## Year Six, the last month: the clock the chamber was always running
+	## on. Six years of the Silence; forty years of the vigil.
+	_kill(a, "dies in the Records Sublevel, the ledgers in order, the door locked from within,")
+	_log("[b]The last surviving signature of Year 112 has left the table.[/b] In the chamber's first room they will eventually find a small ledger: the same dates, written over again every spring, forty springs deep. The final entry is this year's. The dates are what he remembered.")
+	if vigil_recipient == "" and not vigil_sealed:
+		# he died before Phase Five could conclude — treat as 5A by default
+		vigil_sealed = true
+
+
+func _vigil_fragments_escape() -> void:
+	## Ending Four's seed (doc §5): the Spymaster's copy was the only
+	## version outside the chamber — and a sealed chamber makes fragments
+	## priceless. Distributed leverage, not institutional truth.
+	central_secret_state = "leveraged"
+	for lord: SimCharacter in landed_vassals(0):
+		_gain_hook(0, lord.id, "weak", "silence_cause_complicity")
+	_log("[b]The fragments do their work.[/b] The chamber is sealed and its keeper is dead — but the copy taken in transit is suddenly the only key anyone has, and the Spymaster's office knows exactly which houses appear in it. No publication. No reckoning. Just pressure, applied precisely, house by house.")
+	architect_phase = 6
+
+
+func _vigil_escape() -> void:
+	## Doc §3: the truth's escape when a delivery happened (5B). The
+	## specific manner of accessibility is the recipient's character.
+	match vigil_recipient:
+		"thessaly":
+			central_secret_state = "contained"
+			_log("[b]The Iron Library holds the truth.[/b] Thessaly Vorn does what the letter asked: nothing sudden. The volumes go into protection deeper than any vault the Magistocracy owns — and the work of releasing them begins the way the Record does everything, slowly and in order.")
+		"sevrin":
+			var rec := magister_vote("acknowledging the record of Year 112", sevrin_id, 2.0)
+			if bool(rec["passed"]):
+				central_secret_state = "contained"
+				realms[0].tyranny = minf(100.0, realms[0].tyranny + 5.0)
+				_log("[b]The Council acknowledges — quietly.[/b] Sevrin Vorontheim puts the Year 112 record before the chamber that inherited it, and the chamber, by recorded division, votes to own what it owns: reform from inside, publication deferred, the pages under Council seal. It is not justice. It is — it is administration. It may hold.")
+			else:
+				_log("[b]The acknowledgment spirals.[/b] A junior Magister asked the chamber to own the Year 112 record. The chamber declined the motion — and a declined motion about a secret is a secret with a vote count attached. The pages are out the windows within a season, and no one controls the reading now.")
+				_ending_revealed()
+			architect_phase = 6
+		"halvar":
+			central_secret_state = "contained"
+			_log("[b]The Order receives the truth as it receives the dead:[/b] without ceremony, without publication, and without letting go. In the threshold-shrines from Marn's Crossing outward, the wardens now know what stands on the other side of the incomplete transitions they have been closing all their lives — and who bought it.")
+		"sera":
+			central_secret_state = "contained"
+			var sera: SimCharacter = characters.get(sera_id)
+			if sera != null:
+				_earn_mythos(root_house_id(sera.dynasty_id), "Aelindran-Legitimate")
+			_log("[b]An old House remembers what it set aside.[/b] House Halvenard-Veil's daughter holds the proof that the Magistocracy's foundation was a purchase — and the House's claim, dormant since the Sovereignty fell, is suddenly worth reading again. The elders convene. The question is not whether to use it. The question is how.")
+		_:
+			pass
+
+
+func _vigil_order_decides() -> void:
+	## The Gravewarden road forks (doc §5, Endings Three and Five): if the
+	## Patron's network stands visible, the Order coordinates the anchor's
+	## destruction; if not, the Order decides its protection is worth more
+	## than the telling.
+	if (patron_state == "active" or patron_state == "revealed") and not patron_network_broken:
+		_log("[b]The Order moves on the Ashfields.[/b] Quietly, over one season, the Gravewarden Order does what it has structurally existed to do since before it had a name: it closes an incomplete transition. Wardens converge on the anchor with the truth of Year 112 in hand and every rite the thresholds ever taught them.")
+		_ending_destroyed()
+	else:
+		central_secret_state = "suppressed"
+		_log("[b]The Order keeps the truth.[/b] There is no network worth burning and no reader worth the ruin the pages would buy. The volumes go under a threshold-shrine's floor at Marn's Crossing, and the Order's answer to Year 112 is the same answer it gives every unquiet grave: guarded, tended, and closed.")
+	architect_phase = 6
+
+
+func _vigil_house_moves() -> void:
+	## Sera's road (doc §5, Ending One's most explosive mechanism): House
+	## Halvenard-Veil decides what a restored claim is worth — and the
+	## crown decides whether to let the House speak, buy it, or break it.
+	raise_event(0, realms[0].ruler_id, "House Halvenard-Veil Moves",
+		"The House has the Year 112 record — the courier, the copies, the daughter who received them are all confirmed. Their claim predates the Magistocracy, and the record proves the Magistocracy's own foundation was a purchase paid in the Silence. Pamphlets are already set in type. The crown has days, not months.",
+		[
+			{"label": "Let the House speak — the age needs the truth", "base": 3.0,
+				"ai": {"orthodoxy": 0.3},
+				"effect": func() -> void:
+					_log("[b]House Halvenard-Veil publishes.[/b] The old claim and the new proof land together — divine-right memory wrapped around administrative documentation — and no reading room in Khessar holds both without catching fire.")
+					_ending_revealed()
+					architect_phase = 6},
+			{"label": "Bargain — the House's silence has a price", "base": 3.0,
+				"ai": {"scheming": 0.4},
+				"effect": func() -> void:
+					central_secret_state = "leveraged"
+					var sera2: SimCharacter = characters.get(sera_id)
+					if sera2 != null:
+						dynasties[root_house_id(sera2.dynasty_id)].renown += 40.0
+					_log("[b]The bargain is struck in a single night.[/b] House Halvenard-Veil's silence costs precedence, offices, and a public restoration of honors the Sovereignty's fall took away — and the record becomes what records become in Vael: an instrument, held jointly, aimed at everyone else.")
+					architect_phase = 6},
+			{"label": "Suppress it — arrest the courier, burn the copies", "base": 2.0,
+				"ai": {"aggression": 0.2, "scheming": 0.15},
+				"effect": func() -> void:
+					central_secret_state = "suppressed"
+					realms[0].tyranny = minf(100.0, realms[0].tyranny + 15.0)
+					var sera3: SimCharacter = characters.get(sera_id)
+					if sera3 != null and realms[0].ruler_id >= 0:
+						add_memory(sera3, "they burned the truth", realms[0].ruler_id, -60.0, 0.5)
+					_log("[b]The presses are broken by dawn.[/b] The couriers vanish; the copies burn; House Halvenard-Veil is reminded, precisely, what happened to the last three dissenters of Year 112. The Magistocracy survives whole. Sera Halvenard-Veil survives remembering.")
+					architect_phase = 6},
+		], false, false, false, true)
+
+
+func _vigil_chamber_race() -> void:
+	## Doc §3, the 5A case: whoever opens the chamber first becomes the
+	## effective recipient by proximity rather than by choice — and the
+	## first reading shapes everything after. Weighted on the vigil's die.
+	var pool: Array = []
+	var sevrin: SimCharacter = characters.get(sevrin_id)
+	if sevrin != null and sevrin.alive:
+		pool.append({"id": sevrin.id, "w": 25.0})  # the deputy of the sublevel itself
+	var davriand: SimCharacter = characters.get(davriand_id)
+	if davriand != null and davriand.alive:
+		pool.append({"id": davriand.id, "w": 20.0})  # the wing that wants a weapon
+	var tess: SimCharacter = characters.get(mareck_id)
+	if tess != null and tess.alive:
+		pool.append({"id": tess.id, "w": 15.0})  # the office that files everything
+	var crown: SimCharacter = characters.get(realms[0].ruler_id)
+	if crown != null and crown.alive:
+		pool.append({"id": crown.id, "w": 10.0})  # the seal moves last, but it moves
+	if pool.is_empty():
+		_raise_architect_chamber()
+		architect_phase = 6
+		return
+	var total := 0.0
+	for p in pool:
+		total += float(p["w"])
+	var roll := vrng.randf() * total
+	var opener_id := int(pool[0]["id"])
+	for p in pool:
+		roll -= float(p["w"])
+		if roll <= 0.0:
+			opener_id = int(p["id"])
+			break
+	_raise_architect_chamber(opener_id)
+	architect_phase = 6
+
+
+func vigil_status_line() -> String:
+	## The Records Sublevel as the court can see it (main.gd's Council
+	## tab): observable behavior only — the phases behind the door are
+	## the doc's, not the clerks'.
+	match architect_phase:
+		1:
+			return "The Records Sublevel: the door has not opened in thirty-four years."
+		2:
+			return "The Records Sublevel: the old man's lamp burns later than it used to."
+		3:
+			return "The Records Sublevel: Veril Ormand has begun requesting the current correspondence."
+		4:
+			return "The Records Sublevel: letters leave under the old man's seal, for the first time in decades."
+		5:
+			if vigil_sealed:
+				return "The Records Sublevel: the door is sealed from within."
+			return "The Records Sublevel: a crate left under escort, and the old man watched it go."
+		6:
+			return "The Records Sublevel seat stands empty."
+	return ""
+
+
 func live_ruler_title(realm_id: int, c: SimCharacter) -> String:
 	## What a live realm's crown is actually called (Administrative
 	## v1.0): the Magistocracy elects a Grand Magister; the clan follows
@@ -5590,48 +6030,79 @@ func _architect_tick() -> void:
 	if a == null:
 		return
 	if not a.alive:
+		# The vigil concluded on schedule (a delivery made, or the chamber
+		# sealed at Phase Five): its own post-death beats carry the truth
+		# from here (_vigil_tick — delivery cascades, the race for the door).
+		if vigil_recipient != "" or vigil_sealed or tick >= ARCHITECT_DEATH_TICK:
+			return
+		if architect_phase >= 1 and architect_phase <= 5:
+			# an unscheduled end — poison, plague, a plot the chamber could
+			# not refuse: the vigil aborts, and the chamber opens haphazardly
+			# (Vigil doc §3's proximity-recipient case, in its bluntest form)
+			architect_phase = 6
+			_log("[b]The vigil ends off-schedule.[/b] Whatever Veril Ormand was still deciding, the deciding is over.")
 		_raise_architect_chamber()
 		return
 	if tick >= 60 and mrng.randf() < 0.002:
-		_log("[b]Loose pages surface from the Aurath-Voss archives[/b] — fragments of a vote taken in Year 112 of the Council, and of what it purchased.")
-		_raise_architect_chamber()
+		# the die is drawn as it always was; but once a delivery has left
+		# the chamber, the loose pages have nowhere new to lead
+		if vigil_recipient == "":
+			_log("[b]Loose pages surface from the Aurath-Voss archives[/b] — fragments of a vote taken in Year 112 of the Council, and of what it purchased.")
+			_raise_architect_chamber()
 
 
-func _raise_architect_chamber() -> void:
+func _raise_architect_chamber(opener_id: int = -1) -> void:
 	## The complete record: seven signatures under a bargain with the
 	## Patron, and the Silence its price. Five ways to hold the truth.
+	## With an opener (the Vigil's 5A race), the first reader's own
+	## character decides — the crown only hears about it afterward.
 	central_secret_state = "opened"
 	for s in secrets:
 		if str(s["type"]) == "silence_cause_complicity":
 			s["known"][0] = true
-	raise_event(0, realms[0].ruler_id, "The Architect's Chamber",
-		"Veril Ormand's chamber stands open at last — and in it, the complete record. The Magistocracy's foundation transaction: seven signatures under a bargain with the Patron, dated Year 112 of the Council. Three dissenters, all dead within eighteen months. The Silence was the invoice. What the crown does with the truth decides the age.",
-		[
-			{"label": "Publish it all — the world deserves the truth", "base": 2.0,
-				"ai": {"orthodoxy": 1.0, "aggression": 0.4},
-				"effect": func() -> void: _ending_revealed()},
-			{"label": "Contain it within the council — reform quietly", "base": 3.0,
-				"ai": {"patience": 0.7},
-				"effect": func() -> void:
-					central_secret_state = "contained"
-					realms[0].tyranny = minf(100.0, realms[0].tyranny + 10.0)
-					_log("[b]The record is sealed inside the council chamber.[/b] The reformers take the pen; the traditionalists take notes. Contained truths have a way of finding doors.")},
-			{"label": "Destroy the anchor — end the Patron itself", "base": 2.0,
-				"ai": {"orthodoxy": 0.6, "aggression": 0.6},
-				"effect": func() -> void: _ending_destroyed()},
-			{"label": "Use it — every complicit house, on a hook", "base": 1.5,
-				"ai": {"scheming": 1.2},
-				"effect": func() -> void:
-					central_secret_state = "leveraged"
-					for lord: SimCharacter in landed_vassals(0):
-						_gain_hook(0, lord.id, "strong", "silence_cause_complicity")
-					_log("[b]The record becomes an instrument.[/b] Every house that profited from the Council's bargain now answers to whoever holds the pages.")},
-			{"label": "Bury it deeper — some truths end worlds", "base": 2.5,
-				"ai": {"scheming": 0.4, "patience": 0.6},
-				"effect": func() -> void:
-					central_secret_state = "suppressed"
-					_log("[b]The chamber is bricked shut.[/b] The Magistocracy survives whole — and the Silence continues, unexamined, toward whatever it was always building to.")},
-		], true)
+	var decider: int = realms[0].ruler_id
+	var text := "Veril Ormand's chamber stands open at last — and in it, the complete record. The Magistocracy's foundation transaction: seven signatures under a bargain with the Patron, dated Year 112 of the Council. Three dissenters, all dead within eighteen months. The Silence was the invoice. What the crown does with the truth decides the age."
+	if opener_id >= 0 and characters.has(opener_id) and opener_id != realms[0].ruler_id:
+		decider = opener_id
+		text = "Veril Ormand's chamber stands open at last — and it is %s who reaches it first. In it, the complete record: seven signatures under a bargain with the Patron, dated Year 112 of the Council. Three dissenters, all dead within eighteen months. The Silence was the invoice. The first reading shapes everything after — and the first reader was not the crown." % full_name(characters[opener_id])
+		_log("[b]The race for the door is over.[/b] %s stands in the Architect's chamber with the only complete account of what the Magistocracy is." % full_name(characters[opener_id]))
+	var opts := [
+		{"label": "Publish it all — the world deserves the truth", "base": 2.0,
+			"ai": {"orthodoxy": 1.0, "aggression": 0.4},
+			"effect": func() -> void: _ending_revealed()},
+		{"label": "Contain it within the council — reform quietly", "base": 3.0,
+			"ai": {"patience": 0.7},
+			"effect": func() -> void:
+				central_secret_state = "contained"
+				realms[0].tyranny = minf(100.0, realms[0].tyranny + 10.0)
+				_log("[b]The record is sealed inside the council chamber.[/b] The reformers take the pen; the traditionalists take notes. Contained truths have a way of finding doors.")},
+		{"label": "Destroy the anchor — end the Patron itself", "base": 2.0,
+			"ai": {"orthodoxy": 0.6, "aggression": 0.6},
+			"effect": func() -> void: _ending_destroyed()},
+		{"label": "Use it — every complicit house, on a hook", "base": 1.5,
+			"ai": {"scheming": 1.2},
+			"effect": func() -> void:
+				central_secret_state = "leveraged"
+				for lord: SimCharacter in landed_vassals(0):
+					_gain_hook(0, lord.id, "strong", "silence_cause_complicity")
+				_log("[b]The record becomes an instrument.[/b] Every house that profited from the Council's bargain now answers to whoever holds the pages.")},
+		{"label": "Bury it deeper — some truths end worlds", "base": 2.5,
+			"ai": {"scheming": 0.4, "patience": 0.6},
+			"effect": func() -> void:
+				central_secret_state = "suppressed"
+				_log("[b]The chamber is bricked shut.[/b] The Magistocracy survives whole — and the Silence continues, unexamined, toward whatever it was always building to.")},
+	]
+	if decider != realms[0].ruler_id:
+		# The Vigil's race was lost: the truth belongs to whoever opened
+		# the door, and their character — not the crown's, not the
+		# player's — shapes the first reading. Resolved on the vigil's die.
+		var ev := {"id": next_event_id, "realm_id": 0, "decider": decider,
+			"title": "The Architect's Chamber", "text": text, "options": opts,
+			"magic": false, "admin": false, "faith": false, "vigil": true}
+		next_event_id += 1
+		_ai_resolve_event(ev)
+	else:
+		raise_event(0, decider, "The Architect's Chamber", text, opts, true)
 
 
 func _ending_revealed() -> void:
@@ -5649,6 +6120,24 @@ func _ending_revealed() -> void:
 	_shift_coherence("The Vael Rationalist Faith", -0.30)
 	_shift_coherence("The Silent Path", 0.15)
 	_log("[b]THE TRUTH IS PUBLISHED.[/b] The Magistocracy caused the Silence — bought it, signed for it, profited by it. Its legitimacy does not survive the reading. The old noble houses are suddenly the only authority anyone remembers trusting.")
+
+
+func _ending_revealed_gradual() -> void:
+	## Ending Two, the archival road (Vigil doc §5): the truth arrives in
+	## institutional form, over years — sourced, footnoted, unanswerable.
+	## The Magistocracy is remade, not beheaded: half the fury of
+	## _ending_revealed, all of its finality.
+	central_secret_state = "revealed"
+	realms[0].tyranny = minf(100.0, realms[0].tyranny + 12.0)
+	realms[0].prestige = maxf(-100.0, realms[0].prestige - 25.0)
+	realms[1].prestige = minf(100.0, realms[1].prestige + 8.0)
+	for lord: SimCharacter in landed_vassals(0):
+		if realms[0].ruler_id >= 0:
+			add_memory(lord, "their crowns knew", realms[0].ruler_id, -20.0, 1.0)
+	_shift_coherence("Aelindran Orthodox", -0.20)
+	_shift_coherence("The Vael Rationalist Faith", -0.20)
+	_shift_coherence("The Silent Path", 0.10)
+	_log("[b]THE TRUTH IS PUBLISHED — in the Iron Library's measured hand.[/b] Released over two years, sourced past refutation, each paper narrower and more damning than the last. The Magistocracy caused the Silence; the record proves it; the record is a *record*, and Khessar's institutions have nowhere to stand but inside it. There are no mobs. There are resignations, recorded divisions, and a legitimacy that must now be re-earned line by line.")
 
 
 func _ending_destroyed() -> void:
@@ -6627,11 +7116,15 @@ func _auto_marriages() -> void:
 	for m: SimCharacter in bachelors:
 		if m.spouse_id >= 0 or rng.randf() > 0.06:
 			continue
+		if m.id == architect_id:
+			continue  # the die is drawn; the Reclusive old man does not remarry (Vigil canon — "He did not marry again")
 		for f in characters.values():
 			if not (f.alive and f.is_female and f.spouse_id < 0):
 				continue
 			if f.age_years(tick) < ADULT_AGE or f.realm_id != m.realm_id or _close_kin(m, f):
 				continue
+			if is_cast(f):
+				continue  # the cast courts do not answer marriage brokers (Faction Cast v1.0)
 			var _err := marry(m.id, f.id)
 			break
 
@@ -6675,16 +7168,16 @@ func eligible_singles(female: bool) -> Array:
 # the spot by the decider's personality — the same trait AI weights
 # (aggression / scheming / greed / patience) score every option.
 
-func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array, magic: bool = false, admin: bool = false, faith: bool = false) -> void:
+func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array, magic: bool = false, admin: bool = false, faith: bool = false, vigil: bool = false) -> void:
 	if options.is_empty():
 		return
 	# magic-born events resolve on the magic RNG (Magic v1.0), Council
 	# events on the Council's (Administrative v1.0), faith events on the
-	# theology's (Module 9) — the main history stream never feels any
-	# system's bookkeeping
+	# theology's (Module 9), vigil events on the Architect's (Vigil v1.0) —
+	# the main history stream never feels any system's bookkeeping
 	var ev := {"id": next_event_id, "realm_id": realm_id, "decider": decider_id,
 		"title": title, "text": text, "options": options, "magic": magic, "admin": admin,
-		"faith": faith}
+		"faith": faith, "vigil": vigil}
 	next_event_id += 1
 	if realm_id != 0 or auto_resolve_events:
 		_ai_resolve_event(ev)
@@ -6698,7 +7191,9 @@ func _ai_resolve_event(ev: Dictionary) -> void:
 	## decider's trait weights, plus a little human unpredictability.
 	var decider: SimCharacter = characters.get(int(ev["decider"]))
 	var jitter_rng: RandomNumberGenerator = rng
-	if bool(ev.get("admin", false)):
+	if bool(ev.get("vigil", false)):
+		jitter_rng = vrng
+	elif bool(ev.get("admin", false)):
 		jitter_rng = arng
 	elif bool(ev.get("faith", false)):
 		jitter_rng = frng

@@ -59,8 +59,10 @@ practice a faith draw their people after them. **Coherence reads through
 into Cleric reliability**: `faith_reliability` now multiplies by
 0.6 + 0.5 × the caster's faith's coherence.
 
-Canonical 20-year run: Orthodox at **coherence 0.26, 32% of the
+Canonical 20-year run: Orthodox at **coherence 0.23, 31% of the
 continent** — still the largest doctrine, no longer the authority.
+(Re-derived after the Architect's Vigil pass moved the main stream;
+was 0.26/32%.)
 
 ## 4. Heresy as the natural state (brief §4)
 

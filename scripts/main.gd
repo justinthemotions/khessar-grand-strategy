@@ -1290,6 +1290,11 @@ func _refresh_faiths() -> void:
 			lines += "\nThe Patron Network — REVEALED. Every faith must now answer for what stood behind the Silence."
 		"broken":
 			lines += "\nThe Patron Network — broken. The anchor is ash; no new bargains will ever be made."
+	# The Architect's Vigil (v1.0): the Records Sublevel as the court can
+	# observe it — the phases behind the door stay behind the door.
+	var vigil := world.vigil_status_line()
+	if vigil != "":
+		lines += "\n" + vigil
 	faith_label.text = lines.strip_edges()
 
 

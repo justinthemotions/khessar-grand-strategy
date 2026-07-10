@@ -101,12 +101,14 @@ the blood is recorded renown), **The Vael Compact** (+1 admin cap),
 
 ## 7. The Magistocracy's central secret
 
-**Veril Ormand** — House Ormand, 71 at Year Zero, Academy-Sworn, Broken,
-Reclusive, already bearing Mark I from what was signed in Year 112 — is
-created at setup as the last surviving yes-vote, and
+**Veril Ormand** — House Ormand, 77 at Year Zero (canonized by the
+Architect's Vigil doc; the seed originally said 71), Academy-Sworn,
+Broken, Reclusive, already bearing Mark I from what was signed in Year
+112 — is created at setup as the last surviving yes-vote, and
 `silence_cause_complicity` is held by him alone. It is **excluded from
-ferreting entirely**: only his death (the chamber opens), or a rare late
-surfacing from the Aurath-Voss archives, brings it up. The chamber event
+ferreting entirely**: only his death (now Year Six canon — see
+ARCHITECTS_VIGIL.md), or a rare late surfacing from the Aurath-Voss
+archives, brings it up. The chamber event
 offers the five endings as one grave choice: **publish** (Magistocracy
 legitimacy collapses — tyranny +30, prestige −50, every landed lord
 remembers that *their crowns knew*), **contain** (reform quietly, with a
