@@ -46,9 +46,10 @@ split/merge supported. New recruits report to the army nearest the realm centroi
   `RECRUIT_COST`, `RECRUIT_SIZE`, and `UNIT_UPKEEP` for kinds priced above the flat rate.
 - `battle_sim.gd`: `PRESETS` (full battle stats, see §5).
 
-There are **24 kinds**: the universal roster (levy 120g / sword 240g / cav 450g /
-archer 200g, open to every realm) plus **20 cultural specialty kinds** from the
-Cultural Roster v1.0 — see §10b for the culture system.
+There are **29 kinds**: the universal roster (levy 120g / sword 240g / cav 450g /
+archer 200g, open to every realm), **20 cultural specialty kinds** from the
+Cultural Roster v1.0 (see §10b), and **5 Tactical Combat System kinds** — the Order,
+Caeris's forces, and the Forsaken militia (see §14.3).
 
 **Recruitment** is capped by `levy_capacity(realm)` = effective province levies × tax-law
 multiplier (+ Marshal bonus, tribal ruler bonus, legacies, interregnum penalty), and
