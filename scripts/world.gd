@@ -86,6 +86,9 @@ const MYTHOS := {
 	"Vael-Educated":       {"blurb": "Three of the blood have sworn the academies: the line thinks in ledgers and proofs"},
 	"Aelindran-Legitimate": {"blurb": "The old divine-right claim, now mechanically uncertain — kept alive by refusing to secularize (dormant until Module 9)"},
 	"Ward-Broken":         {"blurb": "The house's warded lands fell to the Silence: mourned by the Scarred, unforgiven by the ward-wrights (dormant until the ward layer)"},
+	# Administrative Government v1.0 (brief §4): the office does not pass
+	# to the blood — but the blood is remembered for having held it.
+	"Former Grand Magister Family": {"blurb": "The chair was theirs once: +5 opinion from Aelindran-Legitimate houses, -5 from Vael reformists"},
 }
 const KIN_CRUELTY_THRESHOLD := 3   # disinherits/denouncements before the Kin-Eater stain
 const POISONINGS_THRESHOLD := 2
@@ -101,6 +104,15 @@ const GOVERNMENTS := {
 	"merchant_republic": {"label": "Merchant Republic", "blurb": "Power floats on trade: patrician families and civic councils rule the wharves"},
 	"clan": {"label": "Clan", "blurb": "Power flows through kinship: the great house and the realm are one and the same"},
 }
+# Administrative Government v1.0 (Opus's mini-brief, 2026-07-08): the
+# nine seats of the Council of Magisters. Odd-numbered so ties are rare;
+# the Grand Magister breaks the ones that happen anyway.
+const MAGISTER_SEATS: Array[String] = ["Grand Magister", "Economic Affairs",
+	"Foreign Affairs", "Clerical Registry", "Records Sublevel", "Chancellor",
+	"Master of War", "Chief Physician", "Court Chaplain"]
+const MAGISTER_MIN_LEARNING := 12     # no seat without the academies' arithmetic
+const ELECTION_RANKS := 5             # preferential ballot: rank your top five, points 5..1
+
 const DEJURE_DRIFT_MONTHS := 480      # 40 years of holding before the land forgets its old banners
 const FOREIGN_LAND_YIELD := 0.6       # tax/levy of land you hold but do not rightfully own
 const CROWN_ADMIN_BASE := 4           # counties the crown runs well without lords (+ stewardship/5)
@@ -266,6 +278,8 @@ const SECRET_LABELS := {
 	"corruption_marks_hidden": "Corruption marks, concealed",
 	"silence_encounter_witnessed": "present when the Silence broke through",
 	"arcane_manifestation_hidden": "the blood untaught",
+	# Administrative Government v1.0 (Opus's mini-brief §5)
+	"magister_poisoning": "a Grand Magister's cup, and who paid for it",
 }
 const MINOR_SCHEME_LABELS := {
 	"seduce": "Seduction", "abduct": "Abduction",
@@ -386,6 +400,26 @@ var architect_id: int = -1            # Veril Ormand, the last surviving yes-vot
 # draw from the main stream), so the map reads as people, not territory.
 var crng := RandomNumberGenerator.new()
 var cast_rulers: Dictionary = {}      # map realm id -> {"id": char id, "title": String}
+# Administrative Government v1.0: the Magistocracy governs as itself.
+# All Council randomness runs on its own seeded RNG; the seeded Council
+# characters are guarded out of the main stream's dice like the cast.
+var arng := RandomNumberGenerator.new()
+var admin_cast: Dictionary = {}       # char id -> true — seeded Council figures (politics, not actuarial tables)
+var magister_seats: Dictionary = {}   # seat name -> {"holder": char id (-1 vacant), "since": tick seated}
+var magister_wing: Dictionary = {}    # char id -> "reformist"|"traditionalist"|"neutral"|"silent"
+var council_vote_history: Array = []  # [{tick, matter, ayes, nays, passed, votes {id: "aye"|"nay"|"abstain"}}] (brief §Phase 7)
+var admin_interregnum: Dictionary = {} # {stage 0..6, regent, support {cand id: {voter id: float}}}
+var last_election: Dictionary = {}    # {winner, points {cand id: int}, refused} — the last Council election
+var pending_nomination: Dictionary = {} # {seat, nominee} — awaiting next tick's confirmation vote
+var rejected_nominees: Dictionary = {}  # char id -> tick the Council last refused them
+var anselm_id := -1                   # Grand Magister Anselm Vorontheim
+var halloran_id := -1                 # Magister Halloran Verith, the Reformist wing
+var davriand_id := -1                 # Magister Davriand Karn, the Traditionalist wing
+var kreth_id := -1                    # Magister Kreth Anford, the moderate voice (dying by Year Six)
+var mareck_id := -1                   # Chief Spymaster Tess Mareck (off-council)
+var anselm_protection := 0            # protective choices taken before Month 34 (2+ foils the cup)
+var poisoning_fired := false
+var chaplain_crisis_fired := false
 var central_secret_state: String = "buried"  # buried|revealed|contained|destroyed|leveraged|suppressed
 var patron_network_broken: bool = false      # Ending 3: the anchor is ash
 var faith_failures: Dictionary = {}   # char id -> failed prayers this year (Faith Crisis at 3)
@@ -523,11 +557,20 @@ func setup() -> void:
 	# (the seed rolled placeholders from the pools; the Faction Map's
 	# names win — a pure rename, no dice touched)...
 	if realms[0].ruler_id >= 0:
-		characters[realms[0].ruler_id].name = "Garran"
+		var garran: SimCharacter = characters[realms[0].ruler_id]
+		garran.name = "Garran"
+		# canon reconciliation (Opus, Gazetteer): Garran is 55 at Year Zero —
+		# the Faction Map aged him so Sera reaches a canonical 23 by Year
+		# Six. A birth-date correction, not a dice roll.
+		garran.birth_tick = tick - 55 * 12 - 5
 	if realms[1].ruler_id >= 0:
 		characters[realms[1].ruler_id].name = "Vorak"
 	# ...and the map-only realms get their canonical crowns as real people
 	_seed_faction_cast()
+	# Administrative Government v1.0: the Magistocracy becomes playable as
+	# itself — Anselm Vorontheim takes the chair the Halvenard-Veil head
+	# has been keeping warm, and the Council of Magisters sits.
+	_seed_administration()
 
 
 func _seed_house(realm: Realm, house_name: String, ruling: bool) -> void:
@@ -636,6 +679,7 @@ func advance_month() -> void:
 	_intrigue_tick()
 	_magic_tick()
 	_cast_tick()
+	_admin_tick()
 	_diplomacy_tick()
 	_ai_diplomacy()
 	_economy()
@@ -856,6 +900,12 @@ func _epitaph(c: SimCharacter) -> void:
 # ---------------------------------------------------------------- succession
 
 func _succession(realm: Realm, dead: SimCharacter) -> void:
+	# Administrative government (v1.0, brief §4): the office is not
+	# heritable. The Council appoints a Regent and elects — the dead
+	# ruler's House keeps its seats and its wealth, never the chair.
+	if realm.government == "administrative" and not magister_seats.is_empty():
+		_magister_succession(dead)
+		return
 	realm.interregnum = {}  # a death mid-interregnum resets the clock
 	var rescue := false
 	var heir := _pick_heir(realm, dead)
@@ -1174,8 +1224,8 @@ func _assign_commander(a: Army) -> void:
 		return
 	var best: SimCharacter = null
 	for c in characters.values():
-		if not (c.alive and c.realm_id == a.realm_id) or c.denounced:
-			continue
+		if not (c.alive and c.realm_id == a.realm_id) or c.denounced or is_cast(c):
+			continue  # magisters mind ledgers, not columns (Administrative v1.0)
 		if c.age_years(tick) < ADULT_AGE or taken.has(c.id):
 			continue
 		if best == null or c.martial > best.martial:
@@ -1410,7 +1460,8 @@ func _war_tick() -> void:
 func _skirmish_death(realm: Realm) -> void:
 	var men: Array = []
 	for c in characters.values():
-		if c.alive and not c.is_female and c.realm_id == realm.id and c.age_years(tick) >= ADULT_AGE:
+		if c.alive and not c.is_female and c.realm_id == realm.id \
+				and c.age_years(tick) >= ADULT_AGE and not is_cast(c):
 			men.append(c)
 	if men.is_empty():
 		return
@@ -1516,6 +1567,19 @@ func declare_war(by_realm: int = 0) -> String:
 	else:
 		_log("[b]WAR![/b] %s declares war on %s, claiming %s." % [
 			aggressor.name, defender.name, CB_LABELS[war_cb]])
+	# Administrative v1.0 (brief §3): a declaration of war goes before the
+	# Council of Magisters. Advisory at v1.0 — the vote is recorded, and a
+	# war marched against the Council's judgment is remembered as tyranny.
+	if aggressor.government == "administrative" and not magister_seats.is_empty() \
+			and aggressor.ruler_id >= 0:
+		var mv := magister_vote("declaration of war", aggressor.ruler_id, -1.0)
+		if not bool(mv["passed"]):
+			aggressor.tyranny = minf(100.0, aggressor.tyranny + 5.0)
+			for m in seated_magisters():
+				if str(mv["votes"].get(m.id, "")) == "nay":
+					add_memory(m, "marched over the Council's nay", aggressor.ruler_id, -15.0, 2.0)
+			_log("The Council of Magisters voted the war down, %d to %d — and the Grand Magister marched anyway. The minutes record it." % [
+				int(mv["nays"]), int(mv["ayes"])])
 	_dissolve_compact_sworn()
 	return ""
 
@@ -2240,7 +2304,7 @@ func champions_of(realm_id: int) -> Array:
 	for c in characters.values():
 		if c.alive and c.realm_id == realm_id and not c.denounced \
 				and c.age_years(tick) >= ADULT_AGE and not taken.has(c.id) \
-				and not wards.has(c.id):
+				and not wards.has(c.id) and not is_cast(c):
 			pool.append(c)
 	pool.sort_custom(func(x: SimCharacter, y: SimCharacter) -> bool:
 		return x.prowess > y.prowess if x.prowess != y.prowess else x.id < y.id)
@@ -3261,7 +3325,10 @@ func _best_unpracticed(realm_id: int, stat: String) -> SimCharacter:
 # straight from KhessarMapData.REALMS' canonical strings (Faction Map).
 
 func is_cast(c: SimCharacter) -> bool:
-	return c != null and c.realm_id >= 2
+	## Outside the main stream's dice: the map-realm cast, and the seeded
+	## Council of Magisters (Administrative v1.0 — their fates are
+	## politics and scheduled beats, never the monthly actuarial rolls).
+	return c != null and (c.realm_id >= 2 or admin_cast.has(c.id))
 
 
 func _map_realm_named(name_part: String) -> int:
@@ -3414,6 +3481,756 @@ func _cast_tick() -> void:
 				if karth2 != null:
 					cast_rulers[kharak2] = {"id": karth2.id, "title": "King"}
 					_log("[b]The first Dwarven Interregnum of the Silence opens under Kharak-Dum.[/b] The succession councils sit in the dark of the sealed galleries — and rise, at last, with Karth Ironvault. A scholar-king, crowned while the ward-stones dim.")
+
+
+# --------------------------------- Administrative Government (v1.0)
+# The mechanical shape of the Vael Magistocracy (Opus's mini-brief,
+# 2026-07-08): a non-hereditary bureaucratic government. The Grand
+# Magister is elected by the nine-seat Council of Magisters; succession
+# goes to whoever the Council chooses — never to the dead ruler's heirs.
+# All Council randomness runs on `arng` (its own seed, like the map's,
+# the magic's, and the cast's), and the seeded Council characters are
+# guarded out of the main stream's monthly dice: the fixed-seed history
+# never feels the chamber's politics.
+
+func _admin_character(p_name: String, house_name: String, female: bool, age: int,
+		race: String, stats: Dictionary, traits: Array, response: String) -> SimCharacter:
+	## A seeded Council figure: a real Vael courtier whose fate is
+	## politics and scheduled beats, never the actuarial tables.
+	var dyn: Dynasty = null
+	for d: Dynasty in dynasties.values():
+		if d.name == house_name:
+			dyn = d
+			break
+	if dyn == null:
+		dyn = Dynasty.new(dynasties.size(), house_name)
+		dynasties[dyn.id] = dyn
+	var c := _create_character(p_name, female, tick - age * 12 - arng.randi_range(0, 11), dyn.id, 0)
+	c.race = race
+	for k in stats:
+		c.set(STAT_PROPS[k], clampi(int(stats[k]), 1, 30))
+	c.genome = Genetics.founder(arng)
+	for t in traits:
+		_add_trait(c, str(t))
+	_add_trait(c, response)
+	admin_cast[c.id] = true
+	return c
+
+
+func _seat_magister(seat: String, char_id: int, since_tick: int) -> void:
+	magister_seats[seat] = {"holder": char_id, "since": since_tick}
+
+
+func _seed_administration() -> void:
+	## Brief §2: the Year Zero Council. Anselm Vorontheim takes realm 0's
+	## chair from the Halvenard-Veil placeholder; nine seats sit; Tess
+	## Mareck watches from off the ledger. The four seats the brief left
+	## unnamed carry Fable-invented names — flagged for the Gazetteer.
+	arng.seed = 888
+	# Seat 1 — the Grand Magister. NOT Aelindran-Legitimate: House
+	# Vorontheim's claim is administrative, which matters to the cascade.
+	var anselm := _admin_character("Anselm", "House Vorontheim", false, 68, "human",
+		{"dip": 18, "mar": 8, "stw": 22, "int": 15, "lrn": 16, "prw": 5},
+		["Methodical", "Content", "Patient", "Homely"], "Broken")
+	anselm_id = anselm.id
+	realms[0].ruler_id = anselm.id
+	_seat_magister("Grand Magister", anselm.id, tick - 144)  # twelve years in the chair
+	magister_wing[anselm.id] = "neutral"
+	# his nephew — the dynasty's one Council-eligible spare. Placing him
+	# is Anselm's political puzzle (brief §4); he doesn't know it yet.
+	var sevrin := _admin_character("Sevrin", "House Vorontheim", false, 29, "human",
+		{"dip": 11, "mar": 6, "stw": 13, "int": 9, "lrn": 15, "prw": 6},
+		["Ambitious", "Methodical"], "Pragmatic")
+	sevrin.father_id = -1  # a brother's son; the brother is long dead
+	# the Vael Compact legacy (brief §6): the academy connection is real,
+	# and twelve years of the chair paid for the declaration
+	var vroot := root_house_id(anselm.dynasty_id)
+	dynasties[vroot].renown = 280.0
+	dynasties[vroot].legacies.append("The Vael Compact")
+	dynasties[vroot].renown -= float(LEGACIES["The Vael Compact"]["cost"])
+	# Seat 2 — Economic Affairs: the Reformist wing's leader
+	var halloran := _admin_character("Halloran", "House Verith", false, 45, "human",
+		{"dip": 14, "mar": 6, "stw": 17, "int": 11, "lrn": 15, "prw": 5},
+		["Ambitious", "Honest"], "Pragmatic")
+	halloran_id = halloran.id
+	_seat_magister("Economic Affairs", halloran.id, tick - 60)
+	magister_wing[halloran.id] = "reformist"
+	# Seat 3 — Foreign Affairs: the Traditionalist wing's leader
+	var davriand := _admin_character("Davriand", "House Karn", false, 40, "half_orc",
+		{"dip": 13, "mar": 14, "stw": 14, "int": 15, "lrn": 12, "prw": 12},
+		["Ambitious", "Brave"], "Opportunistic")
+	davriand_id = davriand.id
+	_seat_magister("Foreign Affairs", davriand.id, tick - 36)
+	magister_wing[davriand.id] = "traditionalist"
+	# Seat 4 — Clerical Registry (now moot): the moderate voice
+	var kreth := _admin_character("Kreth", "House Anford", false, 62, "human",
+		{"dip": 13, "mar": 5, "stw": 11, "int": 8, "lrn": 14, "prw": 3},
+		["Content", "Compassionate"], "Broken")
+	kreth_id = kreth.id
+	_seat_magister("Clerical Registry", kreth.id, tick - 200)
+	magister_wing[kreth.id] = "reformist"
+	# Seat 5 — the Records Sublevel is already occupied: Veril Ormand
+	# (Magic v1.0's Architect) has held it thirty-four silent years. He
+	# stays in the main stream's dice — his death was always the clock.
+	_seat_magister("Records Sublevel", architect_id, tick - 500)
+	if architect_id >= 0:
+		magister_wing[architect_id] = "silent"
+	# Seats 6-9 — the career administration (names Fable's, for the Gazetteer)
+	var maren := _admin_character("Maren", "House Solvey", true, 55, "human",
+		{"dip": 12, "mar": 4, "stw": 16, "int": 10, "lrn": 13, "prw": 3},
+		["Methodical", "Patient"], "Pragmatic")
+	_seat_magister("Chancellor", maren.id, tick - 180)
+	magister_wing[maren.id] = "neutral"
+	var corvin := _admin_character("Corvin", "House Draeth", false, 50, "human",
+		{"dip": 7, "mar": 16, "stw": 9, "int": 9, "lrn": 8, "prw": 11},
+		["Brave", "Stoic"], "Zealous")
+	_seat_magister("Master of War", corvin.id, tick - 120)
+	magister_wing[corvin.id] = "traditionalist"
+	var ellard := _admin_character("Ellard", "House Nym", false, 60, "human",
+		{"dip": 9, "mar": 3, "stw": 10, "int": 11, "lrn": 17, "prw": 2},
+		["Methodical", "Compassionate"], "Broken")
+	_seat_magister("Chief Physician", ellard.id, tick - 150)
+	magister_wing[ellard.id] = "neutral"
+	var odric := _admin_character("Odric", "House Vasse", false, 60, "human",
+		{"dip": 12, "mar": 4, "stw": 8, "int": 7, "lrn": 14, "prw": 3},
+		["Patient"], "Zealous" if arng.randf() < 0.5 else "Broken")
+	_seat_magister("Court Chaplain", odric.id, tick - 100)
+	magister_wing[odric.id] = "neutral"
+	# off-council: the Chief Spymaster, who reports only upward
+	var tess := _admin_character("Tess", "House Mareck", true, 51, "human",
+		{"dip": 10, "mar": 7, "stw": 11, "int": 19, "lrn": 13, "prw": 8},
+		["Methodical", "Deceitful"], "Pragmatic")
+	mareck_id = tess.id
+	# the voting blocs, seeded as memories — opinion_of does the politics
+	add_memory(halloran, "shared cause", kreth.id, 25.0, 0.5)
+	add_memory(kreth, "shared cause", halloran.id, 25.0, 0.5)
+	add_memory(halloran, "a useful ally in the ledgers", maren.id, 15.0, 0.5)
+	add_memory(davriand, "shared cause", corvin.id, 25.0, 0.5)
+	add_memory(corvin, "shared cause", davriand.id, 25.0, 0.5)
+	add_memory(halloran, "the wing across the table", davriand.id, -35.0, 0.5)
+	add_memory(davriand, "the wing across the table", halloran.id, -35.0, 0.5)
+	add_memory(maren, "the Grand Magister's trust", anselm.id, 30.0, 0.5)
+	add_memory(ellard, "an old confidence", kreth.id, 25.0, 0.5)
+	add_memory(kreth, "an old confidence", ellard.id, 25.0, 0.5)
+	add_memory(davriand, "a liability in the chair", anselm.id, -15.0, 0.5)
+	_log("[b]The Council of Magisters sits.[/b] Grand Magister Anselm Vorontheim — twelve years in the chair, methodical, tired — presides over nine seats: Verith at the ledgers, Karn at the borders, Anford at the registry, the silent Records Sublevel, Solvey's administration, Draeth's garrisons, Nym's medicines, and Vasse's increasingly unanswered altar. Chief Spymaster Tess Mareck holds no seat, reports only upward, and knows more than she files.")
+	_log("House Vorontheim declares the Vael Compact — the academies' tradition runs in the line, and the line has the renown to say so.")
+
+
+func seated_magisters() -> Array:
+	## The living Council, in seat order. Vacant seats simply aren't here.
+	var out: Array = []
+	for seat in MAGISTER_SEATS:
+		if not magister_seats.has(seat):
+			continue
+		var hid := int(magister_seats[seat]["holder"])
+		if hid < 0:
+			continue
+		var c: SimCharacter = characters.get(hid)
+		if c != null and c.alive:
+			out.append(c)
+	return out
+
+
+func magister_seat_of(char_id: int) -> String:
+	for seat in MAGISTER_SEATS:
+		if magister_seats.has(seat) and int(magister_seats[seat]["holder"]) == char_id:
+			return seat
+	return ""
+
+
+func grand_magister() -> SimCharacter:
+	if not magister_seats.has("Grand Magister"):
+		return null
+	var hid := int(magister_seats["Grand Magister"]["holder"])
+	if hid < 0:
+		return null
+	var c: SimCharacter = characters.get(hid)
+	if c == null or not c.alive:
+		return null
+	return c
+
+
+func _senior_magister() -> SimCharacter:
+	## Longest-serving seated Magister — the tie-breaker and the Regent.
+	## The Records Sublevel is senior to everyone and eligible for nothing.
+	var best: SimCharacter = null
+	var best_since := 999999
+	for m in seated_magisters():
+		if str(magister_wing.get(m.id, "neutral")) == "silent":
+			continue
+		var since := int(magister_seats[magister_seat_of(m.id)]["since"])
+		if best == null or since < best_since:
+			best = m
+			best_since = since
+	return best
+
+
+func _wing_bias(matter: String, wing: String) -> float:
+	if matter == "declaration of war":
+		if wing == "traditionalist":
+			return 3.0
+		if wing == "reformist":
+			return -2.0
+	return 0.0
+
+
+func magister_vote(matter: String, proposer_id: int, base: float) -> Dictionary:
+	## Brief §3: every seated Magister votes by opinion, wing, and
+	## temperament; the Records Sublevel abstains (it always has); the
+	## Grand Magister's vote counts twice in a tie. Deterministic — no
+	## dice — so any system may call it without touching a stream.
+	## Every division is recorded (brief §Phase 7).
+	var votes: Dictionary = {}
+	var ayes := 0
+	var nays := 0
+	for m in seated_magisters():
+		if str(magister_wing.get(m.id, "neutral")) == "silent":
+			votes[m.id] = "abstain"
+			continue
+		if m.id == proposer_id:
+			votes[m.id] = "aye"
+			ayes += 1
+			continue
+		var s := base + float(opinion_of(m.id, proposer_id)) * 0.15 \
+			+ _wing_bias(matter, str(magister_wing.get(m.id, "neutral")))
+		if matter == "declaration of war":
+			s += ai_weight(m, "aggression") * 0.05
+		if s > 0.0:
+			votes[m.id] = "aye"
+			ayes += 1
+		else:
+			votes[m.id] = "nay"
+			nays += 1
+	var gm := grand_magister()
+	if ayes == nays and gm != null and votes.has(gm.id) and str(votes[gm.id]) != "abstain":
+		if str(votes[gm.id]) == "aye":
+			ayes += 1
+		else:
+			nays += 1
+		_log("The chamber ties on %s — and the Grand Magister's vote counts twice. It always has." % matter)
+	var filled := seated_magisters().size()
+	# a 9-seat Council with 2 vacant seats needs 4 votes, not 5 (brief §3)
+	var needed := filled / 2 + 1
+	var record := {"tick": tick, "matter": matter, "ayes": ayes, "nays": nays,
+		"passed": ayes >= needed, "votes": votes}
+	council_vote_history.append(record)
+	if council_vote_history.size() > 60:
+		council_vote_history.pop_front()
+	return record
+
+
+func call_no_confidence() -> String:
+	## Brief §3: three or more Magisters may put the chair itself to the
+	## question; two-thirds of the seated Council deposes. The deposed
+	## keeps their life, their House, and nothing else.
+	var gm := grand_magister()
+	if gm == null:
+		return "There is no Grand Magister to question."
+	if not admin_interregnum.is_empty():
+		return "The Council is already electing."
+	var movers := 0
+	for m in seated_magisters():
+		if m.id != gm.id and str(magister_wing.get(m.id, "neutral")) != "silent" \
+				and opinion_of(m.id, gm.id) <= -30:
+			movers += 1
+	if movers < 3:
+		return "Fewer than three Magisters will put their names to the motion."
+	var votes: Dictionary = {}
+	var ayes := 0
+	var nays := 0
+	for m in seated_magisters():
+		if str(magister_wing.get(m.id, "neutral")) == "silent":
+			votes[m.id] = "abstain"
+			continue
+		if m.id == gm.id or opinion_of(m.id, gm.id) > -10:
+			votes[m.id] = "nay"
+			nays += 1
+		else:
+			votes[m.id] = "aye"
+			ayes += 1
+	var needed := int(ceilf(float(seated_magisters().size()) * 2.0 / 3.0))
+	var passed := ayes >= needed
+	council_vote_history.append({"tick": tick, "matter": "no confidence in the Grand Magister",
+		"ayes": ayes, "nays": nays, "passed": passed, "votes": votes})
+	if not passed:
+		_log("The motion of no confidence fails, %d to %d. The chair remembers every aye." % [ayes, nays])
+		for m in seated_magisters():
+			if str(votes.get(m.id, "")) == "aye":
+				add_memory(gm, "moved against my chair", m.id, -25.0, 1.5)
+		return ""
+	_log("[b]No confidence, %d to %d.[/b] %s is deposed — the seal passed to the table, the chamber silent, the election clock already running." % [
+		ayes, nays, full_name(gm)])
+	magister_seats["Grand Magister"] = {"holder": -1, "since": tick}
+	_open_admin_interregnum()
+	return ""
+
+
+func _magister_succession(dead: SimCharacter) -> void:
+	## Brief §4: nothing passes to the blood. The House keeps its seats
+	## and its wealth; the chair goes to whoever the Council elects.
+	magister_seats["Grand Magister"] = {"holder": -1, "since": tick}
+	_earn_mythos(root_house_id(dead.dynasty_id), "Former Grand Magister Family")
+	_log("[b]The Grand Magister is dead, and no blood inherits.[/b] House %s keeps what it held — its seats, its wealth, its name — and not the chair." % dynasties[dead.dynasty_id].surname())
+	_open_admin_interregnum()
+
+
+func _open_admin_interregnum() -> void:
+	## The Administrative Interregnum (brief §7): the feudal four stages,
+	## transformed. Treasury -> a Regent's thirty days; Blessing -> the
+	## Council Endorsement; Homage Tour -> the Institutional Loyalty
+	## Consolidation; Coronation -> the Council Election Vote.
+	var regent := _senior_magister()
+	if regent == null:
+		# a Council of ghosts: the highest learning in the realm takes
+		# the chair directly — there is no one left to elect anyone
+		var fallback: SimCharacter = null
+		for c in characters.values():
+			if c.alive and c.realm_id == 0 and c.age_years(tick) >= ADULT_AGE \
+					and (fallback == null or c.learning > fallback.learning):
+				fallback = c
+		if fallback != null:
+			_seat_magister("Grand Magister", fallback.id, tick)
+			realms[0].ruler_id = fallback.id
+			_log("With no Council left to elect anyone, %s simply takes the chair. History will call it a magistracy anyway." % full_name(fallback))
+		return
+	realms[0].ruler_id = regent.id
+	admin_interregnum = {"stage": 0, "regent": regent.id, "support": {}, "started": tick}
+	_log("[b]Regency.[/b] Magister %s, the chamber's senior voice, holds the seal for thirty days of Council business while the election is prepared." % full_name(regent))
+
+
+func election_candidates() -> Array:
+	## Every seated Magister is eligible (brief §3) — except the Records
+	## Sublevel, which neither runs nor votes. It never has.
+	var out: Array = []
+	for m in seated_magisters():
+		if str(magister_wing.get(m.id, "neutral")) != "silent":
+			out.append(m)
+	return out
+
+
+func _ballot_of(voter: SimCharacter, cands: Array) -> Array:
+	## One Magister's preferential ranking: opinion, wing loyalty,
+	## demonstrated competence, whatever was promised during the
+	## Consolidation — and themselves first, naturally.
+	var support: Dictionary = admin_interregnum.get("support", {})
+	var scored: Array = []
+	for cand: SimCharacter in cands:
+		var s := float(opinion_of(voter.id, cand.id))
+		var vw := str(magister_wing.get(voter.id, "neutral"))
+		var cw := str(magister_wing.get(cand.id, "neutral"))
+		if vw == cw and vw != "neutral":
+			s += 25.0
+		if cw == "reformist" or cw == "traditionalist":
+			# a wing's standard-bearer commands consideration beyond his
+			# bloc — the chamber respects a man who can already count votes
+			var followers := 0
+			for m2 in seated_magisters():
+				if m2.id != cand.id and str(magister_wing.get(m2.id, "neutral")) == cw:
+					followers += 1
+			s += float(followers) * 8.0
+		s += float(cand.stewardship + cand.learning + cand.diplomacy) / 3.0
+		s += float(support.get(cand.id, {}).get(voter.id, 0.0))
+		if voter.id == cand.id:
+			s += 60.0 + (20.0 if voter.traits.has("Ambitious") else 0.0)
+		scored.append({"s": s, "c": cand})
+	scored.sort_custom(func(x: Dictionary, y: Dictionary) -> bool: return float(x["s"]) > float(y["s"]))
+	var out: Array = []
+	for e in scored:
+		out.append(e["c"])
+	return out
+
+
+func _ai_consolidation() -> void:
+	## The ninety days of chamber visits, on the Council's own dice. The
+	## ambitious campaign hard; the Content don't campaign at all. The
+	## player's lever is consolidate_support().
+	var support: Dictionary = admin_interregnum.get("support", {})
+	var voters := seated_magisters()
+	if voters.is_empty():
+		return
+	for cand: SimCharacter in election_candidates():
+		if cand.traits.has("Content"):
+			continue
+		var drive := 0.45 + float(cand.diplomacy) * 0.02
+		if cand.traits.has("Ambitious"):
+			drive += 0.30
+		if arng.randf() > drive:
+			continue
+		var voter: SimCharacter = voters[arng.randi_range(0, voters.size() - 1)]
+		if voter.id == cand.id:
+			continue
+		if not support.has(cand.id):
+			support[cand.id] = {}
+		support[cand.id][voter.id] = float(support[cand.id].get(voter.id, 0.0)) \
+			+ 4.0 + float(cand.diplomacy) * 0.25
+	admin_interregnum["support"] = support
+
+
+func consolidate_support(candidate_id: int, magister_id: int) -> String:
+	## The player's Institutional Loyalty Consolidation lever (brief §7):
+	## sponsor a candidate's chamber visit — 20 gold into loyalty.
+	if admin_interregnum.is_empty() or int(admin_interregnum["stage"]) < 1 \
+			or int(admin_interregnum["stage"]) > 4:
+		return "No consolidation window is open — the Council is not electing."
+	var cand: SimCharacter = characters.get(candidate_id)
+	var mag: SimCharacter = characters.get(magister_id)
+	if cand == null or magister_seat_of(candidate_id) == "" \
+			or str(magister_wing.get(candidate_id, "")) == "silent":
+		return "That name is not on the ballot."
+	if mag == null or magister_seat_of(magister_id) == "" \
+			or str(magister_wing.get(magister_id, "")) == "silent":
+		return "That vote is not in the chamber."
+	if realms[0].gold < 20.0:
+		return "The treasury cannot fund the visit (20 gold)."
+	realms[0].gold -= 20.0
+	var support: Dictionary = admin_interregnum.get("support", {})
+	if not support.has(candidate_id):
+		support[candidate_id] = {}
+	support[candidate_id][magister_id] = float(support[candidate_id].get(magister_id, 0.0)) + 12.0
+	admin_interregnum["support"] = support
+	_log("A chamber visit is arranged: %s calls on %s, and the conversation is productive." % [
+		full_name(cand), full_name(mag)])
+	return ""
+
+
+func _magister_election() -> void:
+	## The Council Election Vote (brief §3): preferential ballots, ranks
+	## to points (5-4-3-2-1), ties to seniority, office immediately.
+	var cands := election_candidates()
+	admin_interregnum["stage"] = 5
+	if cands.is_empty():
+		admin_interregnum = {}
+		_open_admin_interregnum()
+		return
+	var points: Dictionary = {}
+	for cand: SimCharacter in cands:
+		points[cand.id] = 0
+	for voter in seated_magisters():
+		if str(magister_wing.get(voter.id, "neutral")) == "silent":
+			continue
+		var ranked := _ballot_of(voter, cands)
+		for i in mini(ELECTION_RANKS, ranked.size()):
+			var ranked_cand: SimCharacter = ranked[i]
+			points[ranked_cand.id] = int(points[ranked_cand.id]) + (ELECTION_RANKS - i)
+	var order := cands.duplicate()
+	order.sort_custom(func(x: SimCharacter, y: SimCharacter) -> bool:
+		if int(points[x.id]) != int(points[y.id]):
+			return int(points[x.id]) > int(points[y.id])
+		return int(magister_seats[magister_seat_of(x.id)]["since"]) < int(magister_seats[magister_seat_of(y.id)]["since"]))
+	var winner: SimCharacter = order[0]
+	var old_seat := magister_seat_of(winner.id)
+	if old_seat != "" and old_seat != "Grand Magister":
+		magister_seats[old_seat] = {"holder": -1, "since": tick}
+	_seat_magister("Grand Magister", winner.id, tick)
+	realms[0].ruler_id = winner.id
+	last_election = {"winner": winner.id, "points": points, "refused": false}
+	admin_interregnum = {}
+	var standings := ""
+	for i in mini(3, order.size()):
+		var oc: SimCharacter = order[i]
+		standings += "%s%s %d" % ["" if i == 0 else " · ", full_name(oc), int(points[oc.id])]
+	_log("[b]The Council Election.[/b] The ballots are ranked, counted, and burned: %s." % standings)
+	_log("[b]%s is Grand Magister of Vael.[/b] No coronation — a signature, a seal, and the weight of eight opinions." % full_name(winner))
+	if order.size() >= 2:
+		_refusal_check(winner, order[1], points)
+
+
+func _refusal_check(winner: SimCharacter, runner: SimCharacter, points: Dictionary) -> void:
+	## Brief §7's failure mode — the Administrative palace coup. A narrow
+	## loser with the Master of War's friendship and a grudge against the
+	## new chair may refuse the count.
+	var margin := int(points[winner.id]) - int(points[runner.id])
+	var mow: SimCharacter = null
+	if magister_seats.has("Master of War"):
+		mow = characters.get(int(magister_seats["Master of War"]["holder"]))
+	var mow_favor := 0
+	if mow != null and mow.alive:
+		mow_favor = opinion_of(mow.id, runner.id)
+	if margin > 2 or mow_favor < 40 or opinion_of(runner.id, winner.id) > -30:
+		return
+	last_election["refused"] = true
+	var loser := runner
+	var new_gm := winner
+	raise_event(0, runner.id, "The Count Refused",
+		"%s lost the chair by %d point%s — with the Master of War's garrisons friendly and no love for the winner. The chamber holds its breath: accept the count, or break the thing that makes counts matter." % [
+			full_name(runner), margin, "" if margin == 1 else "s"],
+		[
+			{"label": "Concede — with ice in the voice", "base": 8.0, "ai": {"patience": 0.5},
+				"effect": func() -> void:
+					for m in seated_magisters():
+						if m.id != loser.id:
+							add_memory(m, "refused the count, then bent", loser.id, -20.0, 1.0)
+					_log("%s concedes. The word 'irregularities' is used. No one forgets it was used." % full_name(loser))},
+			{"label": "Refuse the result", "base": 0.0, "ai": {"aggression": 0.6, "scheming": 0.3},
+				"effect": func() -> void:
+					realms[0].prestige = maxf(-100.0, realms[0].prestige - 25.0)
+					realms[0].tyranny = minf(100.0, realms[0].tyranny + 10.0)
+					var seat := magister_seat_of(loser.id)
+					if seat != "" and seat != "Grand Magister":
+						magister_seats[seat] = {"holder": -1, "since": tick}
+					add_memory(new_gm, "refused my election", loser.id, -60.0, 1.0)
+					_log("[b]Failure of Institutional Order.[/b] %s refuses the count; for nine days two Grand Magisters sign papers. The garrisons do not move, the refusal collapses — and the Free Cities' pamphleteers set it in type by week's end: Vael's own Council cannot count." % full_name(loser))},
+		], false, true)
+
+
+func nominate_magister(seat: String, char_id: int) -> String:
+	## Brief §3: vacant seats fill by Grand Magister nomination plus
+	## Council confirmation. The nominee needs Vael standing, Learning
+	## 12+, and a name no investigation has touched.
+	if not MAGISTER_SEATS.has(seat) or seat == "Grand Magister":
+		return "That is not a seat the chair fills by nomination."
+	if not magister_seats.has(seat) or int(magister_seats[seat]["holder"]) >= 0:
+		return "The seat is occupied."
+	if not admin_interregnum.is_empty():
+		return "No appointments while the Council elects."
+	if not pending_nomination.is_empty():
+		return "A nomination already stands before the Council."
+	var c: SimCharacter = characters.get(char_id)
+	if c == null or not c.alive or c.realm_id != 0:
+		return "The Council seats only the Magistocracy's own."
+	if c.age_years(tick) < ADULT_AGE:
+		return "Too young for the chamber."
+	if c.learning < MAGISTER_MIN_LEARNING:
+		return "Learning %d — the Council seats no one without the academies' arithmetic (12+)." % c.learning
+	if c.denounced:
+		return "The name is under investigation — the Council will not hear it."
+	if magister_seat_of(c.id) != "":
+		return "They already hold a seat."
+	if c.id == realms[0].ruler_id:
+		return "The chair cannot nominate itself."
+	pending_nomination = {"seat": seat, "nominee": char_id}
+	_log("The Grand Magister sends a name to the Council: %s, for the %s seat. Confirmation is next month's business." % [full_name(c), seat])
+	return ""
+
+
+func _confirmation_vote() -> void:
+	var seat := str(pending_nomination["seat"])
+	var nominee: SimCharacter = characters.get(int(pending_nomination["nominee"]))
+	pending_nomination = {}
+	if nominee == null or not nominee.alive or not magister_seats.has(seat) \
+			or int(magister_seats[seat]["holder"]) >= 0:
+		return
+	var mv := magister_vote("confirmation of %s" % full_name(nominee), nominee.id, 2.0)
+	if bool(mv["passed"]):
+		_seat_magister(seat, nominee.id, tick)
+		magister_wing[nominee.id] = "neutral"
+		_log("[b]%s is confirmed to the Council[/b] — the %s seat, %d to %d." % [
+			full_name(nominee), seat, int(mv["ayes"]), int(mv["nays"])])
+	else:
+		rejected_nominees[nominee.id] = tick
+		_log("The Council refuses %s, %d to %d. The seat stays empty — and the quorum arithmetic shrinks with it." % [
+			full_name(nominee), int(mv["ayes"]), int(mv["nays"])])
+
+
+func _ai_nominations() -> void:
+	## The government runs itself between player decisions: the Grand
+	## Magister sends the most academy-fit name for the emptiest chair.
+	## Deterministic pick — no dice.
+	var gm := grand_magister()
+	if gm == null:
+		return
+	for seat in MAGISTER_SEATS:
+		if seat == "Grand Magister" or not magister_seats.has(seat):
+			continue
+		if int(magister_seats[seat]["holder"]) >= 0:
+			continue
+		var best: SimCharacter = null
+		for c in characters.values():
+			if not c.alive or c.realm_id != 0 or c.age_years(tick) < ADULT_AGE or c.denounced:
+				continue
+			if c.learning < MAGISTER_MIN_LEARNING or c.id == mareck_id or c.id == realms[0].ruler_id:
+				continue
+			if magister_seat_of(c.id) != "":
+				continue
+			if tick - int(rejected_nominees.get(c.id, -999)) < 24:
+				continue
+			if best == null or c.learning + c.stewardship > best.learning + best.stewardship:
+				best = c
+		if best != null:
+			var _err := nominate_magister(seat, best.id)
+			return  # one name a season
+
+
+func _admin_tick() -> void:
+	## The Council's month: vacancies noted, scheduled beats fired,
+	## elections advanced, nominations heard. All dice on arng.
+	if magister_seats.is_empty():
+		return
+	for seat in MAGISTER_SEATS:
+		if not magister_seats.has(seat) or seat == "Grand Magister":
+			continue
+		var hid := int(magister_seats[seat]["holder"])
+		if hid >= 0:
+			var h: SimCharacter = characters.get(hid)
+			if h == null or not h.alive:
+				magister_seats[seat] = {"holder": -1, "since": tick}
+				_log("The %s seat stands empty — the Council notes it, and moves the agenda." % seat)
+	_admin_beats()
+	if not admin_interregnum.is_empty():
+		_admin_interregnum_tick()
+		return
+	if not pending_nomination.is_empty():
+		_confirmation_vote()
+	elif tick % 6 == 0:
+		_ai_nominations()
+
+
+func _admin_interregnum_tick() -> void:
+	if int(admin_interregnum.get("started", -1)) == tick:
+		return  # the month of the death belongs to the Regent's thirty days
+	var stage := int(admin_interregnum["stage"]) + 1
+	admin_interregnum["stage"] = stage
+	match stage:
+		1:
+			var names := ""
+			for cand: SimCharacter in election_candidates():
+				names += ("" if names == "" else ", ") + full_name(cand)
+			_log("[b]The Council Endorsement.[/b] Sixty days of public assembly: the candidates state their cases — %s — and the galleries keep score." % names)
+		2:
+			_log("[b]The Institutional Loyalty Consolidation opens.[/b] Ninety days of chamber visits: every vote is a door, and every door wants a different key.")
+			_ai_consolidation()
+		3, 4:
+			_ai_consolidation()
+		5:
+			_magister_election()
+
+
+func _admin_beats() -> void:
+	## The scheduled canonical arc (brief §5): the Chaplain breaks first,
+	## the Grand Magister asks his questions, and Month 34 answers them.
+	match tick:
+		9:
+			_chaplain_crisis()
+		20:
+			_raise_anselm_questions()
+		27:
+			_raise_mareck_silence()
+		31:
+			_raise_tasters_doubt()
+		33:
+			# the 34th month of the Silence — Year 3, Month 10 (brief §5)
+			_poisoning_beat()
+		70:
+			var kreth: SimCharacter = characters.get(kreth_id)
+			if kreth != null and kreth.alive:
+				_kill(kreth, "dies of the long fatigue he stopped hiding years ago,")
+
+
+func _chaplain_crisis() -> void:
+	## Brief Phase 6 (Magic doc §4.3): the most fragile seat breaks
+	## first. Zealous doubles down at the altar; Broken walks away.
+	if chaplain_crisis_fired or not magister_seats.has("Court Chaplain"):
+		return
+	chaplain_crisis_fired = true
+	var chap: SimCharacter = characters.get(int(magister_seats["Court Chaplain"]["holder"]))
+	if chap == null or not chap.alive:
+		return
+	if chap.traits.has("Zealous"):
+		magister_wing[chap.id] = "traditionalist"
+		var dav: SimCharacter = characters.get(davriand_id)
+		if dav != null and dav.alive:
+			add_memory(chap, "the only wing that still kneels", davriand_id, 20.0, 0.5)
+			add_memory(dav, "a useful conviction", chap.id, 15.0, 0.5)
+		add_stress(chap, 20.0, "prayers into a silent sky")
+		_log("[b]The Court Chaplain redoubles.[/b] %s answers the Silence with more rite, not less — dawn offices, doubled fasts, and a seat that now votes with Davriand Karn's wing. The Council's arithmetic shifts by one." % full_name(chap))
+	else:
+		magister_seats["Court Chaplain"] = {"holder": -1, "since": tick}
+		_log("[b]The Court Chaplain resigns.[/b] %s sets the seal on the altar cloth, walks out the river gate, and takes up beekeeping outside the walls. The bees, he says, still answer. The Council's arithmetic shrinks by one seat until a name can be agreed." % full_name(chap))
+
+
+func _raise_anselm_questions() -> void:
+	var a: SimCharacter = characters.get(anselm_id)
+	if a == null or not a.alive or realms[0].ruler_id != anselm_id:
+		return
+	raise_event(0, anselm_id, "The Grand Magister's Questions",
+		"Twelve years in the chair have taught Anselm which archives are best left unopened. But the Records Sublevel's history holds an anomaly — a Council session, eighty-eight years old, whose minutes exist only as a page-count. He could ask. Quietly.",
+		[
+			{"label": "Ask the questions — quietly", "base": 16.0, "ai": {"patience": 0.3},
+				"effect": func() -> void:
+					_log("The Grand Magister begins asking about the Records Sublevel — politely, obliquely, and to exactly the wrong people. Somewhere below the archive, operations become more difficult.")},
+			{"label": "Let the archives sleep", "base": 0.0, "ai": {"scheming": -0.5},
+				"effect": func() -> void:
+					anselm_protection += 1
+					_log("Anselm closes the file unread. Whatever Year 112 was, it will keep — and no one is provoked into anything.")},
+		], false, true)
+
+
+func _raise_mareck_silence() -> void:
+	var a: SimCharacter = characters.get(anselm_id)
+	if a == null or not a.alive or realms[0].ruler_id != anselm_id:
+		return
+	raise_event(0, anselm_id, "The Spymaster's Silence",
+		"Tess Mareck's monthly report is two pages. Anselm has run enough committees to know when two pages are standing in front of forty. She is protecting him from something — or protecting something from him.",
+		[
+			{"label": "Trust her discretion", "base": 16.0, "ai": {"patience": 0.4},
+				"effect": func() -> void:
+					_log("Anselm signs the two-page report unquestioned. Tess Mareck files the other forty where no Council subpoena will ever find them.")},
+			{"label": "Demand the full assessment", "base": 0.0, "ai": {"scheming": 0.4},
+				"effect": func() -> void:
+					anselm_protection += 1
+					_log("Anselm demands everything. The full pattern is worse than he imagined — and it includes an anomaly inside Mareck's own operational team. He reads that page twice.")},
+		], false, true)
+
+
+func _raise_tasters_doubt() -> void:
+	var a: SimCharacter = characters.get(anselm_id)
+	if a == null or not a.alive or realms[0].ruler_id != anselm_id:
+		return
+	raise_event(0, anselm_id, "A Wrongness at Table",
+		"Chief Physician Nym mentions it almost apologetically: a decanter moved between courses at the last Council dinner, and the steward who moved it cannot be found on any roster. Probably nothing. The Physician has been wrong before. He does not look like a man who thinks he is wrong.",
+		[
+			{"label": "The Council does not dine in fear", "base": 16.0, "ai": {"patience": 0.3},
+				"effect": func() -> void:
+					_log("Anselm thanks the Physician and changes the subject. The autumn dinner will be held as it has been held for two hundred years.")},
+			{"label": "Double the cup-bearers; test every dish", "base": 0.0, "ai": {"scheming": 0.5},
+				"effect": func() -> void:
+					anselm_protection += 1
+					_log("Quietly, without minutes, the Grand Magister's table acquires new protocols. The kitchen staff notice. So does someone else.")},
+		], false, true)
+
+
+func _poisoning_beat() -> void:
+	## Month 34 — Year 3, Month 10 (brief §5). Scripted, not rolled: the
+	## poisoner is one of Tess Mareck's own operatives, suborned by the
+	## Traditionalist wing. Two protective choices before tonight foil it.
+	if poisoning_fired:
+		return
+	poisoning_fired = true
+	var a: SimCharacter = characters.get(anselm_id)
+	if a == null or not a.alive or realms[0].ruler_id != anselm_id:
+		return
+	var dav: SimCharacter = characters.get(davriand_id)
+	if anselm_protection >= 2:
+		_log("[b]The cup is caught before it pours.[/b] At the Council's autumn dinner a doubled cup-bearer stops a hand at the decanter — one of Tess Mareck's own operatives, suborned by coin that traces toward the Traditionalist wing. The confession names no Magister. Everyone hears the name anyway.")
+		if dav != null and dav.alive:
+			_add_secret(davriand_id, "magister_poisoning")
+			for s in secrets:
+				if int(s["subject"]) == davriand_id and str(s["type"]) == "magister_poisoning":
+					s["known"][0] = true
+			add_memory(a, "sent poison to my table", davriand_id, -60.0, 1.0)
+			for m in seated_magisters():
+				if m.id != davriand_id and m.id != anselm_id:
+					add_memory(m, "the autumn dinner", davriand_id, -20.0, 2.0)
+		return
+	if dav != null:
+		_add_secret(davriand_id, "magister_poisoning")
+		dynasties[root_house_id(dav.dynasty_id)].poisonings += 1
+	_log("[b]The autumn dinner of the Council of Magisters.[/b] The wine is tested, the dishes shared, the cup the Grand Magister's own — and the hand that dosed it belonged to Tess Mareck's covert arm, turned by coin that traces, in ways no inquiry will ever prove, toward the Traditionalist wing.")
+	_kill(a, "is poisoned at the Council's autumn dinner —")
+
+
+func live_ruler_title(realm_id: int, c: SimCharacter) -> String:
+	## What a live realm's crown is actually called (Administrative
+	## v1.0): the Magistocracy elects a Grand Magister; the clan follows
+	## a Chief; feudal realms crown Kings and Queens.
+	match str(realms[realm_id].government):
+		"administrative":
+			return "Grand Magister"
+		"tribal":
+			return "Chief"
+		_:
+			return "Queen" if c.is_female else "King"
 
 
 func province_of_character(c: SimCharacter):
@@ -3725,7 +4542,7 @@ func _oath_tick() -> void:
 		for realm: Realm in realms:
 			var best: SimCharacter = null
 			for c in characters.values():
-				if not c.alive or c.realm_id != realm.id or c.age_years(tick) < ADULT_AGE:
+				if not c.alive or c.realm_id != realm.id or c.age_years(tick) < ADULT_AGE or is_cast(c):
 					continue
 				if c.prowess < 12 or c.traits.has("Oath-Sworn") or c.traits.has("Oathbreaker") \
 						or c.traits.has("Patron-Bound"):
@@ -3932,6 +4749,13 @@ func opinion_of(a_id: int, b_id: int) -> int:
 		total -= 10.0
 	if has_mythos(rb, "Blood of Kings"):
 		total += 5.0
+	# Administrative v1.0: a House that held the chair is nodded to by
+	# the old-claim families — and eyed by the reformist wing
+	if ra != rb and has_mythos(rb, "Former Grand Magister Family"):
+		if has_mythos(ra, "Aelindran-Legitimate"):
+			total += 5.0
+		if str(magister_wing.get(a.id, "")) == "reformist":
+			total -= 5.0
 	# the marriage mythos (Cross-Cultural Marriage v1.0 §6)
 	if ra != rb:
 		if has_mythos(rb, "Compact-Bound"):
@@ -4228,12 +5052,15 @@ func _plots_tick() -> void:
 		plot_chance = clampf(0.01 + ai_weight(characters[realms[1].ruler_id], "scheming") * 0.0004, 0.002, 0.04)
 	if realms[1].plot_progress < 0.0 and council_member(1, "Spymaster") != null and rng.randf() < plot_chance:
 		var target: SimCharacter = null
-		if rng.randf() < 0.6 and realms[0].ruler_id >= 0:
+		# the Grand Magister's fate belongs to the Council's own politics
+		# (Administrative v1.0) — Sarova's knives find the noble houses
+		if rng.randf() < 0.6 and realms[0].ruler_id >= 0 \
+				and not is_cast(characters[realms[0].ruler_id]):
 			target = characters[realms[0].ruler_id]
 		else:
 			var pool: Array = []
 			for c in characters.values():
-				if c.alive and c.realm_id == 0 and c.age_years(tick) >= ADULT_AGE:
+				if c.alive and c.realm_id == 0 and c.age_years(tick) >= ADULT_AGE and not is_cast(c):
 					pool.append(c)
 			if not pool.is_empty():
 				target = pool[rng.randi_range(0, pool.size() - 1)]
@@ -4248,7 +5075,8 @@ func _plot_subvert_asset(realm: Realm, t: SimCharacter) -> void:
 	var asset: SimCharacter = null
 	for c in characters.values():
 		if c.alive and c.realm_id == t.realm_id and c.id != t.id \
-				and c.id != realms[t.realm_id].ruler_id and c.age_years(tick) >= ADULT_AGE:
+				and c.id != realms[t.realm_id].ruler_id and c.age_years(tick) >= ADULT_AGE \
+				and not is_cast(c):
 			if asset == null or c.intrigue > asset.intrigue:
 				asset = c
 	if asset == null:
@@ -4756,7 +5584,7 @@ func establish_apothecary(realm_id: int) -> String:
 	for c in characters.values():
 		if c.alive and c.realm_id == realm_id and c.age_years(tick) >= ADULT_AGE \
 				and c.id != realm.ruler_id and counties_of(c.id).is_empty() \
-				and c.learning >= 10 and not _on_council(realm_id, c.id):
+				and c.learning >= 10 and not _on_council(realm_id, c.id) and not is_cast(c):
 			if alch == null or c.learning > alch.learning:
 				alch = c
 	if alch == null:
@@ -4890,13 +5718,14 @@ func eligible_singles(female: bool) -> Array:
 # the spot by the decider's personality — the same trait AI weights
 # (aggression / scheming / greed / patience) score every option.
 
-func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array, magic: bool = false) -> void:
+func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array, magic: bool = false, admin: bool = false) -> void:
 	if options.is_empty():
 		return
-	# magic-born events resolve on the magic RNG (Magic v1.0) so the main
-	# history stream never feels the Silence's bookkeeping
+	# magic-born events resolve on the magic RNG (Magic v1.0), Council
+	# events on the Council's (Administrative v1.0) — the main history
+	# stream never feels either system's bookkeeping
 	var ev := {"id": next_event_id, "realm_id": realm_id, "decider": decider_id,
-		"title": title, "text": text, "options": options, "magic": magic}
+		"title": title, "text": text, "options": options, "magic": magic, "admin": admin}
 	next_event_id += 1
 	if realm_id != 0 or auto_resolve_events:
 		_ai_resolve_event(ev)
@@ -4909,7 +5738,11 @@ func _ai_resolve_event(ev: Dictionary) -> void:
 	## Personality picks: each option's axis weights are dotted with the
 	## decider's trait weights, plus a little human unpredictability.
 	var decider: SimCharacter = characters.get(int(ev["decider"]))
-	var jitter_rng: RandomNumberGenerator = mrng if bool(ev.get("magic", false)) else rng
+	var jitter_rng: RandomNumberGenerator = rng
+	if bool(ev.get("admin", false)):
+		jitter_rng = arng
+	elif bool(ev.get("magic", false)):
+		jitter_rng = mrng
 	var best := 0
 	var best_score := -INF
 	for i in ev["options"].size():
