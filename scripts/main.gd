@@ -5,8 +5,12 @@ extends Control
 ## right, resources and time controls in a top bar. All styling is built
 ## in code from one theme function — no external art assets.
 
-const SPEEDS: Array[float] = [0.0, 2.0, 12.0]   # months of sim time per real second
-const SPEED_LABELS: Array[String] = ["Paused", "Playing", "Fast"]
+# Time flows in days now (QoL pass): the clock counts days so a reign
+# feels inhabited, but the simulation still ticks once per 30-day month
+# — the fixed-seed history is untouched. "Faster" is the old pace.
+const SPEEDS: Array[float] = [0.0, 4.0, 60.0, 360.0]   # days of sim time per real second
+const SPEED_LABELS: Array[String] = ["Paused", "Playing", "Fast", "Faster"]
+const DAYS_PER_MONTH := 30
 
 const INK := Color("e8dcc0")
 const GOLD := Color("d9c07a")
@@ -15,7 +19,8 @@ const REALM_INK: Array[Color] = [Color("a9c4da"), Color("d9a99d")]
 
 var world: SimWorld
 var speed_index: int = 1
-var month_accum: float = 0.0
+var day_accum: float = 0.0
+var day_in_month: int = 1
 var selected_id: int = -1
 var battle_layer: BattleView = null
 var battle_announced: bool = false
@@ -108,6 +113,8 @@ var name_label: Label
 var title_label: Label
 var info_label: Label
 var family_box: VBoxContainer
+var court_box: VBoxContainer   # QoL pass: the court beneath the family
+var heir_row: HBoxContainer    # QoL pass: the heir beside the portrait
 var map_view: MapView
 var log_text: RichTextLabel
 var opt_groom: OptionButton
@@ -172,17 +179,24 @@ func _capture_screenshot(path: String, wait: float) -> void:
 
 
 func _process(delta: float) -> void:
-	var months_per_second: float = SPEEDS[speed_index]
-	if months_per_second <= 0.0:
+	var days_per_second: float = SPEEDS[speed_index]
+	if days_per_second <= 0.0:
 		return
-	month_accum += delta * months_per_second
+	day_accum += delta * days_per_second
 	var advanced := false
-	while month_accum >= 1.0:
-		month_accum -= 1.0
-		world.advance_month()
-		advanced = true
+	var day_turned := false
+	while day_accum >= 1.0:
+		day_accum -= 1.0
+		day_in_month += 1
+		day_turned = true
+		if day_in_month > DAYS_PER_MONTH:
+			day_in_month = 1
+			world.advance_month()
+			advanced = true
 	if advanced:
 		_refresh()
+	elif day_turned:
+		_refresh_date()  # days only move the calendar, not the world
 
 
 # ---------------------------------------------------------------- theme
@@ -377,12 +391,15 @@ func _show_next_event() -> void:
 func _make_top_bar() -> PanelContainer:
 	var bar := PanelContainer.new()
 	var box := HBoxContainer.new()
-	box.add_theme_constant_override("separation", 14)
+	# tightened for the day-clock + Faster button (QoL pass) — the bar
+	# must hold four speed buttons and the longer date line at 1280px
+	box.add_theme_constant_override("separation", 10)
 	bar.add_child(box)
 
 	for i in 2:
 		var chip := Label.new()
 		chip.add_theme_color_override("font_color", REALM_INK[i])
+		chip.add_theme_font_size_override("font_size", 13)
 		box.add_child(chip)
 		realm_chips.append(chip)
 
@@ -395,12 +412,13 @@ func _make_top_bar() -> PanelContainer:
 	box.add_child(status_label)
 
 	date_label = Label.new()
-	date_label.add_theme_font_size_override("font_size", 17)
+	date_label.add_theme_font_size_override("font_size", 16)
 	box.add_child(date_label)
 
 	for i in SPEEDS.size():
 		var b := Button.new()
-		b.text = ["Pause", "Play", "Fast"][i]
+		b.text = ["Pause", "Play", "Fast", "Faster"][i]
+		b.add_theme_font_size_override("font_size", 13)
 		b.pressed.connect(func() -> void:
 			speed_index = i
 			_refresh())
@@ -433,6 +451,12 @@ func _make_character_panel() -> PanelContainer:
 	title_label.add_theme_color_override("font_color", MUTED)
 	box.add_child(title_label)
 
+	# the succession at a glance, CK-style beside the portrait (QoL pass)
+	heir_row = HBoxContainer.new()
+	heir_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	heir_row.add_theme_constant_override("separation", 8)
+	box.add_child(heir_row)
+
 	info_label = Label.new()
 	info_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	info_label.add_theme_font_size_override("font_size", 13)
@@ -443,10 +467,21 @@ func _make_character_panel() -> PanelContainer:
 
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var list_box := VBoxContainer.new()
+	list_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list_box.add_theme_constant_override("separation", 4)
+	scroll.add_child(list_box)
 	family_box = VBoxContainer.new()
 	family_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	family_box.add_theme_constant_override("separation", 4)
-	scroll.add_child(family_box)
+	list_box.add_child(family_box)
+	# the court around them (QoL pass): no crown stands alone — seats,
+	# commanders, and courtiers of the same realm list beneath the family
+	list_box.add_child(_header("Court"))
+	court_box = VBoxContainer.new()
+	court_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	court_box.add_theme_constant_override("separation", 4)
+	list_box.add_child(court_box)
 	box.add_child(scroll)
 	return panel
 
@@ -1525,8 +1560,15 @@ func _on_plot() -> void:
 
 # ---------------------------------------------------------------- refresh
 
+func _refresh_date() -> void:
+	## The calendar line, now with days (QoL pass) — the world still
+	## thinks in months; the days are the player's room to breathe.
+	date_label.text = "Year %d, Month %d, Day %d of the Silence · %s" % [
+		floori(world.tick / 12.0), world.tick % 12 + 1, day_in_month, SPEED_LABELS[speed_index]]
+
+
 func _refresh() -> void:
-	date_label.text = "%s · %s" % [world.date_string(), SPEED_LABELS[speed_index]]
+	_refresh_date()
 
 	for i in 2:
 		var realm = world.realms[i]
@@ -1934,12 +1976,6 @@ func _refresh_character() -> void:
 		child.queue_free()
 	if c.spouse_id >= 0:
 		_add_family_row("Spouse", world.characters[c.spouse_id])
-	for realm in world.realms:
-		if realm.ruler_id == c.id and str(realm.government) != "administrative":
-			# administrative chairs have electors, not heirs (v1.0)
-			var heir := world.heir_of(realm.id)
-			if heir != null:
-				_add_family_row("Heir", heir)
 	for kid_id in c.children_ids:
 		var kid: SimCharacter = world.characters[kid_id]
 		if kid.alive:
@@ -1948,9 +1984,128 @@ func _refresh_character() -> void:
 		_add_family_row("Father", world.characters[c.father_id])
 	if c.mother_id >= 0 and world.characters[c.mother_id].alive:
 		_add_family_row("Mother", world.characters[c.mother_id])
+	_refresh_heir_row(c)
+	_refresh_court(c)
+
+
+func _refresh_heir_row(c: SimCharacter) -> void:
+	## The succession beside the portrait (QoL pass): feudal and tribal
+	## crowns show their heir; the Magistocracy shows its electors' truth;
+	## cast crowns show the eldest trueborn child.
+	for child in heir_row.get_children():
+		child.queue_free()
+	var heir: SimCharacter = null
+	var note := ""
+	for realm in world.realms:
+		if realm.ruler_id == c.id:
+			if str(realm.government) == "administrative":
+				note = "Succession: the Council elects"
+			else:
+				heir = world.heir_of(realm.id)
+	if heir == null and note == "" and world.is_cast(c) and world.cast_title_of(c.id) != "":
+		for kid_id in c.children_ids:
+			var kid: SimCharacter = world.characters[kid_id]
+			if kid.alive and not kid.is_bastard and (heir == null or kid.birth_tick < heir.birth_tick):
+				heir = kid
+	heir_row.visible = heir != null or note != ""
+	if not heir_row.visible:
+		return
+	if note != "":
+		var lbl := Label.new()
+		lbl.text = note
+		lbl.add_theme_font_size_override("font_size", 12)
+		lbl.add_theme_color_override("font_color", MUTED)
+		heir_row.add_child(lbl)
+		return
+	var face := FaceView.new()
+	face.custom_minimum_size = Vector2(40, 40)
+	face.set_person(heir.genome, heir.age_years(world.tick), heir.is_female, _portrait_context(heir))
+	face.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	var hid := heir.id
+	face.pressed.connect(func() -> void:
+		selected_id = hid
+		_refresh())
+	heir_row.add_child(face)
+	var name_lbl := Label.new()
+	name_lbl.text = "Heir — %s" % world.full_name(heir)
+	name_lbl.add_theme_font_size_override("font_size", 12)
+	name_lbl.add_theme_color_override("font_color", GOLD)
+	heir_row.add_child(name_lbl)
+
+
+func _refresh_court(c: SimCharacter) -> void:
+	## The court around them (QoL pass): everyone of the same realm who
+	## isn't already in the family list — seats and commanders first,
+	## then courtiers by age. No crown reads as alone anymore.
+	for child in court_box.get_children():
+		child.queue_free()
+	var shown := {c.id: true, c.spouse_id: true, c.father_id: true, c.mother_id: true}
+	for kid_id in c.children_ids:
+		shown[kid_id] = true
+	var court: Array = []
+	for other in world.characters.values():
+		if not other.alive or other.realm_id != c.realm_id or shown.has(other.id):
+			continue
+		var role := ""
+		var rank := 3
+		if other.realm_id < world.realms.size():
+			if world.realms[other.realm_id].ruler_id == other.id:
+				role = world.live_ruler_title(other.realm_id, other)
+				rank = 0
+			else:
+				var seat := world.magister_seat_of(other.id)
+				if seat != "":
+					role = "Magister — %s" % seat
+					rank = 1
+				elif other.id == world.mareck_id:
+					role = "Chief Spymaster"
+					rank = 1
+				else:
+					for s in SimWorld.COUNCIL_SEATS:
+						if int(world.realms[other.realm_id].council.get(s, -1)) == other.id:
+							role = s
+							rank = 1
+					if role == "":
+						for a in world.armies:
+							if a.commander_id == other.id:
+								role = "Commander"
+								rank = 2
+		else:
+			var cast_crown := world.cast_title_of(other.id)
+			if cast_crown != "":
+				role = cast_crown
+				rank = 0
+		if role == "":
+			if other.age_years(world.tick) < 16:
+				continue  # the nursery is family business, not court business
+			role = "Courtier"
+		court.append({"who": other, "role": role, "rank": rank})
+	court.sort_custom(func(x: Dictionary, y: Dictionary) -> bool:
+		if int(x["rank"]) != int(y["rank"]):
+			return int(x["rank"]) < int(y["rank"])
+		return (x["who"] as SimCharacter).birth_tick < (y["who"] as SimCharacter).birth_tick)
+	var cap := 10
+	for e in court.slice(0, cap):
+		_add_person_row(court_box, str(e["role"]), e["who"])
+	if court.size() > cap:
+		var more := Label.new()
+		more.text = "…and %d more of the court" % (court.size() - cap)
+		more.add_theme_font_size_override("font_size", 12)
+		more.add_theme_color_override("font_color", MUTED)
+		court_box.add_child(more)
+	elif court.is_empty():
+		var none := Label.new()
+		none.text = "A quiet hall — no court to speak of"
+		none.add_theme_font_size_override("font_size", 12)
+		none.add_theme_color_override("font_color", MUTED)
+		court_box.add_child(none)
 
 
 func _add_family_row(role: String, person: SimCharacter) -> void:
+	_add_person_row(family_box, role, person)
+
+
+func _add_person_row(into: VBoxContainer, role: String, person: SimCharacter) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 
@@ -1973,7 +2128,7 @@ func _add_family_row(role: String, person: SimCharacter) -> void:
 	text.add_child(_muted("%s · age %d" % [role, person.age_years(world.tick)]))
 	row.add_child(text)
 
-	family_box.add_child(row)
+	into.add_child(row)
 
 
 func _portrait_context(person: SimCharacter) -> Dictionary:
