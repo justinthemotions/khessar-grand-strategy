@@ -42,6 +42,7 @@ var tabs_container: TabContainer
 var opt_commander: OptionButton
 var council_opts: Dictionary = {}
 var council_faces: Dictionary = {}
+var magister_label: Label  # the Council of Magisters readout (Administrative v1.0)
 var opt_tax: OptionButton
 var opt_succession: OptionButton
 var btn_enact: Button
@@ -148,10 +149,10 @@ func _ready() -> void:
 		tabs_container.current_tab = 1  # show the Military tab in the capture
 		# stage a sample choice event so the popup is in the shot
 		var demo_ruler: SimCharacter = world.characters[world.realms[0].ruler_id]
-		world.raise_event(0, demo_ruler.id, "The Homage Tour",
-			"Godgifu Aurath-Voss of House Aurath-Voss kneels — but does not swear. A gift of 60 gold, she murmurs, would loosen the oath.",
-			[{"label": "Pay her price (60 gold)", "effect": func() -> void: pass},
-			{"label": "Refuse — the crown begs no one", "effect": func() -> void: pass}])
+		world.raise_event(0, demo_ruler.id, "The Spymaster's Silence",
+			"Tess Mareck's monthly report is two pages. The Grand Magister has run enough committees to know when two pages are standing in front of forty.",
+			[{"label": "Trust her discretion", "effect": func() -> void: pass},
+			{"label": "Demand the full assessment", "effect": func() -> void: pass}])
 		_capture_screenshot("user://ui_screenshot.png", 1.2)
 	elif OS.get_cmdline_user_args().has("--battle-screenshot"):
 		var _err := world.declare_war()
@@ -894,6 +895,16 @@ func _make_council_tab() -> ScrollContainer:
 	box.add_theme_constant_override("separation", 5)
 	scroll.add_child(box)
 
+	# The Council of Magisters (Administrative v1.0): the nine seats that
+	# actually govern the Magistocracy — and elect its next chair.
+	box.add_child(_header("The Council of Magisters"))
+	box.add_child(_muted("Nine seats govern Vael — the chair is elected, never inherited"))
+	magister_label = Label.new()
+	magister_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	magister_label.add_theme_font_size_override("font_size", 12)
+	box.add_child(magister_label)
+	box.add_child(HSeparator.new())
+
 	for seat in SimWorld.COUNCIL_SEATS:
 		box.add_child(_header(seat))
 		box.add_child(_muted(SEAT_BLURB[seat]))
@@ -1178,6 +1189,35 @@ func _do_grant(char_id: int) -> String:
 	var meta := str(opt_title.get_item_metadata(opt_title.selected))
 	var kind := "duchy" if meta.begins_with("d") else "county"
 	return world.grant_title(kind, int(meta.substr(1)), char_id)
+
+
+func _refresh_magisters() -> void:
+	## The Council of Magisters readout (Administrative v1.0): who sits,
+	## which wing they vote with, and what the chamber last divided on.
+	if magister_label == null:
+		return
+	if world.magister_seats.is_empty():
+		magister_label.text = ""
+		return
+	var lines := ""
+	for seat in SimWorld.MAGISTER_SEATS:
+		if not world.magister_seats.has(seat):
+			continue
+		var hid: int = int(world.magister_seats[seat]["holder"])
+		var who := "— vacant —"
+		if hid >= 0 and world.characters.has(hid) and world.characters[hid].alive:
+			var m: SimCharacter = world.characters[hid]
+			var wing := str(world.magister_wing.get(hid, "neutral"))
+			who = world.full_name(m) + ("" if wing == "neutral" else " · " + wing)
+		lines += "%s:  %s\n" % [seat, who]
+	if not world.admin_interregnum.is_empty():
+		lines += "\nTHE COUNCIL ELECTS — stage %d of 5 (endorsement, then ninety days of chamber visits, then the vote)\n" % int(world.admin_interregnum["stage"])
+	if not world.council_vote_history.is_empty():
+		var v: Dictionary = world.council_vote_history.back()
+		lines += "\nLast division: %s — %d ayes, %d nays (%s)" % [
+			str(v["matter"]), int(v["ayes"]), int(v["nays"]),
+			"carried" if bool(v["passed"]) else "failed"]
+	magister_label.text = lines
 
 
 func _refresh_realm_tab() -> void:
@@ -1511,6 +1551,10 @@ func _refresh() -> void:
 	if not world.realms[0].interregnum.is_empty():
 		status_label.text = "INTERREGNUM — legitimacy %d · " % int(world.realms[0].interregnum["legitimacy"]) \
 			+ status_label.text
+	if not world.admin_interregnum.is_empty():
+		status_label.text = "COUNCIL ELECTION — stage %d of 5 · " % int(world.admin_interregnum["stage"]) \
+			+ status_label.text
+	_refresh_magisters()
 
 	_refresh_character()
 	_fill_singles(opt_groom, false)
@@ -1840,7 +1884,11 @@ func _refresh_character() -> void:
 	var title := ""
 	for realm in world.realms:
 		if realm.ruler_id == c.id:
-			title = ("Queen of %s" if c.is_female else "King of %s") % str(realm.name).trim_prefix("Kingdom of ")
+			title = "%s of %s" % [world.live_ruler_title(realm.id, c), str(realm.name).trim_prefix("Kingdom of ")]
+	if title == "":
+		var seat := world.magister_seat_of(c.id)
+		if seat != "" and seat != "Grand Magister":
+			title = "Magister — %s, Council of Vael" % seat
 	if title == "":
 		title = world.cast_title_of(c.id)  # the Faction Cast wear their canonical crowns
 	if title == "":
@@ -1887,7 +1935,8 @@ func _refresh_character() -> void:
 	if c.spouse_id >= 0:
 		_add_family_row("Spouse", world.characters[c.spouse_id])
 	for realm in world.realms:
-		if realm.ruler_id == c.id:
+		if realm.ruler_id == c.id and str(realm.government) != "administrative":
+			# administrative chairs have electors, not heirs (v1.0)
 			var heir := world.heir_of(realm.id)
 			if heir != null:
 				_add_family_row("Heir", heir)

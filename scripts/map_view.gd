@@ -164,7 +164,7 @@ func _draw() -> void:
 			var rid: int = world.realms[r.id].ruler_id
 			if rid >= 0:
 				var rc = world.characters[rid]
-				ruler_line = "%s %s" % ["Queen" if rc.is_female else "King", world.full_name(rc)]
+				ruler_line = "%s %s" % [world.live_ruler_title(r.id, rc), world.full_name(rc)]
 		elif world.cast_rulers.has(r.id):
 			var cr = world.cast_ruler_of(r.id)
 			if cr != null and cr.alive:
