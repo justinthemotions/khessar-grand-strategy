@@ -173,6 +173,10 @@ const UNIT_LABELS := {
 	"veldarin_forest_sworn": "Forest-Sworn Archers", "veldarin_elder_guard": "Elder-Guard (Veldarin)",
 	"thaladris_song_bound": "Song-Bound Skirmishers", "thaladris_elder_guard": "Elder-Guard (Thaladris)",
 	"southern_marine": "Marines", "trade_guard": "Trade-Guard",
+	# Tactical Combat System v1.0: the forces the Silence made
+	"vigil_sworn_elite": "Vigil-Sworn Elite", "reactionary_chaplain": "Reactionary Chaplains",
+	"warden_dead": "Warden-Dead", "caeris_retinue": "Caeris's Retinue",
+	"forsaken_militia": "Forsaken Militia",
 }
 # strength weighting for the war AI: roughly cost / 200
 const UNIT_WEIGHTS := {
@@ -188,6 +192,9 @@ const UNIT_WEIGHTS := {
 	"veldarin_forest_sworn": 1.7, "veldarin_elder_guard": 2.1,
 	"thaladris_song_bound": 1.6, "thaladris_elder_guard": 2.1,
 	"southern_marine": 1.3, "trade_guard": 1.4,
+	"vigil_sworn_elite": 1.9, "reactionary_chaplain": 1.8,
+	"warden_dead": 0.6, "caeris_retinue": 2.0,
+	"forsaken_militia": 1.0,
 }
 # gold costs per the Roster's stat blocks
 const RECRUIT_COST := {
@@ -203,6 +210,9 @@ const RECRUIT_COST := {
 	"veldarin_forest_sworn": 340.0, "veldarin_elder_guard": 420.0,
 	"thaladris_song_bound": 320.0, "thaladris_elder_guard": 420.0,
 	"southern_marine": 260.0, "trade_guard": 280.0,
+	"vigil_sworn_elite": 380.0, "reactionary_chaplain": 360.0,
+	"warden_dead": 0.0, "caeris_retinue": 0.0,  # not recruited — they rise, or she brings them
+	"forsaken_militia": 200.0,
 }
 const RECRUIT_SIZE := {
 	"levy": 48, "sword": 36, "cav": 16, "archer": 24,
@@ -217,6 +227,9 @@ const RECRUIT_SIZE := {
 	"veldarin_forest_sworn": 20, "veldarin_elder_guard": 16,
 	"thaladris_song_bound": 22, "thaladris_elder_guard": 16,
 	"southern_marine": 32, "trade_guard": 24,
+	"vigil_sworn_elite": 24, "reactionary_chaplain": 16,
+	"warden_dead": 40, "caeris_retinue": 12,
+	"forsaken_militia": 36,
 }
 const UPKEEP_PER_MAN := 0.05     # the universal roster's rate
 # per-man monthly upkeep where the Roster departs from the universal rate
@@ -231,6 +244,9 @@ const UNIT_UPKEEP := {
 	"veldarin_forest_sworn": 0.08, "veldarin_elder_guard": 0.13,
 	"thaladris_song_bound": 0.08, "thaladris_elder_guard": 0.13,
 	"southern_marine": 0.05, "trade_guard": 0.07,
+	"vigil_sworn_elite": 0.11, "reactionary_chaplain": 0.12,
+	"warden_dead": 0.0, "caeris_retinue": 0.0,  # the dead draw no pay
+	"forsaken_militia": 0.04,
 }
 const REPLENISH_COST_PER_MAN := 0.3
 
@@ -1387,6 +1403,22 @@ func recruit_gate(realm_id: int, kind: String) -> String:
 	## limits are checked at muster time, not here.
 	if kind != "levy" and int(demilitarized_until.get(realm_id, -1)) > tick:
 		return "The treaty of demilitarization bars professional muster — common levies only."
+	# Tactical Combat v1.0: the forces the Silence made answer no ordinary muster
+	match kind:
+		"warden_dead", "caeris_retinue":
+			return "These dead are not yours to muster — they rise only under the Ashfields' sky."
+		"forsaken_militia":
+			# the recruitment gate goes live when the Forsaken movement
+			# module lands (Regional Dominance, 500+ strength)
+			return "No Forsaken movement holds regional dominance — there is no militia to raise."
+		"vigil_sworn_elite", "reactionary_chaplain":
+			var vr: Realm = realms[realm_id]
+			if vr.ruler_id < 0:
+				return "The Order of the Vigil-Sworn answers no empty throne."
+			var vruler: SimCharacter = characters[vr.ruler_id]
+			if faith_of(vruler) != "Aelindran Orthodox" or not vruler.traits.has("Zealous"):
+				return "The Order of the Vigil-Sworn answers only a Zealous crown of the old faith."
+			return ""
 	# The Ward-Speaker Line (Magic v1.0): the craft was taught to the
 	# blood itself — the retinues answer this house's muster anywhere
 	if kind == "ward_speaker_retinue":
@@ -2072,6 +2104,30 @@ func battle_site_terrain() -> String:
 	return best_terrain
 
 
+func battle_site_ground() -> Dictionary:
+	## The battle province's theology (Tactical Combat v1.0): the binary
+	## casting gates read whether the ground is silence-touched or ruined,
+	## and whether the Iron Library or the ward-stones stand near enough
+	## to hold a little of the sky up.
+	var target: Vector2 = map.frontier_midpoint()
+	if pending_battle.size() == 2:
+		var a := army_by_id(pending_battle[0])
+		var b := army_by_id(pending_battle[1])
+		if a != null and b != null:
+			target = (a.pos + b.pos) * 0.5
+	var best = null
+	var best_d := INF
+	for p in map.provinces:
+		var d: float = p.center.distance_squared_to(target)
+		if d < best_d:
+			best_d = d
+			best = p
+	if best == null:
+		return {}
+	return {"silence": best.silence_touched, "ruined": best.ruined,
+		"special": str(best.special_feature)}
+
+
 func _site_name_at(target: Vector2) -> String:
 	var best_name := "the frontier"
 	var best_d := INF
@@ -2083,7 +2139,7 @@ func _site_name_at(target: Vector2) -> String:
 	return best_name
 
 
-func apply_battle_result(winner_side: int, loser_loss_fraction: float, charged: Array = [false, false], cmdr_corruption: Array = [0.0, 0.0]) -> void:
+func apply_battle_result(winner_side: int, loser_loss_fraction: float, charged: Array = [false, false], cmdr_corruption: Array = [0.0, 0.0], cmdr_stress: Array = [0.0, 0.0]) -> void:
 	## Feeds a fought battle back into the war: the score swings, the
 	## beaten army retreats home, and either commander may not come back.
 	var site := battle_site_name()
@@ -2103,13 +2159,19 @@ func apply_battle_result(winner_side: int, loser_loss_fraction: float, charged: 
 		if loser_army != null and army_by_id(loser_army.id) != null:
 			loser_army.target = map.realm_centroid(loser_army.realm_id)
 			loser_army.has_target = true
-	# what the field cost each commander's ledger (Magic v1.0)
+	# what the field cost each commander's ledger (Magic v1.0) and nerve
+	# (Tactical Combat v1.0: the workings ask, answered or not)
 	for i in 2:
 		var host: Army = pa if i == 0 else pb
-		if float(cmdr_corruption[i]) > 0.0 and host != null and host.commander_id >= 0:
-			var cmdr: SimCharacter = characters.get(host.commander_id)
-			if cmdr != null and cmdr.alive:
-				add_corruption(cmdr, float(cmdr_corruption[i]), "what was channeled at %s" % site)
+		if host == null or host.commander_id < 0:
+			continue
+		var cmdr: SimCharacter = characters.get(host.commander_id)
+		if cmdr == null or not cmdr.alive:
+			continue
+		if float(cmdr_corruption[i]) > 0.0:
+			add_corruption(cmdr, float(cmdr_corruption[i]), "what was channeled at %s" % site)
+		if float(cmdr_stress[i]) > 0.0:
+			add_stress(cmdr, float(cmdr_stress[i]), "what the field asked of the sky at %s" % site)
 	_commander_fate(pa, pb, winner_side == 0, loser_loss_fraction, site, bool(charged[0]))
 	_commander_fate(pb, pa, winner_side == 1, loser_loss_fraction, site, bool(charged[1]))
 	_champion_fates(pa, pb, winner_side == 0, loser_loss_fraction, site)

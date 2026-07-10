@@ -66,6 +66,40 @@ const RANGED_HIT := 0.35
 # nothing from the rear. (Melee parry is already inside Melee Defence.)
 const SHIELD_ARC_FACTOR := [1.0, 0.5, 0.0]
 
+# Tactical Combat System v1.0 (Opus doc, 2026-07-08): the Khessari layer.
+# Casting is BINARY — a working either fires or fizzles (reliability gates,
+# never damage multipliers). The battle rolls its gates on its own seeded
+# stream (`brng`) so the campaign's streams never feel the field; identical
+# setups still produce identical battles.
+const BATTLE_SEED := 212                 # the battle's own dice
+const SILENCE_LEAD_PENALTY := 8.0        # leadership starved by unquiet ground (non-immune lines)
+const SILENCE_DMG_BONUS := 1.05          # silence-born units fight harder under their own sky
+const TERROR_RANGE := 150.0              # how far a Warden-Dead company's wrongness carries
+const CONFUSION_THRESHOLD := 0.25        # Returned below quarter strength lose coordination...
+const CONFUSION_MULT := 0.7              # ...their strikes land without purpose
+const OATH_CONFLICT_MULT := 1.10         # the Order's oath answers heresy with real weight
+const THRESHOLD_VS_SILENCE_MULT := 1.20  # Gravewarden war against the unwitnessed dead
+const ARCANE_VS_RETURNED_MULT := 1.4     # arcane volleys find what swords cannot
+const CRIT_BASE := 0.05                  # deterministic EV critical layer: dmg × (1 + chance/4)
+const CRIT_BRUSHGATE := 0.05             # the study of anatomical vulnerability
+const CRIT_OATH_VS_MARKED := 0.03        # oath-magic reads corrupted flesh precisely
+# the Cleric's office on the field (doc §3.3)
+const CLERIC_PRESENCE := 5.0             # the candles steady the line even unanswered
+const CLERIC_PRESENCE_ZEALOUS := 8.0     # a Zealous office grows regardless of results
+const BLESS_MA := 4.0                    # +ma when the prayer is actually answered
+const BLESS_MD := 2.0
+# the Paladin's aura (doc §3.4)
+const DEVOTION_LEAD := 8.0
+const DEVOTION_MD := 2.0
+const OATH_REGEN_MULT := 1.25            # oath-sworn recover their nerve faster
+# vigour (doc §8): TW's six stages folded to five, scaled to this sim's
+# tick economy (battles run ~100-250 combat ticks, not 30k vigour points)
+const VIGOUR_STAGES: Array[float] = [30.0, 60.0, 95.0, 130.0]
+const VIGOUR_PENALTY: Array[float] = [0.0, 0.05, 0.10, 0.15, 0.20]
+const VIGOUR_FIGHT := 1.0                # per combat tick locked in melee
+const VIGOUR_MOVE := 0.35                # per combat tick on the march
+const VIGOUR_CHARGE := 1.0               # charging is spent on top of fighting
+
 const PRESETS := {
 	# --- the universal roster: every culture fields these ---
 	"levy":   {"label": "Levy Spears",    "soldiers": 48, "hp": 8.0,  "armour": 4.0,  "ma": 22.0, "md": 26.0, "ws": 8.0,  "charge": 6.0,  "lead": 35.0, "files": 12, "speed": 26.0, "bonus_cav": 12.0, "cav": false, "shield": 0.30, "range": 0.0,   "ammo": 0,  "missile": 0.0},
@@ -99,7 +133,7 @@ const PRESETS := {
 	"ward_speaker_retinue": {"label": "Ward-Speakers",      "soldiers": 16, "hp": 10.0, "armour": 12.0, "ma": 22.0, "md": 28.0, "ws": 8.0,  "charge": 4.0,  "lead": 65.0, "files": 8,  "speed": 26.0, "bonus_cav": 0.0,  "cav": false, "shield": 0.30, "range": 180.0, "ammo": 30, "missile": 10.0, "aura_lead": 10.0, "aura_range": 200.0},
 	# Brushgate: the anti-Silence specialists — panic resistance now,
 	# silence_immunity ready for the endgame entities when they arrive.
-	"brushgate_column":     {"label": "Brushgate Column",   "soldiers": 18, "hp": 12.0, "armour": 10.0, "ma": 32.0, "md": 32.0, "ws": 12.0, "charge": 8.0,  "lead": 70.0, "files": 6,  "speed": 30.0, "bonus_cav": 4.0,  "cav": false, "shield": 0.30, "range": 0.0,   "ammo": 0,  "missile": 0.0, "panic_resistance": 0.60, "silence_immunity": true},
+	"brushgate_column":     {"label": "Brushgate Column",   "soldiers": 18, "hp": 12.0, "armour": 10.0, "ma": 32.0, "md": 32.0, "ws": 12.0, "charge": 8.0,  "lead": 70.0, "files": 6,  "speed": 30.0, "bonus_cav": 4.0,  "cav": false, "shield": 0.30, "range": 0.0,   "ammo": 0,  "missile": 0.0, "panic_resistance": 0.60, "silence_immunity": true, "vigour_mult": 0.60},
 	# Veldarin: fight in forests, avoid open ground.
 	"veldarin_forest_sworn": {"label": "Forest-Sworn Archers", "soldiers": 20, "hp": 8.0, "armour": 4.0, "ma": 18.0, "md": 20.0, "ws": 8.0, "charge": 3.0, "lead": 45.0, "files": 10, "speed": 35.0, "bonus_cav": 0.0, "cav": false, "shield": 0.10, "range": 280.0, "ammo": 50, "missile": 11.0, "forest_bonus_ma": 8.0, "forest_bonus_speed": 12.0},
 	"veldarin_elder_guard": {"label": "Elder-Guard",        "soldiers": 16, "hp": 14.0, "armour": 18.0, "ma": 36.0, "md": 36.0, "ws": 13.0, "charge": 12.0, "lead": 65.0, "files": 8,  "speed": 32.0, "bonus_cav": 6.0,  "cav": false, "shield": 0.40, "range": 0.0,   "ammo": 0,  "missile": 0.0},
@@ -111,6 +145,27 @@ const PRESETS := {
 	# real value is campaign-level intrigue detection (world.gd).
 	"southern_marine":      {"label": "Marines",            "soldiers": 32, "hp": 10.0, "armour": 10.0, "ma": 30.0, "md": 32.0, "ws": 10.0, "charge": 6.0,  "lead": 50.0, "files": 10, "speed": 32.0, "bonus_cav": 4.0,  "cav": false, "shield": 0.40, "range": 130.0, "ammo": 15, "missile": 7.0, "coastal_bonus_ma": 6.0},
 	"trade_guard":          {"label": "Trade-Guard",        "soldiers": 24, "hp": 10.0, "armour": 12.0, "ma": 28.0, "md": 32.0, "ws": 10.0, "charge": 4.0,  "lead": 45.0, "files": 10, "speed": 30.0, "bonus_cav": 4.0,  "cav": false, "shield": 0.40, "range": 0.0,   "ammo": 0,  "missile": 0.0},
+
+	# --- Tactical Combat System v1.0: the forces the Silence made ---
+	# The Order of the Vigil-Sworn: devastating in the defense, oath-bound
+	# (cannot rout while their commander's oath holds), and 60% warded
+	# against Silence-touched attack — the Order's version, not Brushgate's.
+	"vigil_sworn_elite":    {"label": "Vigil-Sworn Elite",  "soldiers": 24, "hp": 12.0, "armour": 18.0, "ma": 32.0, "md": 34.0, "ws": 12.0, "charge": 12.0, "lead": 65.0, "files": 8,  "speed": 30.0, "bonus_cav": 4.0,  "cav": false, "shield": 0.40, "range": 0.0,   "ammo": 0,  "missile": 0.0, "panic_resistance": 0.45, "silence_immunity": 0.60, "oath_bound": true},
+	# Chaplains sing the old litany at the rear: a +12 leadership aura that
+	# reaches only the Order's own regiments (300px, doc §5.12).
+	"reactionary_chaplain": {"label": "Reactionary Chaplains", "soldiers": 16, "hp": 10.0, "armour": 8.0, "ma": 22.0, "md": 26.0, "ws": 8.0, "charge": 4.0, "lead": 65.0, "files": 8, "speed": 28.0, "bonus_cav": 0.0, "cav": false, "shield": 0.20, "range": 0.0, "ammo": 0, "missile": 0.0, "aura_lead": 12.0, "aura_range": 300.0, "aura_filter": "order"},
+	# Caeris's Warden-Dead: Returned in various stages of settling. No
+	# morale mechanic at all — they cannot be broken, only dispersed; below
+	# quarter strength they grow confused instead. Their wrongness starves
+	# nearby enemy nerve (silence_terror), and arcane volleys find them
+	# where swords cannot. Defensive by nature: they hold, never seek.
+	"warden_dead":          {"label": "Warden-Dead",        "soldiers": 40, "hp": 8.0,  "armour": 2.0,  "ma": 22.0, "md": 20.0, "ws": 8.0,  "charge": 4.0,  "lead": 0.0,  "files": 10, "speed": 24.0, "bonus_cav": 0.0,  "cav": false, "shield": 0.15, "range": 0.0,   "ammo": 0,  "missile": 0.0, "no_morale": true, "silence_terror": 0.30, "silence_kind": true, "defensive": true},
+	# Caeris's personal retinue: elite Settled, deployed only when she
+	# herself takes the field. Not recruitable by any living crown.
+	"caeris_retinue":       {"label": "Caeris's Retinue",   "soldiers": 12, "hp": 12.0, "armour": 8.0,  "ma": 30.0, "md": 30.0, "ws": 12.0, "charge": 12.0, "lead": 55.0, "files": 6,  "speed": 30.0, "bonus_cav": 0.0,  "cav": false, "shield": 0.25, "range": 0.0,   "ammo": 0,  "missile": 0.0, "silence_immunity": 1.0, "silence_kind": true},
+	# Forsaken militia: conviction instead of drill — +8 leadership when
+	# the enemy line carries the old order's banners (Order regiments).
+	"forsaken_militia":     {"label": "Forsaken Militia",   "soldiers": 36, "hp": 9.0,  "armour": 8.0,  "ma": 26.0, "md": 26.0, "ws": 10.0, "charge": 8.0,  "lead": 55.0, "files": 10, "speed": 30.0, "bonus_cav": 2.0,  "cav": false, "shield": 0.30, "range": 0.0,   "ammo": 0,  "missile": 0.0, "conviction_lead": 8.0},
 }
 
 
@@ -144,11 +199,30 @@ class Regiment:
 	var shock_mult := 1.0        # Methodical panic resistance (× unit panic_resistance)
 	# cultural unit hooks (Cultural Roster v1.0), read from PRESETS at setup
 	var never_routs_above := 0.0 # Berserkers: no rout while strength ≥ this fraction
-	var silence_immune := false  # Brushgate: unaffected by Silence terror (endgame content)
+	var silence_immune := false  # full silence immunity (Brushgate; immunity ≥ 1.0)
 	var ward_shield := false     # Arcane Retinue: wards block missiles from every arc
 	var aura_lead := 0.0         # Ward-Speakers / Song-Bound: lead projected to friends...
 	var aura_range := 0.0        # ...within this distance (px)
 	var aura_bonus := 0.0        # lead currently received from friendly auras
+	# Tactical Combat System v1.0 hooks
+	var silence_immunity := 0.0  # 0..1 — how much of the Silence's pressure never lands
+	var no_morale := false       # Returned: cannot be broken, only dispersed
+	var silence_terror := 0.0    # wrongness projected onto enemy nerve within TERROR_RANGE
+	var silence_kind := false    # a Silence-born entity (Warden-Dead, the Settled)
+	var defensive := false       # holds its ground; never seeks the enemy
+	var oath_bound := false      # an Order regiment whose discipline is oath-magic
+	var oath_holds := false      # set at setup: the commander's oath-token is whole
+	var conviction_lead := 0.0   # Forsaken: +lead against the old order's banners...
+	var conviction_on := false   # ...armed once the enemy line shows them
+	var aura_filter := ""        # "" = all friends; "order" = oath-bound regiments only
+	var vigour := 0.0            # fatigue accumulator (doc §8)
+	var vigour_mult := 1.0       # Brushgate 0.60 — the discipline spends itself slowly
+	var fatigue := 0.0           # current stage penalty, cached each combat tick
+	var lead_regen_mult := 1.0   # oath-sworn recover 25% faster
+	var terror_penalty := 0.0    # fraction of morale regen starved by nearby terror
+	var crit_mult := 1.0         # deterministic EV critical layer (commander-set)
+	var dmg_vs_silence := 1.0    # Gravewarden-witnessed side: × vs silence-born units
+	var oath_conflict := false   # the Order facing heresy: OATH_CONFLICT_MULT applies
 	var pos := Vector2.ZERO
 	var facing := Vector2.RIGHT
 	var has_move_order := false
@@ -185,6 +259,8 @@ class Regiment:
 		return maxf(frontage(), rows_now() * BattleSim.SPACING * 0.85) * 0.5
 
 	func morale() -> float:
+		if no_morale:
+			return BattleSim.START_MORALE  # the Returned do not check their courage
 		var depletion := (1.0 - float(soldiers) / maxf(1.0, float(start_soldiers))) * BattleSim.DEPLETION
 		return BattleSim.START_MORALE + morale_bonus - shock - flank_penalty - depletion
 
@@ -200,20 +276,37 @@ var commanders: Array = [{}, {}]     # per side: {martial, intrigue, prowess, tr
 var tactics_used: Array = [{}, {}]   # per side: tactic kind -> true (each plays once)
 var commander_charged := [false, false]  # a chivalric charge was sounded — the fate rolls remember
 var commander_corruption := [0.0, 0.0]   # what the field cost each commander's ledger (Magic v1.0)
+var commander_stress := [0.0, 0.0]       # what the field asked of each commander's nerve (Tactical v1.0)
 var combat_ticks := 0                # rounds fought — the AI times its cards by it
 var battle_terrain := "plains"       # the province's ground — primal magic reads it
+# Tactical Combat System v1.0: the ground's theology, and the battle's own dice
+var brng := RandomNumberGenerator.new()  # binary casting gates roll here — never on campaign streams
+var ground_silence := false          # silence-touched ground (the Ashfields, the spreading edge)
+var ground_ruined := false           # the Aurath ruins
+var ground_library := false          # Iron Library adjacency (Pellar)
+var ground_wardstone := false        # the sealed Kharak-Dum holds
+var side_threshold := [false, false] # a Gravewarden-Sworn hand commands this side
+var side_faith := ["", ""]           # the commander's faith — oath-conflict reads it
 
 
 func setup_from_rosters(roster_a: Array, roster_b: Array, lead_bonus_a: int, lead_bonus_b: int, side_names: Array,
-		cmdr_traits_a: Array = [], cmdr_traits_b: Array = [], terrain: String = "plains") -> void:
+		cmdr_traits_a: Array = [], cmdr_traits_b: Array = [], terrain: String = "plains",
+		ground: Dictionary = {}) -> void:
 	## Armies come from the campaign's persistent rosters — the men who
 	## fall here stay fallen when the map returns. The commander's traits
 	## reach onto the field: TraitData battle hooks shape every regiment.
 	## `terrain` is the battle province's terrain — forest and coast
 	## activate the cultural units' terrain bonuses (Roster v1.0).
+	## `ground` is the province's theology (Tactical Combat v1.0):
+	## {silence, ruined, special} — the binary casting gates read it.
 	regiments.clear()
 	side_lead = [lead_bonus_a, lead_bonus_b]
 	battle_terrain = terrain
+	brng.seed = BATTLE_SEED
+	ground_silence = bool(ground.get("silence", false)) or terrain == "ashfields"
+	ground_ruined = bool(ground.get("ruined", false)) or terrain == "ruined"
+	ground_library = str(ground.get("special", "")) == "iron_library"
+	ground_wardstone = str(ground.get("special", "")) == "sealed_hold"
 	for side in 2:
 		var roster: Array = roster_a if side == 0 else roster_b
 		var lead_bonus := lead_bonus_a if side == 0 else lead_bonus_b
@@ -263,10 +356,21 @@ func setup_from_rosters(roster_a: Array, roster_b: Array, lead_bonus_a: int, lea
 			r.speed = p["speed"]
 			# cultural unit hooks — absent keys leave the defaults
 			r.never_routs_above = float(p.get("never_routs_above", 0.0))
-			r.silence_immune = bool(p.get("silence_immunity", false))
+			var si = p.get("silence_immunity", 0.0)  # bool (legacy, full) or 0..1 float
+			r.silence_immunity = 1.0 if (si is bool and si) else float(si)
+			r.silence_immune = r.silence_immunity >= 1.0
 			r.ward_shield = bool(p.get("ward_shield", false))
 			r.aura_lead = float(p.get("aura_lead", 0.0))
 			r.aura_range = float(p.get("aura_range", 0.0))
+			# Tactical Combat v1.0 hooks
+			r.no_morale = bool(p.get("no_morale", false))
+			r.silence_terror = float(p.get("silence_terror", 0.0))
+			r.silence_kind = bool(p.get("silence_kind", false))
+			r.defensive = bool(p.get("defensive", false))
+			r.oath_bound = bool(p.get("oath_bound", false))
+			r.conviction_lead = float(p.get("conviction_lead", 0.0))
+			r.aura_filter = str(p.get("aura_filter", ""))
+			r.vigour_mult = float(p.get("vigour_mult", 1.0))
 			if terrain == "forest":
 				r.ma += float(p.get("forest_bonus_ma", 0.0))
 				r.speed += float(p.get("forest_bonus_speed", 0.0))
@@ -284,6 +388,7 @@ func setup_from_rosters(roster_a: Array, roster_b: Array, lead_bonus_a: int, lea
 			r.pos = Vector2(x, field.y * 0.5 + (float(i) - float(n - 1) * 0.5) * 110.0)
 			r.facing = Vector2.RIGHT if side == 0 else Vector2.LEFT
 			regiments.append(r)
+	_arm_static_opposition()
 
 
 func run_headless(max_frames: int = 30000) -> void:
@@ -304,17 +409,21 @@ func run_headless(max_frames: int = 30000) -> void:
 # --------------------------------------- the Battle Grid's orders (Module 7)
 
 func set_commander_info(side: int, info: Dictionary) -> void:
-	## {martial, intrigue, prowess, traits[], names} — what the commander
-	## brings to the command tent. Without it, no tactical orders can be
-	## given — and no craft reaches the field (Magic Injection v1.0).
+	## {martial, intrigue, prowess, traits[], names, oath_intact, faith} —
+	## what the commander brings to the command tent. Without it, no
+	## tactical orders can be given — and no craft reaches the field.
+	## Tactical Combat v1.0: every Silence-affected working rolls a BINARY
+	## reliability gate first — it fires whole, or it fizzles and only the
+	## cost lands. There are no half-answered prayers.
 	commanders[side] = info
+	var traits: Array = info.get("traits", [])
 	# the commander's magical practice, read from the same trait database
 	var arcane := 1.0
 	var primal := 1.0
 	var corrupt := 1.0
 	var song := 0.0
 	var discipline := 1.0
-	for tname in info.get("traits", []):
+	for tname in traits:
 		if not TraitDB.has_trait(str(tname)):
 			continue
 		var mods: Dictionary = TraitDB.info(str(tname)).mods
@@ -323,26 +432,45 @@ func set_commander_info(side: int, info: Dictionary) -> void:
 		corrupt *= float(mods.get("corruption_channel_mult", 1.0))
 		song += float(mods.get("song_aura_baseline", 0.0))
 		discipline *= float(mods.get("discipline_binding_mult", 1.0))
-	var primal_ground: float = 0.0
-	match battle_terrain:
-		"forest", "wetland", "river_valley":
-			primal_ground = 1.0
-		"plains", "hills":
-			primal_ground = 0.9
-		"coast":
-			primal_ground = 0.8
-		"mountain":
-			primal_ground = 0.6
-		_:
-			primal_ground = 0.0  # ashfields and ruins: the channel is gone
+	side_faith[side] = str(info.get("faith", ""))
+	side_threshold[side] = traits.has("Gravewarden-Sworn")
+	var oath_holds_now: bool = traits.has("Oath-Sworn") and not traits.has("Oathbreaker") \
+		and bool(info.get("oath_intact", true))
+	# --- the workings, each through its own gate ---
+	var arcane_fires := false
+	if arcane > 1.0 and _has_ward_retinue(side):
+		arcane_fires = _gate(casting_reliability("arcane", traits))
+		commander_stress[side] += 0.5  # the channel asks, either way
+		if not traits.has("Academy-Sworn"):
+			# a sorcerer's untrained casting always costs; failure spikes it
+			commander_corruption[side] += 0.15 if arcane_fires else 0.5
+		if not arcane_fires:
+			event.emit("The commander reaches for the arcane formula — and this ground does not carry it. The wards stay cold.")
+	var cleric := traits.has("Faith-Practicing")
+	var bless_fires := false
+	if cleric:
+		bless_fires = _gate(casting_reliability("faith", traits))
+		commander_stress[side] += 2.0
+		if bless_fires:
+			event.emit("The commander's prayer is answered — the line feels a weight it cannot name lift.")
+		else:
+			commander_stress[side] += 5.0  # praying and not receiving has a specific cost
+			event.emit("The commander's prayer goes unanswered. The candles are lit anyway.")
+	var primal_fires := false
+	if primal > 1.0:
+		primal_fires = _gate(casting_reliability("primal", traits))
+		commander_stress[side] += 0.85
+		if not primal_fires:
+			event.emit("The primal channel is gone from this ground — nothing green answers the calling.")
 	for r: Regiment in regiments:
 		if r.side == side:
 			# a Wizard's wards ride with the arcane retinues' volleys
-			if arcane > 1.0 and r.ward_shield:
+			if arcane_fires and r.ward_shield:
 				r.missile *= arcane
-			# the primal channel steadies footsoldiers on living ground
-			if primal > 1.0 and primal_ground > 0.0 and not r.is_cav and r.rng_range <= 0.0:
-				r.ma += 6.0 * (primal - 1.0) * primal_ground / 0.3
+			# the primal channel steadies footsoldiers on living ground —
+			# binary now: it fires whole, or not at all
+			if primal_fires and not r.is_cav and r.rng_range <= 0.0:
+				r.ma += 6.0 * (primal - 1.0) / 0.3
 			# the song of the carried names steadies every line that hears it
 			if song > 0.0:
 				var names := int(info.get("names", 0))
@@ -350,11 +478,158 @@ func set_commander_info(side: int, info: Dictionary) -> void:
 			# the Brushgate stillness spreads from the command tent
 			if discipline > 1.0:
 				r.shock_mult *= 0.90
-		elif corrupt > 1.0 and not r.silence_immune:
-			# something rides with the enemy commander, and the lines feel it
-			r.shock += 10.0 * (corrupt - 1.0) / 0.4 * r.shock_mult
+				r.vigour_mult *= 0.85  # the morning forms spend the body slowly
+			# the Cleric's office is presence first, prayer second (doc §3.3):
+			# a Zealous office grows regardless of results
+			if cleric:
+				r.morale_bonus += CLERIC_PRESENCE_ZEALOUS if traits.has("Zealous") else CLERIC_PRESENCE
+				if bless_fires and r.rng_range <= 0.0:
+					r.ma += BLESS_MA
+					r.md += BLESS_MD
+			# the Paladin's Aura of Devotion, and the oath that does not
+			# permit routing while the token is whole (doc §3.4, §7)
+			if oath_holds_now:
+				r.morale_bonus += DEVOTION_LEAD
+				r.md += DEVOTION_MD
+				r.lead_regen_mult = maxf(r.lead_regen_mult, OATH_REGEN_MULT)
+				if r.oath_bound:
+					r.oath_holds = true
+			# the Gravewarden's war (doc §4): deaths properly witnessed
+			# shake the line less, and the unwitnessed dead feel the rite
+			if side_threshold[side]:
+				r.shock_mult *= 0.85
+				r.dmg_vs_silence = THRESHOLD_VS_SILENCE_MULT
+			# the deterministic critical layer (doc §2, expected value)
+			var crit := CRIT_BASE
+			if traits.has("Brushgate-Trained"):
+				crit += CRIT_BRUSHGATE
+			r.crit_mult = maxf(r.crit_mult, 1.0 + crit * 0.25)
+		elif corrupt > 1.0 and r.silence_immunity < 1.0:
+			# something rides with the enemy commander, and the lines feel
+			# it — partial immunity (the Order's ward) blunts what lands
+			r.shock += 10.0 * (corrupt - 1.0) / 0.4 * (1.0 - r.silence_immunity) * r.shock_mult
 	if corrupt > 1.0:
 		commander_corruption[side] += 1.5  # commanding with the Patron's help goes on the ledger
+	_arm_opposition()
+
+
+func casting_reliability(practice: String, traits: Array, oath_intact: bool = true) -> float:
+	## The binary gates (Tactical Combat v1.0 §3): what this ground permits
+	## each practice. 1.0 and 0.0 consume no dice; anything between rolls.
+	match practice:
+		"arcane":
+			if ground_ruined:
+				return 0.0
+			if battle_terrain == "ashfields":
+				# only the entity-adjacent cast under the Ashfields' sky
+				return 1.0 if traits.has("Corruption Mark III") else 0.0
+			if ground_silence:
+				# academy formulas Silence-degrade; untrained casting less so
+				return 0.5 if traits.has("Academy-Sworn") else 0.6
+			return 1.0
+		"faith":
+			var damp := 0.30
+			if ground_silence:
+				damp = 0.10
+			elif ground_wardstone:
+				damp = 0.60
+			elif ground_library:
+				damp = 0.80
+			var resp := 1.0
+			if traits.has("Zealous"):
+				resp = 1.15
+			elif traits.has("Broken"):
+				resp = 0.60
+			elif traits.has("Opportunistic"):
+				resp = 0.70
+			elif traits.has("Pragmatic"):
+				resp = 0.85
+			return clampf(damp * resp, 0.0, 1.0)
+		"primal":
+			if ground_silence or ground_ruined:
+				return 0.0
+			match battle_terrain:
+				"forest", "wetland", "river_valley":
+					return 1.0
+				"plains", "hills":
+					return 0.9
+				"coast":
+					return 0.8
+				"mountain":
+					return 0.6
+			return 0.0  # urban ground and stranger places: the channel is gone
+		"oath":
+			return 1.0 if oath_intact and not traits.has("Oathbreaker") else 0.0
+	# corruption, song, discipline: the Patron, the carried names, and the
+	# body never Silence-degrade — that is exactly what makes them what they are
+	return 1.0
+
+
+func _gate(rel: float) -> bool:
+	## A die is consumed only when the answer is genuinely uncertain, so
+	## open and closed gates never shift the battle's stream.
+	if rel >= 1.0:
+		return true
+	if rel <= 0.0:
+		return false
+	return brng.randf() < rel
+
+
+func _has_ward_retinue(side: int) -> bool:
+	for r: Regiment in regiments:
+		if r.side == side and r.ward_shield:
+			return true
+	return false
+
+
+func _arm_opposition() -> void:
+	## Cross-tent wiring, re-derived whenever a commander arrives: the
+	## Order's oath answers heresy, the Forsaken's conviction answers the
+	## old order's banners, and oath-magic reads corrupted flesh precisely.
+	for side in 2:
+		var theirs: Dictionary = commanders[1 - side]
+		var enemy_faith := str(theirs.get("faith", ""))
+		var heretic := enemy_faith == "Aelindran Reformed" or enemy_faith == "The Silent Path"
+		var enemy_traits: Array = theirs.get("traits", [])
+		var enemy_marked: bool = enemy_traits.has("Corruption Mark II") or enemy_traits.has("Corruption Mark III")
+		var mine: Dictionary = commanders[side]
+		var my_traits: Array = mine.get("traits", [])
+		for r: Regiment in regiments:
+			if r.side != side:
+				continue
+			if r.oath_bound and heretic:
+				r.oath_conflict = true
+			if enemy_faith == "Aelindran Orthodox":
+				_arm_conviction(r)
+			if my_traits.has("Oath-Sworn") and enemy_marked:
+				r.crit_mult = maxf(r.crit_mult, 1.0 + (CRIT_BASE + CRIT_OATH_VS_MARKED) * 0.25)
+
+
+func _arm_static_opposition() -> void:
+	## The oppositions the rosters themselves declare (no command tent
+	## needed): the Order against the Silence-born, the Forsaken against
+	## the Order's banners.
+	for side in 2:
+		var enemy_silence := false
+		var enemy_order := false
+		for e: Regiment in regiments:
+			if e.side != side:
+				enemy_silence = enemy_silence or e.silence_kind
+				enemy_order = enemy_order or e.oath_bound
+		for r: Regiment in regiments:
+			if r.side != side:
+				continue
+			if r.oath_bound and enemy_silence:
+				r.oath_conflict = true
+			if enemy_order:
+				_arm_conviction(r)
+
+
+func _arm_conviction(r: Regiment) -> void:
+	if r.conviction_on or r.conviction_lead <= 0.0:
+		return
+	r.conviction_on = true  # conviction arms once; it does not stack
+	r.morale_bonus += r.conviction_lead
 
 
 func tactic_gate(side: int, kind: String) -> String:
@@ -423,6 +698,11 @@ func use_tactic(side: int, kind: String) -> String:
 func _do_uncontrolled_channel(side: int) -> void:
 	## The desperate untrained-caster move (Magic v1.0): raw arcana poured
 	## through every volley on the field — and straight onto the ledger.
+	## Tactical v1.0: the channel rolls its binary gate like any working.
+	if not _gate(casting_reliability("arcane", commanders[side].get("traits", []))):
+		commander_corruption[side] += 0.5
+		event.emit("The commander tears the channel open — and this ground swallows it whole. Nothing answers but the ledger.")
+		return
 	for r: Regiment in regiments:
 		if r.side == side and r.rng_range > 0.0:
 			r.missile *= CHANNEL_MISSILE_MULT
@@ -433,12 +713,17 @@ func _do_uncontrolled_channel(side: int) -> void:
 
 func _do_reap_the_bargain(side: int) -> void:
 	## The Patron collects (Magic v1.0): every enemy line feels it at
-	## once. The price is immediate, personal, and not negotiable.
+	## once. The price is immediate, personal, and not negotiable. The
+	## Patron operates in Silence-adjacent space — no gate, ever (§3.6).
+	## A Gravewarden at the enemy's table holds half of it at the threshold.
+	var shielded: bool = side_threshold[1 - side]
 	for r: Regiment in regiments:
-		if r.side != side and r.active() and not r.silence_immune:
-			r.shock += REAP_SHOCK * r.shock_mult
+		if r.side != side and r.active() and r.silence_immunity < 1.0:
+			r.shock += REAP_SHOCK * (0.5 if shielded else 1.0) * (1.0 - r.silence_immunity) * r.shock_mult
 	commander_corruption[side] += 5.0
 	event.emit("The commander reaps the bargain! A wrongness sweeps the enemy lines — and the ledger turns another page.")
+	if shielded:
+		event.emit("A Gravewarden hand stands at the enemy's map table — the reaping breaks against a threshold already held.")
 
 
 func _do_feigned_retreat(side: int) -> void:
@@ -622,7 +907,7 @@ func move_step(delta: float) -> void:
 			var to_lure := r.move_target - r.pos
 			if to_lure.length() >= 6.0:
 				var lure_dir := to_lure.normalized()
-				r.pos += lure_dir * r.speed * delta
+				r.pos += lure_dir * r.speed * (1.0 - r.fatigue) * delta
 				r.facing = lure_dir
 				r.was_moving = true
 				continue
@@ -663,7 +948,7 @@ func move_step(delta: float) -> void:
 					r.hold_facing = true
 			else:
 				var dir := to.normalized()
-				r.pos += dir * r.speed * delta
+				r.pos += dir * r.speed * (1.0 - r.fatigue) * delta
 				r.facing = dir
 				r.was_moving = true
 		else:
@@ -714,6 +999,16 @@ func ai_step(control_side_0: bool) -> void:
 			continue
 		if r.engaged_id >= 0 or r.lure_ticks > 0:
 			continue
+		if r.defensive:
+			continue  # the Warden-Dead hold their ground; the war comes to them (doc §5.13)
+		if r.aura_lead > 0.0 and r.rng_range <= 0.0:
+			# a Chaplain company shadows the strongest friendly line, close
+			# enough for the litany to carry, never leading the advance
+			var anchor := _strongest_friend(r)
+			if anchor != null and r.pos.distance_to(anchor.pos) > r.aura_range * 0.5:
+				r.has_move_order = true
+				r.move_target = anchor.pos
+			continue
 		if r.rng_range > 0.0 and r.ammo > 0:
 			# archers skirmish: keep the range open, kite anything that closes
 			var near := _nearest_enemy(r)
@@ -739,9 +1034,39 @@ func ai_step(control_side_0: bool) -> void:
 				r.move_target = rear_point if r.pos.distance_to(rear_point) > 50.0 else prey.pos
 				continue
 		var enemy := _nearest_enemy(r)
+		# the anti-Silence specialists seek the Silence-born first: that is
+		# what the discipline, and the Order, structurally exist for (§9)
+		if r.silence_immunity >= 0.6:
+			var quarry := _nearest_silence_enemy(r)
+			if quarry != null:
+				enemy = quarry
 		if enemy != null:
 			r.has_move_order = true
 			r.move_target = enemy.pos
+
+
+func _strongest_friend(r: Regiment) -> Regiment:
+	## The friendly melee line with the most soldiers still standing.
+	var best: Regiment = null
+	for other: Regiment in regiments:
+		if other == r or other.side != r.side or not other.active() or other.aura_lead > 0.0:
+			continue
+		if best == null or other.soldiers > best.soldiers:
+			best = other
+	return best
+
+
+func _nearest_silence_enemy(r: Regiment) -> Regiment:
+	var best: Regiment = null
+	var best_d := INF
+	for other: Regiment in regiments:
+		if other.side == r.side or not other.active() or not other.silence_kind:
+			continue
+		var d := r.pos.distance_squared_to(other.pos)
+		if d < best_d:
+			best_d = d
+			best = other
+	return best
 
 
 func _flank_target(r: Regiment) -> Regiment:
@@ -781,8 +1106,8 @@ func combat_tick() -> void:
 			continue
 		# envelopment: a wider line brings up to 1.4× the enemy frontage to bear
 		var engaged_count := mini(mini(r.files_now(), int(float(t.files_now()) * 1.4)), mini(r.soldiers, t.soldiers))
-		var ma := r.ma
-		var ws := r.ws
+		var ma := r.ma * (1.0 - r.fatigue)
+		var ws := r.ws * (1.0 - r.fatigue)
 		var mult := 1.0
 		if t.is_cav and r.bonus_cav > 0.0:
 			ma += r.bonus_cav
@@ -801,7 +1126,17 @@ func combat_tick() -> void:
 				t.flank_penalty = maxf(t.flank_penalty, REAR_PENALTY)
 		if t.lure_ticks > 0:
 			mult *= FLANK_MULT  # a formation chasing shadows has no line to hold
-		var hit := clampf(BASE_HIT + (ma - t.md) * HIT_PER_POINT, HIT_MIN, HIT_MAX)
+		# Tactical Combat v1.0: what this war is actually about
+		if r.silence_kind and ground_silence:
+			mult *= SILENCE_DMG_BONUS  # the Silence-born fight under their own sky
+		if r.no_morale and _strength_fraction(r) < CONFUSION_THRESHOLD:
+			mult *= CONFUSION_MULT  # dispersed past coherence, the Returned grow confused
+		if r.oath_conflict:
+			mult *= OATH_CONFLICT_MULT  # the Order's oath answers heresy
+		if t.silence_kind:
+			mult *= r.dmg_vs_silence  # threshold-work against the unwitnessed dead
+		mult *= r.crit_mult
+		var hit := clampf(BASE_HIT + (ma - t.md * (1.0 - t.fatigue)) * HIT_PER_POINT, HIT_MIN, HIT_MAX)
 		var per_hit := maxf(ws * (ARMOUR_PIVOT / (ARMOUR_PIVOT + t.armour)), ws * CHIP_FRACTION)
 		dmg[t.id] = dmg.get(t.id, 0.0) + float(engaged_count) * ATTACKS_PER_TICK * hit * per_hit * mult
 
@@ -811,24 +1146,55 @@ func combat_tick() -> void:
 	for r: Regiment in regiments:
 		if not r.alive():
 			continue
+		# vigour: the field spends the body (Tactical v1.0 §8)
+		if r.active():
+			var spend := 0.0
+			if r.engaged_id >= 0:
+				spend = VIGOUR_FIGHT
+			elif r.was_moving or r.has_move_order:
+				spend = VIGOUR_MOVE
+			if r.charging_ticks > 0:
+				spend += VIGOUR_CHARGE
+			r.vigour += spend * r.vigour_mult
+			r.fatigue = _fatigue_penalty(r)
 		if dmg.has(r.id):
 			var before := r.soldiers
 			r.hp_pool = maxf(0.0, r.hp_pool - dmg[r.id] * r.dmg_taken_mult)
 			r.soldiers = int(ceil(r.hp_pool / r.hp_per))
 			var cas := before - r.soldiers
-			if cas > 0:
+			if cas > 0 and not r.no_morale:
 				r.shock += (float(cas) / maxf(1.0, float(before))) * CASUALTY_SHOCK * r.shock_mult
-		r.shock = maxf(0.0, r.shock - (r.leadership + r.aura_bonus) * LEADERSHIP_REGEN)
+		# morale regen: silence-touched ground starves the nerve of every
+		# line the Silence can still reach; nearby terror starves it more
+		var lead_eff := r.leadership + r.aura_bonus
+		if ground_silence:
+			lead_eff -= SILENCE_LEAD_PENALTY * (1.0 - r.silence_immunity)
+		lead_eff = maxf(0.0, lead_eff) * (1.0 - r.terror_penalty) * r.lead_regen_mult
+		r.shock = maxf(0.0, r.shock - lead_eff * LEADERSHIP_REGEN)
 		if r.soldiers <= 0:
 			r.fled = true
-			event.emit("%s is wiped out!" % r.label)
+			if r.no_morale:
+				event.emit("%s are dispersed — the bodies settle where they fall." % r.label)
+			else:
+				event.emit("%s is wiped out!" % r.label)
 		elif not r.routed and r.morale() <= _rout_threshold(r):
 			if r.never_routs_above > 0.0 and _strength_fraction(r) >= r.never_routs_above:
 				continue  # the Berserker oath holds while a quarter of them stand
+			if r.oath_bound and r.oath_holds:
+				continue  # the Vigil-Sworn oath does not permit it (doc §7)
 			r.routed = true
 			event.emit("%s breaks and runs!" % r.label)
 			_cascade_panic(r)
 	_check_end()
+
+
+func _fatigue_penalty(r: Regiment) -> float:
+	## Fresh / active / tiring / winded / exhausted (doc §8, engine-scaled).
+	var stage := 0
+	for th in VIGOUR_STAGES:
+		if r.vigour >= float(th):
+			stage += 1
+	return VIGOUR_PENALTY[stage]
 
 
 func _rout_threshold(r: Regiment) -> float:
@@ -842,19 +1208,37 @@ func _strength_fraction(r: Regiment) -> float:
 
 
 func _aura_tick() -> void:
-	## Ward-Speaker and Song-Bound auras: each regiment receives the best
-	## friendly aura in range (auras project outward, never onto their
-	## own bearers, and do not stack).
+	## Ward-Speaker, Song-Bound, and Chaplain auras: each regiment receives
+	## the best friendly aura in range (auras project outward, never onto
+	## their own bearers, and do not stack). A Chaplain's litany reaches
+	## only the Order's own regiments (aura_filter "order", doc §5.12).
 	for r: Regiment in regiments:
 		r.aura_bonus = 0.0
+		r.terror_penalty = 0.0
 	for src: Regiment in regiments:
 		if src.aura_lead <= 0.0 or not src.active():
 			continue
 		for r: Regiment in regiments:
 			if r == src or r.side != src.side or not r.active():
 				continue
+			if src.aura_filter == "order" and not (r.oath_bound or r.aura_filter == "order"):
+				continue
 			if src.pos.distance_to(r.pos) <= src.aura_range:
 				r.aura_bonus = maxf(r.aura_bonus, src.aura_lead)
+	# silence terror (doc §5.13): the Warden-Dead's wrongness starves the
+	# nerve of every line near them — except those warded against it, and
+	# halved where a Gravewarden commander holds the threshold
+	for src: Regiment in regiments:
+		if src.silence_terror <= 0.0 or not src.active():
+			continue
+		for r: Regiment in regiments:
+			if r.side == src.side or not r.active() or r.silence_immunity >= 1.0:
+				continue
+			if src.pos.distance_to(r.pos) <= TERROR_RANGE:
+				var felt := src.silence_terror * (1.0 - r.silence_immunity)
+				if side_threshold[r.side]:
+					felt *= 0.5
+				r.terror_penalty = maxf(r.terror_penalty, felt)
 
 
 func _ranged_tick(dmg: Dictionary) -> void:
@@ -872,6 +1256,8 @@ func _ranged_tick(dmg: Dictionary) -> void:
 		# arcane wards protect every arc; physical shields only by facing
 		var block: float = t.shield * (1.0 if t.ward_shield else SHIELD_ARC_FACTOR[_arc(r, t)])
 		var per_hit := maxf(r.missile * (ARMOUR_PIVOT / (ARMOUR_PIVOT + t.armour)), r.missile * CHIP_FRACTION)
+		if t.silence_kind and r.ward_shield:
+			per_hit *= ARCANE_VS_RETURNED_MULT  # arcane volleys find what swords cannot (doc §5.13)
 		dmg[t.id] = dmg.get(t.id, 0.0) + float(r.soldiers) * RANGED_RATE * RANGED_HIT * per_hit * (1.0 - block)
 		volleys.append({"from": r.pos, "to": t.pos})
 		if r.ammo == 0:

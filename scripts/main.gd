@@ -2288,7 +2288,8 @@ func _cmdr_info(a) -> Dictionary:
 		return {}
 	var c: SimCharacter = world.characters[a.commander_id]
 	return {"martial": c.martial, "intrigue": c.intrigue, "prowess": c.prowess,
-		"traits": c.traits.duplicate(), "names": c.names_carried}
+		"traits": c.traits.duplicate(), "names": c.names_carried,
+		"oath_intact": c.oath_token_intact, "faith": world.faith_of(c)}
 
 
 func _army_traits(a) -> Array:
@@ -2311,7 +2312,8 @@ func _start_battle() -> void:
 		str(world.realms[1].name).trim_prefix("Kingdom of ")],
 		[Color("3f5f83"), Color("8c4a3f")],
 		"The Battle of %s" % world.battle_site_name(),
-		_army_traits(pair[0]), _army_traits(pair[1]), world.battle_site_terrain())
+		_army_traits(pair[0]), _army_traits(pair[1]), world.battle_site_terrain(),
+		world.battle_site_ground())
 	battle_layer.sim.set_commander_info(0, _cmdr_info(pair[0]))
 	battle_layer.sim.set_commander_info(1, _cmdr_info(pair[1]))
 	battle_layer.finished.connect(_on_battle_finished)
@@ -2329,7 +2331,8 @@ func _auto_resolve() -> void:
 	sim.setup_from_rosters(pair[0].regiments, pair[1].regiments, _army_lead(pair[0]), _army_lead(pair[1]),
 		[str(world.realms[0].name).trim_prefix("Kingdom of "),
 		str(world.realms[1].name).trim_prefix("Kingdom of ")],
-		_army_traits(pair[0]), _army_traits(pair[1]), world.battle_site_terrain())
+		_army_traits(pair[0]), _army_traits(pair[1]), world.battle_site_terrain(),
+		world.battle_site_ground())
 	sim.set_commander_info(0, _cmdr_info(pair[0]))
 	sim.set_commander_info(1, _cmdr_info(pair[1]))
 	sim.run_headless()
@@ -2361,4 +2364,4 @@ func _apply_battle_sim_results(sim: BattleSim) -> void:
 	var loss := 0.0
 	if winner >= 0:
 		loss = 1.0 - sim.survivors_fraction(1 - winner)
-	world.apply_battle_result(winner, loss, sim.commander_charged, sim.commander_corruption)
+	world.apply_battle_result(winner, loss, sim.commander_charged, sim.commander_corruption, sim.commander_stress)

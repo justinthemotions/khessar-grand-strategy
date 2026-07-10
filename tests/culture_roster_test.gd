@@ -51,7 +51,9 @@ func _init() -> void:
 	print("marriage acceptance tables symmetrized correctly")
 
 	# --- battle presets: all 20 new kinds, sane stats, special hooks ---
-	assert(BattleSim.PRESETS.size() == 24, "4 universal + 20 cultural kinds, got %d" % BattleSim.PRESETS.size())
+	# (24 Roster kinds + 5 Tactical Combat v1.0 kinds — the Order, Caeris's
+	# forces, and the Forsaken militia have their own test suite)
+	assert(BattleSim.PRESETS.size() == 29, "4 universal + 20 cultural + 5 Tactical Combat kinds, got %d" % BattleSim.PRESETS.size())
 	for kind in NEW_KINDS:
 		assert(BattleSim.PRESETS.has(kind), "missing preset: %s" % kind)
 		var p: Dictionary = BattleSim.PRESETS[kind]

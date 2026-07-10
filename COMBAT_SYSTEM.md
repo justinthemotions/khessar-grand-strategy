@@ -1,8 +1,11 @@
-# Combat System — Technical Briefing
+# Combat System — Technical Briefing (v1.1, Tactical Combat System pass)
 
 A complete description of the combat stack in the Khessar Grand Strategy prototype
 (Godot 4.x, GDScript). Written for onboarding: everything here reflects the actual
-code, with exact constants and formulas.
+code, with exact constants and formulas. §14 documents the Tactical Combat System
+v1.0 pass (Opus's doc, 2026-07-08): binary casting gates, Silence-terrain combat,
+threshold-work, the Order / Ashfields / Forsaken units, terror, vigour, and the
+deterministic critical layer.
 
 ## 1. Design philosophy
 
@@ -108,6 +111,13 @@ default: `never_routs_above` (Berserkers 0.25), `panic_resistance` (Brushgate 0.
 `aura_lead`/`aura_range` (Ward-Speakers +10/200px, Song-Bound +8/180px),
 `forest_bonus_ma`/`forest_bonus_speed` (Forest-Sworn +8/+12), `coastal_bonus_ma`
 (Marines +6). Stat blocks are 1:1 from the Cultural Roster v1.0 document.
+
+The Tactical Combat System pass (§14) brings the count to **29** with five new kinds
+(`vigil_sworn_elite`, `reactionary_chaplain`, `warden_dead`, `caeris_retinue`,
+`forsaken_militia`) and new special keys: `silence_immunity` now accepts a 0..1 float
+(the Order's 0.60 ward vs Brushgate's full `true`), plus `no_morale`, `silence_terror`,
+`silence_kind`, `defensive`, `oath_bound`, `conviction_lead`, `aura_filter`, and
+`vigour_mult`.
 
 ## 6. Melee math (per combat tick)
 
@@ -254,6 +264,12 @@ modules land).
 - `tests/culture_roster_test.gd` validates the culture data, all 20 cultural presets,
   recruit gating, the Compact-Sworn dissolution, auras, the Berserker oath, terrain
   bonuses, and Brushgate panic resistance.
+- `tests/tactical_combat_test.gd` (13 groups) validates the Tactical Combat System
+  v1.0 layer: the five new kinds, every binary reliability gate against doc §3's
+  numbers, oath-routing, Warden-Dead morale/terror/dispersal, silence-ground regen,
+  the reap-vs-threshold interaction, the Chaplain aura filter, conviction and
+  oath-conflict arming, vigour, arcane fire vs the Returned, full Order-vs-Warden-Dead
+  auto-battles, battle determinism, and the campaign recruit gates.
 - Visual check: `--path . -- --battle-screenshot` boots straight into a battle and saves
   a PNG to `user://`.
 - The sim is deterministic given the same rosters; campaign RNG uses a fixed seed (1066),
@@ -271,3 +287,116 @@ modules land).
 - Module 7's planned expansions (battle grid lanes, baggage trains, tactical cards like
   *Commit the Reserve* / *Chivalric Charge*) will extend `BattleSim` — the trait hooks
   for them (`panic_resistance`, vanguard/center mults) are already in TraitData.
+
+## 14. Tactical Combat System v1.0 — the Khessari layer
+
+Implements Opus's "Khessar Grand Strategy — Tactical Combat System (v1.0)" doc
+(2026-07-08). The TW-derived Combat Lab backbone (§6–§9) is preserved untouched;
+everything below plugs into it. Test: `tests/tactical_combat_test.gd` (13 groups).
+
+### 14.1 The determinism contract, extended
+
+The doc demands **binary reliability gates** — a working fires whole or fizzles whole,
+never "40% damage." Gates need dice, and the engine's law is *no dice on the field*.
+Resolution: a battle-local stream, `brng` (seed **212**), seeded at every
+`setup_from_rosters`. Identical setups still produce identical battles (asserted in the
+test), and no campaign stream is ever consumed by the field. A die is drawn **only when
+the gate is genuinely uncertain** — reliability 1.0 and 0.0 consume nothing, so open and
+closed gates never shift the stream.
+
+### 14.2 Binary casting gates (`casting_reliability`, doc §3)
+
+Rolled once per working at `set_commander_info`; the ground arrives from the campaign as
+`battle_site_ground()` = `{silence, ruined, special}` alongside the terrain string.
+
+| practice | detector | gate | on success | cost (always) |
+|---|---|---|---|---|
+| arcane (Wizard) | `arcane_channel_mult > 1` + a ward-shield retinue fielded | 1.0 ordinary / 0.5 silence-touched (0.6 untrained) / 0.0 Ashfields & ruins — **Corruption Mark III casts anywhere** | retinue `missile ×` channel mult | stress +0.5; sorcerers +0.15 corruption (+0.5 on fizzle) |
+| faith (Cleric) | `Faith-Practicing` | dampening 0.30 base / 0.10 silence / 0.60 ward-stone / 0.80 Iron Library, × response (Zealous 1.15, Pragmatic 0.85, Opportunistic 0.70, Broken 0.60) | *Bless*: +4 ma / +2 md to the foot | stress +2; **+5 more on an unanswered prayer**. Presence (+5 lead, +8 Zealous) applies regardless — the office is presence first |
+| primal (Druid) | `primal_channel_mult > 1` | terrain table: forest/wetland/river 1.0, plains/hills 0.9, coast 0.8, mountain 0.6, **0.0 silence/ruins/elsewhere** | the full footsoldier ma boost (no longer scaled by ground — binary) | stress +0.85 |
+| oath (Paladin) | `Oath-Sworn` + `oath_token_intact` (now passed in commander info) | 1.0 with the token whole, 0.0 broken/Oathbreaker | Aura of Devotion: +8 lead, +2 md, regen ×1.25; **arms `oath_holds` on Order regiments** | none — oaths don't Silence-degrade |
+| corruption (Warlock) | `corruption_channel_mult > 1` | **always 1.0** — the Patron operates in Silence-adjacent space | setup terror on enemy lines (now scaled by 1 − silence_immunity) | +1.5 corruption ledger |
+| song (Bard) | `song_aura_baseline` | 1.0 (the army is the audience) | names-scaled morale (unchanged) | — |
+| discipline (Monk) | `discipline_binding_mult > 1` | 1.0 (the body is not casting) | shock ×0.90 **and vigour ×0.85** | — |
+
+The tactic cards gate too: *Uncontrolled Channel* rolls the arcane gate (fizzle = +0.5
+corruption, nothing else); *Reap the Bargain* never gates (§3.6) but is **halved against
+a side whose commander is Gravewarden-Sworn** and scaled by each line's
+`1 − silence_immunity`. `commander_stress` feeds back to the campaign next to
+`commander_corruption` via `apply_battle_result`.
+
+### 14.3 The new units (doc §5.12–5.14)
+
+| kind | the point | specials |
+|---|---|---|
+| `vigil_sworn_elite` (380g) | the Order's blade — devastating in defense | armour 18/md 34/lead 65, panic_res 0.45, **silence_immunity 0.60** (the Order's ward, not Brushgate's), `oath_bound` |
+| `reactionary_chaplain` (360g) | the litany at the rear | aura +12 lead / 300px, **`aura_filter: "order"`** — reaches only Order regiments |
+| `warden_dead` (0g) | Caeris's Returned | **`no_morale`** (morale() pins at 100 — dispersed, never broken; below 25% strength strikes at ×0.7 *confusion*), **`silence_terror` 0.30**, `silence_kind`, `defensive` (AI never marches them), arcane volleys strike them at ×1.4 |
+| `caeris_retinue` (0g) | her Settled, when she takes the field | silence_immunity 1.0, `silence_kind` |
+| `forsaken_militia` (200g) | conviction instead of drill | `conviction_lead` +8 morale, armed when the enemy fields Order units or an Orthodox commander |
+
+Recruit gates: Warden-Dead and the Retinue are never musterable ("these dead are not
+yours"); Forsaken militia is structurally gated off until the Forsaken-movement module
+lands; Vigil-Sworn kinds answer only a **Zealous Aelindran Orthodox ruler** (interim
+gate — the Order as an institution isn't modeled yet, flag for Opus).
+
+### 14.4 Silence on the field (doc §6–§7)
+
+- **Silence-touched ground** (`ground_silence`, incl. the Ashfields): every line's
+  morale regen loses 8 effective leadership × (1 − silence_immunity). The Brushgate
+  Column literally does not notice. Silence-born units (`silence_kind`) deal ×1.05
+  under their own sky.
+- **Silence terror**: within 150px of a `silence_terror` unit, morale regen is starved
+  by the terror fraction × (1 − immunity) — halved again if a Gravewarden-Sworn hand
+  commands the side.
+- **Threshold-work** (doc §4): a Gravewarden-Sworn commander gives the side
+  shock ×0.85 (deaths properly witnessed) and ×1.20 damage against `silence_kind`
+  units; holds reap-shock at half; the Threshold Rejection Ritual proper stays
+  campaign-side (world.gd, Module 9).
+- **Oath-conflict** (doc §5.12): Order regiments strike at ×1.10 against Silence-born
+  rosters or a commander of the Reformed / Silent Path (armed at setup from the
+  rosters, or at the map table from the enemy commander's faith).
+- **Routing**: `oath_bound` regiments whose commander's token is whole **cannot rout**
+  (the check is skipped, like the Berserker oath); `no_morale` units never rout and
+  never take casualty shock.
+
+### 14.5 Vigour and the critical layer
+
+Vigour (doc §8, engine-scaled): +1.0/combat tick in melee, +0.35 marching, +1.0 extra
+charging, × unit `vigour_mult` (Brushgate 0.60, discipline commander ×0.85). Stages at
+30/60/95/130 → −5/−10/−15/−20% on ma, ws, md, and march speed. TW's 30k-point scale was
+folded to this sim's ~100–250-tick battles; percentages preserved.
+
+Criticals stay expected-value (no dice): damage × (1 + crit_chance/4), with
+crit_chance = 5% base, +5% under a Brushgate-Trained commander, +3% for an Oath-Sworn
+commander facing a Corruption-Mark-II+ enemy commander.
+
+### 14.6 AI extensions (doc §9)
+
+`defensive` units hold ground and let the war come to them. Chaplain-type units
+(melee aura bearers) shadow the strongest friendly line instead of leading the advance.
+Units with silence_immunity ≥ 0.6 (Brushgate, Vigil-Sworn) march for the nearest
+Silence-born enemy first — that is what the discipline structurally exists for.
+
+### 14.7 Scoping notes for Opus (deviations & deferrals)
+
+- **Warden-Dead damage typing**: the doc's "Physical damage 1.0x, magical damage 0.3x"
+  contradicts its own parenthetical ("resistant to conventional, vulnerable to
+  threshold-work and arcane"). Implemented the parenthetical's intent: physical ×1.0
+  as written, arcane volleys ×1.4, threshold-led sides ×1.2 — the literal 0.3x is
+  unimplemented pending clarification.
+- **Named spells** (Arcane Bombardment, Turn Undead, Entangle, Name the Dead, Sit With
+  the Manifestation…) are folded into the practice-level workings — this sim resolves
+  commander-scale effects, not per-spell targeting. The attack-roll/saving-throw split
+  and mana economy from the source doc's D&D bridge are deferred with them.
+- **Canonical commanders** (Aldric Vaelmark, Dame Ilsen, Brother-Captain Voss, Caeris
+  herself, the Warlock woman) await their factions reaching the map; Caeris's commander
+  block (terror 0.50, corruption_channel 1.60) is specified but unseeded.
+- **Defensive-only deployment** of Caeris's forces is battle-AI truth; the campaign
+  trigger ("deploys only when the Ashfields is threatened") needs Caeris's realm.
+- **Hollow Shade emergence** from silence-touched province deaths is campaign wiring
+  deferred to the endgame Silence cascade (v1.1 queue in MAGIC_AND_SILENCE.md).
+- **Fatigue on reload** (TW's −20% exhausted reload) is unmodeled — volleys are
+  per-tick, not per-reload.
+- **Ceremonial concordance** (faith dampening 1.00) has no battle trigger yet — it
+  needs the Module 9 ceremony events to reach the field.
