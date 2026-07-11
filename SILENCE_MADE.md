@@ -35,9 +35,9 @@ closed with Thessaly and never feels him.
   healer's son; twenty years in the Iron Library). `caeris_id`.
 - Core Six **14/8/16/12/26/6** — set AFTER traits so trait stat-mods cannot drift
   the canon numbers (gotcha: `_add_trait` applies `TraitData.stats`).
-- Traits: `Threshold-Sensitive`, `Patient`, `Methodical` (canon says "Focused" —
-  nearest db trait, **flagged for Opus**). NO Patron-Bound, NO Corruption Marks —
-  those were v1.0's miscast.
+- Traits: `Threshold-Sensitive`, `Focused`, `Methodical`, `Patient` (Focused is
+  what defines him, Methodical is how he works — Canon Updates v1.0, §11). NO
+  Patron-Bound, NO Corruption Marks — those were v1.0's miscast.
 - `realm_id = ASHFIELDS_REALM (99)` — a sentinel: `is_cast()` is true by
   construction (≥2), so every main-stream guard covers him for free.
   `map.realm_display_name(99)` → "The Ashfields"; `cast_title_of` → "Scholar of
@@ -95,9 +95,10 @@ stops. The doc's most transformative and stable outcome.
 Runs the realm's main army against ⌈warden_dead/40⌉ Warden-Dead companies + Caeris's
 Retinue, on `"ashfields"` terrain with silence ground — the Tactical Combat layer's
 binary gates, terror, and regen starvation all apply. Caeris commands side 1
-(M8/I12/P6, Threshold-Sensitive/Patient/Methodical — **supersedes** the old
-Tactical-doc commander block of terror 0.50 / corruption_channel 1.60, which was
-v1.0-Caeris). Casualties write back to the player roster.
+(M8/I12/P6, Threshold-Sensitive/Focused/Methodical/Patient, with the §11
+scholar-commander defense bonuses — **supersedes** the old Tactical-doc commander
+block of terror 0.50 / corruption_channel 1.60, which was v1.0-Caeris). Casualties
+write back to the player roster.
 
 **Win** → `_ashfields_destroyed()`: Caeris and Maret die; **the finding is lost and
 the settling problem becomes unsolvable**; the Returned disperse undirected
