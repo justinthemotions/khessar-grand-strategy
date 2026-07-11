@@ -18,7 +18,8 @@ the Ashfields ledger, the Forsaken counters, and (only past tick 250, behind the
 religion brief's canon-asserted Year-20 numbers) the Silent Path's membership.** They
 never touch live realms' gold, tyranny, prestige, or opinions. Player-initiated
 actions (envoy, commit, endorsement embassies, the march) may — the player's own
-history is theirs to bend. This is why all 15 prior suites pass unmodified.
+history is theirs to bend. This is why all 15 prior suites pass with a single
+one-line canon exemption (below).
 
 Caeris's scripted deaths (settling at tick 660, or destruction) draw **zero** dice:
 `_kill` is stream-silent for him — no spouse, no parents, no titles, not notable to
@@ -159,7 +160,9 @@ settling progression, the full collaboration arc (envoy → Marek-gate → 3 sea
 Eithne's canonical refusal → council → publication → anchored intake), the military
 option (18 picked regiments win; finding lost, corruption +2, 500 dispersed,
 Orthodox +coherence), Forsaken stages + militia gate, Year-50 convergence resolution,
-and two-world determinism. All 15 prior suites green unmodified.
+and two-world determinism. All 15 prior suites green — the only prior-test edit is
+the magic suite's Silence Response census now exempting realm 99, because Caeris's
+response is canonically N/A ("The Silence did not surprise him").
 
 ## 10. Flags for Opus
 
