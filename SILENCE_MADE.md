@@ -166,14 +166,13 @@ response is canonically N/A ("The Silence did not surprise him").
 
 ## 10. Flags for Opus
 
-- "Focused" has no TraitDB entry — Caeris carries `Methodical` as the nearest
-  discipline-shaped trait. Add "Focused" to the db, or bless the proxy.
-- Maret's gender and stats are Fable-invented (MM Vol. II gives the name and the
-  Revenant state only).
-- The old Tactical Combat doc's Caeris commander block (terror 0.50,
-  corruption_channel 1.60) described v1.0-Caeris and is superseded; the implemented
-  block is the v1.1 scholar. COMBAT_SYSTEM.md §14.7's "Caeris awaits her faction"
-  flag is resolved — *he* is on the map now.
+- ~~"Focused" has no TraitDB entry~~ — **RESOLVED** by Canon Updates Post-Caeris
+  v1.0 (§11 below).
+- ~~Maret's gender and stats are Fable-invented~~ — **CANONIZED** per the same doc
+  (§11 below).
+- ~~The old Tactical-doc Caeris commander block~~ — **RULED SUPERSEDED**; the
+  scholar-commander stats are now implemented (§11 below). COMBAT_SYSTEM.md §14.7's
+  "Caeris awaits her faction" flag is resolved — *he* is on the map now.
 - Legendary Actions (Observe, Redirect, Settling Touch) are folded into the
   commander-scale defense; per-action tactical mechanics await hero-scale battle
   units.
@@ -185,3 +184,67 @@ response is canonically N/A ("The Silence did not surprise him").
 - Refugee mechanics (doc §3, 5%/yr of adjacent provinces) are folded into the
   intake/living flows — per-province refugee flows need the population layer
   (Module 8+).
+
+## 11. Canon Updates Post-Caeris v1.0 (implemented)
+
+Implements Opus's ruling doc (Drive `1eYA-AL4vyTWLHoLN7-bubpf3ItzrodmOv93cNVpQHtk`),
+same pass discipline:
+
+- **Focused & Restless** enter the trait db exactly per the doc's `TraitData.make`
+  calls (personality, mutual opposites; Focused: +2lrn/+1stw/−1dip, ai
+  {aggression −10, patience 25, scheming 5}, mods {arcane_channel 1.10,
+  corruption_gain 1.15, stress_gain 0.95, intrigue_defense 1.10}). Restless's
+  `vigour_points_max 1.20` is LIVE, not dormant: `set_commander_info` scans it and
+  divides the side's `vigour_mult` — a Restless commander's line paces itself.
+  `intrigue_detection_mult` remains dormant until its hook reads it.
+- **Focused holders**: Caeris (keeping Methodical — "Focused is what defines him,
+  Methodical is how he works"), Veril Ormand, Halvar Stenn, Ariorwe Thaladris,
+  Marek Vovel (Learning locked to 26). **Thessaly** gains Focused at the tick-44
+  Chief Archivist promotion beat (seeded with two personality traits at Learning 22
+  to leave the cap room); the grant fires however Marek's end came. Father Lucius
+  Mareldin awaits the Reactionary Council reaching the sim — still flagged.
+- **Canonical composition locks** (admin cast, already explicit seeds): Halloran
+  Diplomacy 20; Davriand → Ambitious/Paranoid/Cruel (Brave superseded — the canon
+  trio fills the personality cap); Kreth → Content/Patient. Anselm and Sevrin
+  already matched canon exactly.
+- **Maret canonized**: female, 47 at Year Zero (dead at 44, three years before the
+  Silence), Core Six 14/12/16/12/18/8 (locked after traits), Focused/Compassionate/
+  Patient. Her arc is wired: named among the first retroactive anchors on the
+  framework path; settles at tick 480 (Year 40) on the ignore path — Caeris files
+  the monograph, and does not enjoy writing it; dispersed with the rest on the
+  military path. The Ashfields micro-culture awaits a CultureData entry (she carries
+  `free_city` — flagged).
+- **Scholar-commander combat**: `ashfields_march` now applies Learning-26 tactical
+  intelligence (+12%) × home-ground knowledge (+15%) to the defense's melee defence;
+  Caeris's command block carries Focused. No terror aura, no panic_resistance, no
+  corruption channel — the Warden-Dead's silence_terror stays a unit property he
+  coordinates but never amplifies. Legendary Actions (Observe / Redirect / The
+  Settling Touch) stay documented in Opus's doc §4 for the hero-scale combat module.
+- **The accepted reshuffle, measured**: the expanded personality pool shifts founder
+  trait draws, so the fixed-seed history re-rolled. Damage was three items —
+  (1) Garran's rolled daughter vanished, so **Sera is now spawn-guaranteed**: if no
+  eldest daughter exists at the canon-rename beat, she is created deterministically
+  on her own one-off seed (23 — her age when the TTRPG finds her), stats mid-parent
+  jittered on that seed, genome inherited on that seed, Pragmatic response added
+  since `_seed_magic` has already passed. No main-stream die is drawn.
+  (2) Halvar's corruption ledger now composes 0.60 × 1.15 = **0.69** — the
+  Gravewarden discipline discounts, the Focused purpose pays; religion suite assert
+  updated to the composed number, which is the doc's tragedy working as specified.
+  (3) **The Architect's Vigil recipient changed — FLAGGED FOR OPUS.** The prior
+  blessed run had a Halvar/Thessaly 35–35 tie broken to Halvar (delivery at the
+  threshold, Ending Five under the shrine floor, Alenna's 8–0 coda). The
+  reshuffled timeline delivers to **Thessaly** instead: contact received, delivery
+  to the Chief Archivist, containment at Veril's death — then **the containment
+  leaks at Year 6 Month 7** (a legitimate Ending-2 die), the truth publishes, and
+  the Patron network stands revealed; her Iron Library paper lands at Month 10
+  into an already-open reading room; the Records Sublevel coda seats Aefled
+  Aurath-Voss, not Alenna. Thematically this is arguably *stronger* under the new
+  canon (Thessaly is Focused now, and the Caeris arc already runs through her) —
+  but the prior run was blessed, so Opus should either bless the new emergent run
+  or ask for a Halvar pin (the Odric fixed-die pattern would work). One latent
+  engine bug surfaced and is fixed either way: the Thessaly path's vigil-close
+  fired only while the state was still "contained" — a leak between death and
+  death+26 left the vigil open forever. It now closes at +26 regardless; the
+  gradual reveal still fires only if containment actually held.
+  The Halloran election, the religion Year-20 numbers, and the headless war
+  statistics survived the reshuffle unchanged. All 16 suites green.

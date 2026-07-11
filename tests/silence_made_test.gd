@@ -22,6 +22,8 @@ func _init() -> void:
 		"Core Six per doc §2 (L26/S16/M8)")
 	assert(caeris.traits.has("Threshold-Sensitive") and caeris.traits.has("Patient"),
 		"the researcher's traits, not a Patron-Bound Magister's")
+	assert(caeris.traits.has("Focused") and caeris.traits.has("Methodical"),
+		"Focused is what defines him; Methodical is how he works (Canon Updates v1.0)")
 	assert(not caeris.traits.has("Patron-Bound") and not caeris.traits.has("Corruption Mark II"),
 		"v1.0's Patron accommodation is gone — he is a scholar")
 	assert(caeris.realm_id == SimWorld.ASHFIELDS_REALM, "the Ashfields is his, and no realm's")
@@ -31,6 +33,21 @@ func _init() -> void:
 	assert(world.map.realm_display_name(SimWorld.ASHFIELDS_REALM) == "The Ashfields", "the sheet names the grey country")
 	var maret: SimCharacter = world.characters.get(world.maret_id)
 	assert(maret != null and maret.alive, "Maret the Revenant works beside him")
+	assert(maret.age_years(world.tick) == 47 and maret.learning == 18 and maret.traits.has("Focused"),
+		"Maret canonized: 47, Learning 18, Returned-Focused (Canon Updates v1.0 §2)")
+	# the Focused trait itself, per the canon doc's exact definition
+	assert(TraitDB.has_trait("Focused") and TraitDB.has_trait("Restless"), "Focused/Restless in the db")
+	assert(TraitDB.info("Focused").category == "personality" and TraitDB.info("Focused").opposite == "Restless",
+		"Focused is personality, opposite Restless")
+	assert(absf(float(TraitDB.info("Focused").mods["corruption_gain_mult"]) - 1.15) < 0.001,
+		"sustained purpose pays costs the unfocused would not")
+	var veril: SimCharacter = world.characters.get(world.architect_id)
+	assert(veril != null and veril.traits.has("Focused"), "thirty-four years in the Sublevel is Focused")
+	var halvar: SimCharacter = world.characters.get(world.halvar_id)
+	assert(halvar != null and halvar.traits.has("Focused"), "the Gravewarden practice is Focused")
+	var marek_c: SimCharacter = world.characters.get(world.marek_id)
+	assert(marek_c != null and marek_c.traits.has("Focused") and marek_c.learning == 26,
+		"Marek: Focused, Learning 26 (canon lock)")
 	assert(float(world.ashfields["living"]) == 4000.0, "4,000 living residents at Year Zero (doc §4)")
 	assert(absf(world.ashfields_returned_total() - 500.0) < 0.01, "≈500 Returned in various stages (doc §10)")
 	assert(float(world.ashfields["warden_dead"]) == 200.0, "200 Warden-Dead — defense, not an army")
@@ -100,6 +117,8 @@ func _init() -> void:
 	world.advance_month()
 	assert(float(world.ashfields["anchored"]) > anchored_before, "new intake Returns under the framework")
 	assert(float(world.ashfields["recently"]) <= recently_before, "no one new enters the settling track")
+	var thessaly: SimCharacter = world.characters[world.thessaly_id]
+	assert(thessaly.traits.has("Focused"), "the Chief Archivist's desk makes her Focused (tick-44 beat)")
 	print("consent framework: envoy → sponsorship → 3 seals → council → published; %d anchored" % int(world.ashfields["anchored"]))
 
 	# --- 5. the military option loses the finding (doc §6) ---

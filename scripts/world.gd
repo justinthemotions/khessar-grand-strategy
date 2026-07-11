@@ -681,6 +681,33 @@ func setup() -> void:
 			eldest.name = "Sera"
 			eldest.birth_tick = tick - 17 * 12 - 5
 			sera_id = eldest.id
+		else:
+			# The Focused-trait reshuffle (Canon Updates v1.0) rolled Garran
+			# no daughter — but Sera is canon (Vigil doc §6: 17 at Year Zero,
+			# 23 by the TTRPG's present). She is spawned on her own one-off
+			# seed: no main-stream die is drawn, the rest of history stands.
+			var sera_rng := RandomNumberGenerator.new()
+			sera_rng.seed = 23  # her canonical age when the TTRPG finds her
+			var sera := _create_character("Sera", true, tick - 17 * 12 - 5, garran.dynasty_id, 0)
+			sera.father_id = garran.id
+			garran.children_ids.append(sera.id)
+			var mother: SimCharacter = characters.get(garran.spouse_id) if garran.spouse_id >= 0 else null
+			if mother != null:
+				sera.mother_id = mother.id
+				mother.children_ids.append(sera.id)
+				sera.genome = Genetics.inherit(sera_rng, garran.genome, mother.genome)
+				for key in STAT_PROPS.values():
+					var mid := int((int(garran.get(key)) + int(mother.get(key))) / 2.0)
+					sera.set(key, clampi(mid + sera_rng.randi_range(-3, 4), 1, 30))
+			else:
+				sera.genome = Genetics.founder(sera_rng)
+				for key in STAT_PROPS.values():
+					sera.set(key, sera_rng.randi_range(4, 14))
+			_apply_racial_baseline(sera)
+			# _seed_magic has already answered the Night of the Third Hour —
+			# she answers it here, deterministically, like every living soul
+			_add_trait(sera, "Pragmatic")
+			sera_id = sera.id
 	if realms[1].ruler_id >= 0:
 		characters[realms[1].ruler_id].name = "Vorak"
 	# ...and the map-only realms get their canonical crowns as real people
@@ -3490,6 +3517,9 @@ func _seed_magic() -> void:
 	_add_trait(ormand, "Academy-Sworn")
 	_add_trait(ormand, "Broken")
 	_add_trait(ormand, "Reclusive")
+	# Canon Updates Post-Caeris v1.0: thirty-four years in the Records
+	# Sublevel is Focused, not merely reclusive — the preparation is the purpose
+	_add_trait(ormand, "Focused")
 	architect_id = ormand.id
 	_add_secret(ormand.id, "silence_cause_complicity")
 	add_corruption(ormand, 6.0, "what was signed in Year 112 of the Council")
@@ -3580,7 +3610,8 @@ func _seed_faction_cast() -> void:
 	eithne.children_ids.append(ilyra.id)
 	var vovel := _cast_character("Marek", "House Vovel", false, 71, pellar, "human", "free_city",
 		{"dip": 10, "stw": 12, "mar": 3, "int": 13, "lrn": 20, "prw": 2},
-		["Methodical", "Honest", "Academy-Sworn"], "Pragmatic")
+		["Focused", "Methodical", "Honest", "Academy-Sworn"], "Pragmatic")
+	vovel.learning = 26  # Canon Updates Post-Caeris v1.0: a lifetime of the archive
 	marek_id = vovel.id  # the Vigil watches the Iron Library (doc §2 Phase Four)
 	# --- Halven: the merchant-democrat First Voice ---
 	var halven := _map_realm_named("Halven")
@@ -3640,9 +3671,12 @@ func _seed_faction_cast() -> void:
 	# eventual successor. Her creation draws after every existing cast die,
 	# so the fixed cast history never feels her. Stats are Fable-invented —
 	# flagged for the Gazetteer.
+	# Canon Updates Post-Caeris v1.0: Learning 22 at Year Zero; Focused
+	# arrives with the Chief Archivist's desk (the promotion beat), so
+	# her seed carries two personality traits, leaving room for it.
 	var thessaly := _cast_character("Thessaly", "House Vorn", true, 44, pellar, "human", "free_city",
-		{"dip": 9, "stw": 11, "mar": 2, "int": 12, "lrn": 21, "prw": 2},
-		["Methodical", "Patient", "Honest", "Academy-Sworn"], "Pragmatic")
+		{"dip": 9, "stw": 11, "mar": 2, "int": 12, "lrn": 22, "prw": 2},
+		["Methodical", "Patient", "Academy-Sworn"], "Pragmatic")
 	thessaly_id = thessaly.id
 	_log("[b]The crowns of Khessar at Year Zero:[/b] Queen Eithne in Pellar, First Voice Ferren Crannock-Vey in Halven, Chieftain Grimkar Vor-Grim beyond the passes, King Grimhold Ironvault under Kharak-Dum, the Matriarchs Analinth Veldarin and Ariorwe Thaladris in their forests, and First Councilor Vessa Korren at Saren-Vesh. Every one of them woke to the same silent sky.")
 	_log("House Veldarin answers no letters — it has not for a hundred and eighty years, and a silent sky changes nothing.")
@@ -3688,6 +3722,12 @@ func _cast_tick() -> void:
 			if vov != null and vov.alive:
 				_kill(vov, "dies among the Iron Library's stacks, a catalogue unfinished,")
 				_log("[b]The Iron Library passes to Thessaly Vorn.[/b] Marek Vovel's archivist of twenty years takes the Chief Archivist's desk without ceremony — the correspondence goes out on schedule, and the Record does not miss a week.")
+			# Canon Updates Post-Caeris v1.0: the desk is where she becomes
+			# Focused — the archive stops being her work and becomes her
+			# purpose. However Marek's end came, the desk is hers by now.
+			var th: SimCharacter = characters.get(thessaly_id)
+			if th != null and th.alive and not th.traits.has("Focused"):
+				_add_trait(th, "Focused")
 		48:
 			var grimhold2 := cast_ruler_of(_map_realm_named("Kharak-Dum"))
 			if grimhold2 != null and grimhold2.alive:
@@ -3772,26 +3812,31 @@ func _seed_administration() -> void:
 	dynasties[vroot].renown = 280.0
 	dynasties[vroot].legacies.append("The Vael Compact")
 	dynasties[vroot].renown -= float(LEGACIES["The Vael Compact"]["cost"])
-	# Seat 2 — Economic Affairs: the Reformist wing's leader
+	# Seat 2 — Economic Affairs: the Reformist wing's leader (Canon Updates
+	# Post-Caeris v1.0 locks his Diplomacy at 20)
 	var halloran := _admin_character("Halloran", "House Verith", false, 45, "human",
-		{"dip": 14, "mar": 6, "stw": 17, "int": 11, "lrn": 15, "prw": 5},
+		{"dip": 20, "mar": 6, "stw": 17, "int": 11, "lrn": 15, "prw": 5},
 		["Ambitious", "Honest"], "Pragmatic")
 	halloran_id = halloran.id
 	_seat_magister("Economic Affairs", halloran.id, tick - 60)
 	magister_wing[halloran.id] = "reformist"
 	# Seat 3 — Foreign Affairs: the Traditionalist wing's leader
+	# Canon Updates Post-Caeris v1.0 locks the composition: Paranoid and
+	# Cruel join Ambitious (Brave superseded — the canon trio fills the
+	# personality cap)
 	var davriand := _admin_character("Davriand", "House Karn", false, 40, "half_orc",
 		{"dip": 13, "mar": 14, "stw": 14, "int": 15, "lrn": 12, "prw": 12},
-		["Ambitious", "Brave"], "Opportunistic")
+		["Ambitious", "Paranoid", "Cruel"], "Opportunistic")
 	davriand_id = davriand.id
 	# eight years at the borders — the Traditionalist standard-bearer's
 	# career started early and never slowed
 	_seat_magister("Foreign Affairs", davriand.id, tick - 96)
 	magister_wing[davriand.id] = "traditionalist"
 	# Seat 4 — Clerical Registry (now moot): the moderate voice
+	# Canon Updates Post-Caeris v1.0 locks the composition: Content, Patient
 	var kreth := _admin_character("Kreth", "House Anford", false, 62, "human",
 		{"dip": 13, "mar": 5, "stw": 11, "int": 8, "lrn": 14, "prw": 3},
-		["Content", "Compassionate"], "Broken")
+		["Content", "Patient"], "Broken")
 	kreth_id = kreth.id
 	_seat_magister("Clerical Registry", kreth.id, tick - 200)
 	magister_wing[kreth.id] = "reformist"
@@ -4634,7 +4679,7 @@ func _seed_faiths() -> void:
 	# carries the practice in the blood.
 	var halvar := _faith_character("Halvar", "House Stenn", false, 50, 0, "half_orc",
 		{"dip": 12, "mar": 9, "stw": 8, "int": 7, "lrn": 11, "prw": 12},
-		["Patient", "Stoic", "Gravewarden-Sworn"], "Pragmatic")
+		["Focused", "Patient", "Stoic", "Gravewarden-Sworn"], "Pragmatic")
 	halvar_id = halvar.id
 	halvar.faith = "Aelindran Orthodox"  # the Order works under Aelindran auspices; its practice is its own
 	var alenna := _faith_character("Alenna", "House Stenn", true, 20, 0, "half_orc",
@@ -4660,6 +4705,10 @@ func _seed_faiths() -> void:
 	var ariorwe := cast_ruler_of(thaladris)
 	if ariorwe != null and not ariorwe.traits.has("Threshold-Sensitive"):
 		_add_trait(ariorwe, "Threshold-Sensitive")
+	# Canon Updates Post-Caeris v1.0: 285 years of the Bardic tradition is
+	# Focused — the practice defines her more than any single event
+	if ariorwe != null and not ariorwe.traits.has("Focused"):
+		_add_trait(ariorwe, "Focused")
 	_log("[b]The faiths of Khessar at Year Zero:[/b] the Aelindran pantheon still holds six souls in ten — institutionally dominant, doctrinally fracturing, and six years into a sky that does not answer. The Magistocracy's chambers have quietly stopped expecting it to. The Brushgate Order's discipline needs no answer. And along the roads, the Gravewardens' carved birds still cross their dead properly — the one practice the Silence never touched.")
 	_log("Halvar Stenn works the threshold-shrine on the Marn's Crossing road — the Gravewarden Order's most respected living member, receiving the dead of two peoples. His daughter Alenna feels the crossings before others see them.")
 
@@ -5437,8 +5486,12 @@ func _vigil_tick() -> void:
 				_shift_coherence("Aelindran Orthodox", -0.10)
 				_shift_coherence("The Vael Rationalist Faith", -0.10)
 				_log("[b]The Iron Library publishes its first paper on the Council of Year 112.[/b] 'On the Administrative Continuity of the Magistocracy' — dry as bone, footnoted like a fortress, and unanswerable. It names no bargain. It establishes who was in the room. The second paper is already being set.")
-			elif tick == ARCHITECT_DEATH_TICK + 26 and central_secret_state == "contained":
-				_ending_revealed_gradual()
+			elif tick == ARCHITECT_DEATH_TICK + 26:
+				# the vigil closes here whatever became of the containment:
+				# held → the gradual reveal (half fury); leaked or preempted →
+				# the truth is already loose and there is nothing left to keep
+				if central_secret_state == "contained":
+					_ending_revealed_gradual()
 				architect_phase = 6
 		"halvar":
 			if tick == ARCHITECT_DEATH_TICK + 8 and central_secret_state == "contained":
@@ -5710,8 +5763,9 @@ func _seed_silence_made() -> void:
 	caeris.culture = "free_city"  # born the son of a Pellar healer; twenty years in the Iron Library
 	caeris.genome = Genetics.founder(srng)
 	_add_trait(caeris, "Threshold-Sensitive")  # the inclination that chose the research at fourteen
+	_add_trait(caeris, "Focused")              # what defines him (Canon Updates v1.0) —
+	_add_trait(caeris, "Methodical")           # — and how he works; canon keeps both
 	_add_trait(caeris, "Patient")              # thirty-one years of discipline
-	_add_trait(caeris, "Methodical")           # canon says "Focused" — nearest trait in the db, flagged
 	# the canonical Core Six land AFTER the traits — trait stat mods must
 	# not drift the doc §2 numbers
 	caeris.diplomacy = 14
@@ -5721,16 +5775,27 @@ func _seed_silence_made() -> void:
 	caeris.learning = 26
 	caeris.prowess = 6
 	caeris_id = caeris.id
+	# Maret the Revenant — canonized (Canon Updates Post-Caeris v1.0 §2):
+	# 47 at Year Zero (dead three years before the Silence, at 44), Caeris's
+	# most senior associate, running the community's practical operations.
+	# Returned-Focused: her sustained purpose is what retards her own settling.
 	var maret_house := Dynasty.new(dynasties.size(), "House of the Ashfields")
 	dynasties[maret_house.id] = maret_house
-	var maret := _create_character("Maret", true, tick - 38 * 12 - 3, maret_house.id, ASHFIELDS_REALM)
+	var maret := _create_character("Maret", true, tick - 47 * 12 - 3, maret_house.id, ASHFIELDS_REALM)
 	maret.race = "human"
-	maret.culture = "free_city"
-	maret.learning = 14
-	maret.intrigue = 8
+	maret.culture = "free_city"  # the Ashfields micro-culture awaits a CultureData entry — flagged
 	maret.genome = Genetics.founder(srng)
+	_add_trait(maret, "Focused")
+	_add_trait(maret, "Compassionate")
 	_add_trait(maret, "Patient")
-	maret_id = maret.id  # the Revenant research associate (MM Vol. II; stats Fable-invented, flagged)
+	# canonical Core Six, locked after the traits (same rule as Caeris)
+	maret.diplomacy = 14
+	maret.martial = 12
+	maret.stewardship = 16
+	maret.intrigue = 12
+	maret.learning = 18
+	maret.prowess = 8
+	maret_id = maret.id
 	ashfields = {
 		"living": 4000.0,       # farmers and families who chose to stay close (doc §4)
 		"recently": 300.0,      # Returned, weeks-months: still fully themselves
@@ -5845,6 +5910,13 @@ func _ashfields_tick() -> void:
 		2:
 			if tick - int(ashfields["stage_started"]) >= FRAMEWORK_STAGE2_MONTHS:
 				_framework_implemented()
+	# Maret's arc (Canon Updates v1.0 §2): without the anchor, forty years
+	# of sustained purpose is not enough — by Year 40 she is settled
+	if int(ashfields["framework_stage"]) < 3 and tick >= 480:
+		var maret: SimCharacter = characters.get(maret_id)
+		if maret != null and maret.alive:
+			_kill(maret, "settles — the practical hands of the Ashfields losing their economy of motion, the measured voice its measure, until nothing in particular tends the intake ledgers,")
+			_log("Caeris files a monograph on the progression. The methodology is rigorous. The subject is Maret. He does not enjoy writing it. He notes the data anyway.")
 	# his own decline (doc §2): purpose is the anchor, and waiting wears it
 	if int(ashfields["framework_stage"]) < 3:
 		if tick >= CAERIS_SETTLING_TICK and not bool(ashfields["caeris_settling"]):
@@ -5870,6 +5942,9 @@ func _framework_implemented() -> void:
 	ashfields["settling"] = float(ashfields["settling"]) * 0.7
 	_shift_coherence("Aelindran Orthodox", -0.05)  # formal collaboration costs the old faith
 	_log("[b]The finding is published.[/b] Old-tongue anchoring enters the Iron Library's open archive as a consent-framework document: a freely chosen purpose, selected before death, held against the settling. %d Returned receive the anchor retroactively. The ones already Settled cannot be brought back — Caeris's covering letter says so plainly, because he has never once dressed a result." % int(saved))
+	var maret: SimCharacter = characters.get(maret_id)
+	if maret != null and maret.alive:
+		_log("Maret is among the first to receive the anchor — three years of holding herself together by purpose alone, and now the purpose is held by something more than will. Thessaly Vorn records the placement personally.")
 	_log("[b]The Ashfields becomes an institution[/b] — boundary stones, a registry, and a scholar with a purpose beyond waiting. Thessaly Vorn's twelfth field note is one line: 'He offered me tea, and this time he remembered that he had already asked.'")
 
 
@@ -6027,13 +6102,21 @@ func ashfields_march(realm_id: int = 0) -> String:
 	var sim := BattleSim.new()
 	sim.setup_from_rosters(a.regiments, defense, cmdr_martial, 8,
 		[str(realms[realm_id].name), "The Ashfields"], cmdr_traits, [], "ashfields", {"silence": true})
+	# Caeris's combat presence is a scholar's (Canon Updates v1.0 §3): no
+	# terror aura, no relish — Learning 26 tactical intelligence (+12%) and
+	# twenty years of knowing every ditch of this ground (+15%), applied to
+	# the defense's positioning. The Warden-Dead's own wrongness (unit-level
+	# silence_terror) is theirs, not his — he coordinates, never amplifies.
+	for reg: BattleSim.Regiment in sim.regiments:
+		if reg.side == 1:
+			reg.md *= 1.12 * 1.15
 	if a.commander_id >= 0 and characters.has(a.commander_id):
 		var cmdr: SimCharacter = characters[a.commander_id]
 		sim.set_commander_info(0, {"name": full_name(cmdr), "martial": cmdr.martial,
 			"intrigue": cmdr.intrigue, "prowess": cmdr.prowess, "traits": cmdr.traits.duplicate(),
 			"oath_intact": cmdr.oath_token_intact, "faith": faith_of(cmdr)})
 	sim.set_commander_info(1, {"name": "Caeris the Unfinished", "martial": 8, "intrigue": 12,
-		"prowess": 6, "traits": ["Threshold-Sensitive", "Patient", "Methodical"],
+		"prowess": 6, "traits": ["Threshold-Sensitive", "Focused", "Methodical", "Patient"],
 		"oath_intact": true, "faith": ""})
 	sim.run_headless()
 	for reg: BattleSim.Regiment in sim.regiments:

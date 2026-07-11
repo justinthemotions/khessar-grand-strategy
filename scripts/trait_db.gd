@@ -64,6 +64,21 @@ static func _build() -> void:
 		{"opposite": "Methodical", "ai": {"aggression": 20, "patience": -30},
 		"eulogy": "who charged first and counted after",
 		"mods": {"vanguard_damage_mult": 1.25, "casualty_rate_mult": 1.10, "commander_risk_mult": 1.15}}))
+	# Canon Updates Post-Caeris v1.0: Focused is what defines someone (one
+	# overwhelming purpose, exclusive); Methodical is how they work. The
+	# corruption_gain_mult is the trait's tragedy — sustained purpose pays
+	# costs the unfocused would not accept. vigour_points_max and
+	# intrigue_detection_mult are dormant until their hooks read them.
+	_add(TraitData.make("Focused", "personality", {"lrn": 2, "stw": 1, "dip": -1},
+		{"opposite": "Restless", "ai": {"aggression": -10, "patience": 25, "scheming": 5},
+		"eulogy": "who never turned aside from what they set themselves to do",
+		"mods": {"arcane_channel_mult": 1.10, "corruption_gain_mult": 1.15,
+		"stress_gain_mult": 0.95, "intrigue_defense_mult": 1.10}}))
+	_add(TraitData.make("Restless", "personality", {"prw": 1, "int": 1, "stw": -1},
+		{"opposite": "Focused", "ai": {"aggression": 10, "patience": -20, "scheming": 15},
+		"eulogy": "who could not settle to any one thing",
+		"mods": {"vigour_points_max": 1.20, "corruption_gain_mult": 0.90,
+		"supply_consumption_mult": 1.05, "intrigue_detection_mult": 1.10}}))
 	_add(TraitData.make("Stoic", "personality", {"prw": 1},
 		{"opposite": "Mercurial", "ai": {"patience": 20},
 		"eulogy": "whom no hardship ever bent",

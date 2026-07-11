@@ -423,6 +423,7 @@ func set_commander_info(side: int, info: Dictionary) -> void:
 	var corrupt := 1.0
 	var song := 0.0
 	var discipline := 1.0
+	var vigour_cap := 1.0  # Restless: capacity for many efforts (Canon Updates v1.0)
 	for tname in traits:
 		if not TraitDB.has_trait(str(tname)):
 			continue
@@ -432,6 +433,7 @@ func set_commander_info(side: int, info: Dictionary) -> void:
 		corrupt *= float(mods.get("corruption_channel_mult", 1.0))
 		song += float(mods.get("song_aura_baseline", 0.0))
 		discipline *= float(mods.get("discipline_binding_mult", 1.0))
+		vigour_cap *= float(mods.get("vigour_points_max", 1.0))
 	side_faith[side] = str(info.get("faith", ""))
 	side_threshold[side] = traits.has("Gravewarden-Sworn")
 	var oath_holds_now: bool = traits.has("Oath-Sworn") and not traits.has("Oathbreaker") \
@@ -479,6 +481,10 @@ func set_commander_info(side: int, info: Dictionary) -> void:
 			if discipline > 1.0:
 				r.shock_mult *= 0.90
 				r.vigour_mult *= 0.85  # the morning forms spend the body slowly
+			# a Restless commander runs the line through many efforts —
+			# the men pace themselves for all of them (Canon Updates v1.0)
+			if vigour_cap != 1.0:
+				r.vigour_mult /= vigour_cap
 			# the Cleric's office is presence first, prayer second (doc §3.3):
 			# a Zealous office grows regardless of results
 			if cleric:

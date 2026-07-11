@@ -79,8 +79,11 @@ func _init() -> void:
 		"Threshold-Sensitive inherits at 5%% — rare enough to feel like weather")
 	assert(not world._rollable_congenitals().has("Threshold-Sensitive"),
 		"Threshold-Sensitive is never rolled by founder dice — the fixed seeds must not reshuffle")
-	assert(absf(world.trait_mult(halvar, "corruption_gain_mult") - 0.60) < 0.001,
-		"a Gravewarden's ledger fills at 0.60x — completed transitions leave less to owe")
+	# Canon Updates Post-Caeris v1.0: Halvar is Focused now — sustained
+	# purpose pays costs the unfocused would not (×1.15 on the Gravewarden's
+	# ×0.60). The composition is the trait's tragedy, by design.
+	assert(absf(world.trait_mult(halvar, "corruption_gain_mult") - 0.60 * 1.15) < 0.001,
+		"a Focused Gravewarden's ledger fills at 0.69x — the discipline discounts, the purpose pays")
 	print("thresholds ok — Halvar, Alenna, Anra and Ariorwe stand where the addendum placed them")
 
 	# --- 4. the orthodoxy axis is live and load-bearing (Phase 4) ---
