@@ -258,6 +258,8 @@ func realm_display_name(realm_id: int) -> String:
 		return "Unclaimed"
 	if realm_id < realms.size():
 		return str(realms[realm_id].name)
+	if realm_id == 99:
+		return "The Ashfields"  # Caeris's sentinel realm — a research environment, not a crown
 	return "Unknown"
 
 

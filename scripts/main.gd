@@ -125,6 +125,8 @@ var btn_war: Button
 var btn_peace: Button
 var btn_trade: Button
 var diplo_label: Label          # Module 5: prestige, truce, CBs, treaty burdens
+var ashfields_label: Label      # The World the Silence Made v1.1: Caeris + the Forsaken
+var opt_endorse: OptionButton   # framework endorsement embassies
 var btn_fabricate: Button
 var opt_ward: OptionButton
 var btn_ward: Button
@@ -574,6 +576,52 @@ func _make_diplomacy_tab() -> VBoxContainer:
 		msg_label.text = world.fabricate_claim(0)
 		_refresh())
 	actions.add_child(btn_fabricate)
+
+	# --- The World the Silence Made v1.1: the scholar in the grey country ---
+	actions.add_child(HSeparator.new())
+	actions.add_child(_header("The Ashfields"))
+	ashfields_label = Label.new()
+	ashfields_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	ashfields_label.add_theme_font_size_override("font_size", 12)
+	ashfields_label.add_theme_color_override("font_color", MUTED)
+	actions.add_child(ashfields_label)
+	var ash_row := HBoxContainer.new()
+	ash_row.add_theme_constant_override("separation", 6)
+	var btn_envoy := Button.new()
+	btn_envoy.text = "Send an Envoy"
+	btn_envoy.pressed.connect(func() -> void:
+		msg_label.text = world.ashfields_send_envoy(0)
+		_refresh())
+	ash_row.add_child(btn_envoy)
+	var btn_framework := Button.new()
+	btn_framework.text = "Commit to the Framework"
+	btn_framework.pressed.connect(func() -> void:
+		msg_label.text = world.ashfields_commit_framework(0)
+		_refresh())
+	ash_row.add_child(btn_framework)
+	actions.add_child(ash_row)
+	var endorse_row := HBoxContainer.new()
+	endorse_row.add_theme_constant_override("separation", 6)
+	opt_endorse = OptionButton.new()
+	opt_endorse.clip_text = true
+	opt_endorse.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	endorse_row.add_child(opt_endorse)
+	var btn_endorse := Button.new()
+	btn_endorse.text = "Seek Endorsement (%d gold)" % int(SimWorld.ENDORSE_COST)
+	btn_endorse.pressed.connect(func() -> void:
+		var idx := opt_endorse.selected
+		if idx >= 0:
+			msg_label.text = world.ashfields_seek_endorsement(int(opt_endorse.get_item_metadata(idx)), 0)
+		_refresh())
+	endorse_row.add_child(btn_endorse)
+	actions.add_child(endorse_row)
+	var btn_march := Button.new()
+	btn_march.text = "March on the Ashfields"
+	btn_march.tooltip_text = "The military option. Consider what is lost."
+	btn_march.pressed.connect(func() -> void:
+		msg_label.text = world.ashfields_march(0)
+		_refresh())
+	actions.add_child(btn_march)
 
 	actions.add_child(HSeparator.new())
 	actions.add_child(_header("Wards & Hostages"))
@@ -1709,6 +1757,23 @@ func _refresh_diplomacy() -> void:
 
 	btn_fabricate.disabled = not world.fabrication.is_empty() \
 		or bool(world.fabricated_claims.get(0, false)) or world.at_war
+
+	# The World the Silence Made v1.1: the grey country and the Silence-born
+	ashfields_label.text = world.ashfields_status_line() + "\n" + world.forsaken_status_line()
+	var endorse_keep := -1
+	if opt_endorse.selected >= 0 and opt_endorse.selected < opt_endorse.item_count:
+		endorse_keep = int(opt_endorse.get_item_metadata(opt_endorse.selected))
+	opt_endorse.clear()
+	for mr in world.map.realms:
+		if (world.ashfields.get("endorsements", []) as Array).has(mr.id):
+			continue
+		var crown: SimCharacter = world.cast_ruler_of(mr.id)
+		if crown == null and not (mr.id == 1 and world.realms[1].ruler_id >= 0):
+			continue
+		opt_endorse.add_item(str(mr.name))
+		opt_endorse.set_item_metadata(opt_endorse.item_count - 1, mr.id)
+		if mr.id == endorse_keep:
+			opt_endorse.selected = opt_endorse.item_count - 1
 
 	# ward candidates: the crown's children young enough to foster, plus anyone already abroad
 	var picks: Array = []

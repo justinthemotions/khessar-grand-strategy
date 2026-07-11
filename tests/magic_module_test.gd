@@ -14,9 +14,12 @@ func _init() -> void:
 	world.auto_resolve_events = true
 
 	# --- 1. the Night of the Third Hour: every living soul answered it ---
+	# (except the Ashfields: the Silence did not surprise Caeris or change
+	# his work — his response is canonically N/A, The World the Silence
+	# Made v1.1 §2)
 	var responses := 0
 	for c in world.characters.values():
-		if not c.alive:
+		if not c.alive or c.realm_id == SimWorld.ASHFIELDS_REALM:
 			continue
 		var held := 0
 		for r in SimWorld.SILENCE_RESPONSES:

@@ -501,6 +501,34 @@ var marek_id := -1                    # Marek Vovel, Chief Archivist (dies Year 
 var sera_id := -1                     # Sera Halvenard-Veil — Garran's eldest daughter, birth-date-corrected to 17 at setup
 var sevrin_id := -1                   # Sevrin Vorontheim (also a Vigil candidate)
 
+# The World the Silence Made (v1.1, Opus 2026-07-08): Caeris the Unfinished —
+# the ETHICAL antagonist, not a tactical one — and the Forsaken, the
+# generation born under the silent sky. All dice roll on `srng`, seeded 63:
+# the percentage of himself Caeris still measures as alive. The main history
+# stream never feels the Ashfields.
+const ASHFIELDS_REALM := 99           # sentinel realm id: uncontrolled, is_cast by construction
+const FRAMEWORK_STAGE1_MONTHS := 12   # political coordination (doc §5: 12-18)
+const FRAMEWORK_STAGE2_MONTHS := 18   # framework construction (doc §5: 12-24)
+const ENDORSEMENTS_NEEDED := 3        # formal endorsement from at least three realms
+const ENDORSE_COST := 40.0
+const CAERIS_SETTLING_TICK := 600     # Year 50: the waiting begins to feel like unresolved failure
+const CAERIS_SETTLED_TICK := 660      # five years on, the scholar himself begins to thin
+const CONVERGENCE_TICK := 600         # the three antagonist structures reach threshold together
+const FORSAKEN_STAGES := [10.0, 50.0, 200.0, 500.0]  # whispered | visible | political | dominance
+const FORSAKEN_VARIANTS := {
+	"vael": "the academy cells",
+	"halven": "the Forsaken Underground",
+	"free_city": "the independence circles",
+	"karn_vol": "the new-compact generation",
+	"southern_reach": "the cosmopolitan current",
+}
+var srng := RandomNumberGenerator.new()
+var caeris_id := -1                   # Caeris the Unfinished — 63% alive by his own measurement
+var maret_id := -1                    # Maret, the Revenant research associate (MM Vol. II)
+var ashfields: Dictionary = {}        # the community ledger — see _seed_silence_made
+var forsaken_movements: Dictionary = {}  # region -> {strength, stage, growth_mult, engaged}
+var convergence := ""                 # "" until the Year-50 crisis names its shape
+
 # The event framework: choice events with trait-weighted AI resolution.
 var pending_events: Array = []       # events awaiting the player's decision
 var next_event_id: int = 0
@@ -667,6 +695,9 @@ func setup() -> void:
 	# The Architect's Vigil v1.0: Veril Ormand's clock starts — confident,
 	# patient, and wrong about who is coming.
 	_seed_vigil()
+	# The World the Silence Made v1.1: the scholar in the Ashfields has been
+	# waiting six years already, and the Forsaken are being born.
+	_seed_silence_made()
 
 
 func _seed_house(realm: Realm, house_name: String, ruling: bool) -> void:
@@ -778,6 +809,7 @@ func advance_month() -> void:
 	_admin_tick()
 	_religion_tick()
 	_vigil_tick()
+	_silence_made_tick()
 	_diplomacy_tick()
 	_ai_diplomacy()
 	_economy()
@@ -1408,8 +1440,11 @@ func recruit_gate(realm_id: int, kind: String) -> String:
 		"warden_dead", "caeris_retinue":
 			return "These dead are not yours to muster — they rise only under the Ashfields' sky."
 		"forsaken_militia":
-			# the recruitment gate goes live when the Forsaken movement
-			# module lands (Regional Dominance, 500+ strength)
+			# The World the Silence Made v1.1 §8: the militia musters only
+			# where the movement has become the region's dominant voice
+			var region := forsaken_region_of(realm_id)
+			if float(forsaken_movements.get(region, {}).get("strength", 0.0)) >= FORSAKEN_STAGES[3]:
+				return ""
 			return "No Forsaken movement holds regional dominance — there is no militia to raise."
 		"vigil_sworn_elite", "reactionary_chaplain":
 			var vr: Realm = realms[realm_id]
@@ -3620,6 +3655,8 @@ func cast_ruler_of(map_realm_id: int) -> SimCharacter:
 
 
 func cast_title_of(char_id: int) -> String:
+	if char_id == caeris_id:
+		return "Scholar of the Ashfields"  # no crown; the territory is a research environment
 	for rid in cast_rulers:
 		if int(cast_rulers[rid]["id"]) == char_id:
 			return "%s of %s" % [str(cast_rulers[rid]["title"]), map.realms[rid].name]
@@ -5652,6 +5689,535 @@ func vigil_status_line() -> String:
 	return ""
 
 
+# ================================================================
+# The World the Silence Made (v1.1, Opus 2026-07-08): Caeris the
+# Unfinished — the ethical antagonist — and the Forsaken. Every die
+# rolls on srng (seed 63); auto-firing beats touch only the
+# Ashfields ledger, the Forsaken counters, and (late, past the
+# canon-asserted years) the Silent Path — never the live realms'
+# gold, tyranny, or opinions. Player-initiated actions may.
+# ================================================================
+
+func _seed_silence_made() -> void:
+	## Caeris predates the Silence: the working is thirty-one years old,
+	## the Ashfields residence twenty. Seeded on srng alone — the cast
+	## stream (crng) closed with Thessaly and never feels him.
+	srng.seed = 63  # how much of himself he still measures as alive
+	var house := Dynasty.new(dynasties.size(), "House the Unfinished")
+	dynasties[house.id] = house
+	var caeris := _create_character("Caeris", false, tick - 62 * 12 - 7, house.id, ASHFIELDS_REALM)
+	caeris.race = "human"
+	caeris.culture = "free_city"  # born the son of a Pellar healer; twenty years in the Iron Library
+	caeris.genome = Genetics.founder(srng)
+	_add_trait(caeris, "Threshold-Sensitive")  # the inclination that chose the research at fourteen
+	_add_trait(caeris, "Patient")              # thirty-one years of discipline
+	_add_trait(caeris, "Methodical")           # canon says "Focused" — nearest trait in the db, flagged
+	# the canonical Core Six land AFTER the traits — trait stat mods must
+	# not drift the doc §2 numbers
+	caeris.diplomacy = 14
+	caeris.martial = 8
+	caeris.stewardship = 16
+	caeris.intrigue = 12
+	caeris.learning = 26
+	caeris.prowess = 6
+	caeris_id = caeris.id
+	var maret_house := Dynasty.new(dynasties.size(), "House of the Ashfields")
+	dynasties[maret_house.id] = maret_house
+	var maret := _create_character("Maret", true, tick - 38 * 12 - 3, maret_house.id, ASHFIELDS_REALM)
+	maret.race = "human"
+	maret.culture = "free_city"
+	maret.learning = 14
+	maret.intrigue = 8
+	maret.genome = Genetics.founder(srng)
+	_add_trait(maret, "Patient")
+	maret_id = maret.id  # the Revenant research associate (MM Vol. II; stats Fable-invented, flagged)
+	ashfields = {
+		"living": 4000.0,       # farmers and families who chose to stay close (doc §4)
+		"recently": 300.0,      # Returned, weeks-months: still fully themselves
+		"settling": 150.0,      # personality thinning — the problem he cannot solve alone
+		"settled": 40.0,        # outlines of the people their families knew
+		"hollow": 10.0,         # nothing in particular (Volume I's Hollow Shades)
+		"anchored": 0.0,        # framework-saved: the finding, implemented
+		"warden_dead": 200.0,   # the territory's defense — never its sword
+		"dispersed": 0.0,       # set only by the military solution
+		"contacted": false, "finding_heard": false,
+		"framework_stage": 0, "stage_started": -1, "endorsements": [],
+		"recognition": 0, "resolved": "", "caeris_settling": false,
+	}
+	forsaken_movements = {}
+	for region in FORSAKEN_VARIANTS:
+		forsaken_movements[region] = {"strength": 0.0, "stage": 0, "growth_mult": 1.0, "engaged": false}
+	_log("East of Pellar, the Ashfields go on as they have for twenty years: the grey farmland around Durn, the scholar who does not sleep, and the dead who came back and are still, for now, themselves. Thessaly Vorn has visited eleven times in three years. Six weeks ago, for the first time, Caeris asked her for something.")
+
+
+func ashfields_population() -> float:
+	if ashfields.is_empty():
+		return 0.0
+	return float(ashfields["living"]) + ashfields_returned_total()
+
+
+func ashfields_returned_total() -> float:
+	if ashfields.is_empty():
+		return 0.0
+	return float(ashfields["recently"]) + float(ashfields["settling"]) \
+		+ float(ashfields["settled"]) + float(ashfields["hollow"]) + float(ashfields["anchored"])
+
+
+func ashfields_intake_mult() -> float:
+	## Doc §3: who comes to the boundary, and how confidently.
+	var m := 1.0
+	if int(ashfields["framework_stage"]) >= 1:
+		m += 0.5   # Iron Library collaboration is formal — the work is legitimate now
+	if int(ashfields["framework_stage"]) == 2:
+		m += 0.25  # consent research active: people Return with confidence
+	var orth: Dictionary = faiths.get("Aelindran Orthodox", {})
+	if float(orth.get("coherence", 0.0)) >= 0.45 and float(orth.get("membership", 0.0)) >= 0.45:
+		m -= 0.3   # a confident orthodoxy suppresses the road-knowledge
+	if bool(faiths.get("The Silent Path", {}).get("active", false)):
+		m += 0.4   # the Path reads the Ashfields as validation
+	var halvar: SimCharacter = characters.get(halvar_id)
+	if halvar != null and halvar.alive:
+		m -= 0.2   # proper death-witnessing elsewhere: fewer bring their dying east
+	return maxf(0.2, m)
+
+
+func _silence_made_tick() -> void:
+	if ashfields.is_empty():
+		return
+	_ashfields_tick()
+	_forsaken_tick()
+	_convergence_tick()
+
+
+func _ashfields_tick() -> void:
+	if str(ashfields["resolved"]) == "destroyed":
+		# the military solution's long shadow: the undirected dead
+		var shades := float(ashfields["dispersed"])
+		if shades > 1.0:
+			ashfields["dispersed"] = shades * 0.99
+			if srng.randf() < 0.08:
+				_log("Word from the east: Returned wander the Ashfields roads with no one to direct them — travellers give the grey country a wide berth, and the Iron Library's record of what was lost there grows another page.")
+		return
+	if str(ashfields["resolved"]) == "settled":
+		return
+	# the settling problem (doc §4): unanchored Returned thin, stage by stage
+	var to_settling := float(ashfields["recently"]) * 0.10
+	var to_settled := float(ashfields["settling"]) * 0.035
+	var to_hollow := float(ashfields["settled"]) * 0.012
+	ashfields["recently"] = float(ashfields["recently"]) - to_settling
+	ashfields["settling"] = float(ashfields["settling"]) + to_settling - to_settled
+	ashfields["settled"] = float(ashfields["settled"]) + to_settled - to_hollow
+	ashfields["hollow"] = float(ashfields["hollow"]) + to_hollow
+	# intake, not conquest (doc §3): the grieving bring their dying east
+	var intake := srng.randf_range(8.0, 17.0) * ashfields_intake_mult()
+	if int(ashfields["framework_stage"]) >= 3:
+		ashfields["anchored"] = float(ashfields["anchored"]) + intake
+	else:
+		ashfields["recently"] = float(ashfields["recently"]) + intake
+	ashfields["living"] = float(ashfields["living"]) + intake * 0.25
+	ashfields["warden_dead"] = float(ashfields["warden_dead"]) + intake * 0.05
+	if srng.randf() < 0.05:
+		_log("A family reaches the Ashfields boundary with a cart and a dying man. Caeris reads them his documentation — every word of it — and accepts. The consent is imperfect. He knows. It is one of the things he has been trying to solve.")
+	# recognition thresholds (doc §3): the community becomes undeniable
+	var total := ashfields_population()
+	var marks := [5000.0, 10000.0, 25000.0]
+	while int(ashfields["recognition"]) < 3 and total >= float(marks[int(ashfields["recognition"])]):
+		ashfields["recognition"] = int(ashfields["recognition"]) + 1
+		match int(ashfields["recognition"]):
+			1:
+				_log("[b]The Ashfields passes five thousand souls[/b] — no longer an unusual community Pellar tolerates, but an institutional presence its correspondence must acknowledge.")
+			2:
+				_log("[b]The Ashfields passes ten thousand[/b] — formal correspondence between the Iron Library and Durn is standard practice now, and realm-level policy can no longer pretend the grey country is empty.")
+			3:
+				_log("[b]The Ashfields passes twenty-five thousand[/b] — a continental-scale phenomenon. No single realm has the capacity to answer what it asks.")
+	# the consent framework, stage by stage (doc §5)
+	match int(ashfields["framework_stage"]):
+		1:
+			if (ashfields["endorsements"] as Array).size() >= ENDORSEMENTS_NEEDED \
+					and tick - int(ashfields["stage_started"]) >= FRAMEWORK_STAGE1_MONTHS:
+				ashfields["framework_stage"] = 2
+				ashfields["stage_started"] = tick
+				var voices := "Free City legal scholars take the drafting chairs"
+				var halvar: SimCharacter = characters.get(halvar_id)
+				if halvar != null and halvar.alive:
+					voices += "; Halvar Stenn speaks for the Gravewarden Order on what a threshold owes the crossing"
+				_log("[b]The consent framework council convenes[/b] — %s, the Brushgate Order sends an observer, and Thessaly Vorn keeps the record. Caeris attends by correspondence. His letters are precise and slightly impatient." % voices)
+		2:
+			if tick - int(ashfields["stage_started"]) >= FRAMEWORK_STAGE2_MONTHS:
+				_framework_implemented()
+	# his own decline (doc §2): purpose is the anchor, and waiting wears it
+	if int(ashfields["framework_stage"]) < 3:
+		if tick >= CAERIS_SETTLING_TICK and not bool(ashfields["caeris_settling"]):
+			ashfields["caeris_settling"] = true
+			_log("[b]Thessaly Vorn's field note, filed without comment:[/b] Caeris repeated himself twice today. He has never repeated himself. Thirty-one years the purpose held him against the settling. The waiting has begun to feel like something other than purpose.")
+		elif bool(ashfields["caeris_settling"]) and tick >= CAERIS_SETTLED_TICK:
+			ashfields["resolved"] = "settled"
+			var c: SimCharacter = characters.get(caeris_id)
+			if c != null and c.alive:
+				_kill(c, "settles at last — the scholar thinning to an outline of himself and then to nothing in particular, the finding unpublished on his desk,")
+			_log("[b]The Ashfields' lamps still burn[/b], tended by hands that no longer remember why they were lit. The anchor working dies with the only man who knew it. The Iron Library files Thessaly Vorn's eleven field reports under a single heading: what was lost by waiting.")
+
+
+func _framework_implemented() -> void:
+	## Doc §5, the collaboration outcome: the game's most transformative
+	## and stable resolution. The finding is published.
+	ashfields["framework_stage"] = 3
+	ashfields["resolved"] = "framework"
+	ashfields["caeris_settling"] = false
+	var saved := float(ashfields["recently"]) * 0.6 + float(ashfields["settling"]) * 0.3
+	ashfields["anchored"] = float(ashfields["anchored"]) + saved
+	ashfields["recently"] = float(ashfields["recently"]) * 0.4
+	ashfields["settling"] = float(ashfields["settling"]) * 0.7
+	_shift_coherence("Aelindran Orthodox", -0.05)  # formal collaboration costs the old faith
+	_log("[b]The finding is published.[/b] Old-tongue anchoring enters the Iron Library's open archive as a consent-framework document: a freely chosen purpose, selected before death, held against the settling. %d Returned receive the anchor retroactively. The ones already Settled cannot be brought back — Caeris's covering letter says so plainly, because he has never once dressed a result." % int(saved))
+	_log("[b]The Ashfields becomes an institution[/b] — boundary stones, a registry, and a scholar with a purpose beyond waiting. Thessaly Vorn's twelfth field note is one line: 'He offered me tea, and this time he remembered that he had already asked.'")
+
+
+# ------------------------------------------------ player engagement
+
+func ashfields_status_line() -> String:
+	if ashfields.is_empty():
+		return ""
+	match str(ashfields["resolved"]):
+		"framework":
+			return "The Ashfields: %d souls under the published framework — the settling problem is solved for the willing." % int(ashfields_population())
+		"destroyed":
+			return "The Ashfields: destroyed. The finding is lost; the undirected dead wander the grey country."
+		"settled":
+			return "The Ashfields: the scholar has settled. The lamps burn on, tended by no one in particular."
+	var line := "The Ashfields: ~%d souls (%d Returned), growing by intake." % [
+		int(ashfields_population()), int(ashfields_returned_total())]
+	match int(ashfields["framework_stage"]):
+		1:
+			line += " Framework: political coordination — %d of %d endorsements." % [
+				(ashfields["endorsements"] as Array).size(), ENDORSEMENTS_NEEDED]
+		2:
+			line += " Framework: the council drafts."
+		_:
+			if bool(ashfields["finding_heard"]):
+				line += " He has told you what he needs."
+			elif bool(ashfields["contacted"]):
+				line += " He receives correspondence."
+			else:
+				line += " He is waiting for someone to help him with what he cannot ask for."
+	if bool(ashfields["caeris_settling"]):
+		line += " Caeris has begun to repeat himself."
+	return line
+
+
+func ashfields_envoy_gate(realm_id: int = 0) -> String:
+	if ashfields.is_empty() or str(ashfields["resolved"]) != "":
+		return "There is no one left in the Ashfields to receive an envoy."
+	var r: Realm = realms[realm_id]
+	if r.ruler_id < 0:
+		return "An empty throne sends no envoys."
+	if characters[r.ruler_id].learning < 16:
+		return "Understanding the Ashfields research requires preparation the crown does not have (Learning 16)."
+	if tick < 12:
+		return "The Ashfields is still a rumor from the east roads — there is nothing yet to answer."
+	return ""
+
+
+func ashfields_send_envoy(realm_id: int = 0) -> String:
+	var gate := ashfields_envoy_gate(realm_id)
+	if gate != "":
+		return gate
+	var ruler: SimCharacter = characters[realms[realm_id].ruler_id]
+	var opts: Array = [
+		{"label": "Ask about the research", "base": 10, "ai": {"patience": 1.0},
+			"effect": func() -> void:
+				ashfields["contacted"] = true
+				_log("Caeris explains the settling problem the way a man explains weather: The Returned thin. Purpose retards the rate. His own thirty-one years are the evidence. He offers the envoy tea out of habit and does not drink any himself.")},
+		{"label": "Press him on the consent documentation", "base": 8, "ai": {"scheming": 0.5},
+			"effect": func() -> void:
+				ashfields["contacted"] = true
+				_log("He does not defend the documentation. 'Thessaly Vorn has told me it is insufficient. She is correct. The alternative requires a framework that exists before death, and I cannot build it alone.'")},
+		{"label": "Challenge the work itself", "base": 6, "ai": {"orthodoxy": 1.0},
+			"effect": func() -> void:
+				ashfields["contacted"] = true
+				_log("Caeris engages the argument seriously and concedes nothing. 'Then tell me what you offer the ones who die and could have been Returned. I have been waiting thirty-one years for a better answer than mine.' The envoy does not have one.")},
+	]
+	if ruler.learning >= 20 or _thessaly_leads_library():
+		opts.append({"label": "Ask about the anchoring working directly", "base": 12, "ai": {"patience": 1.0, "scheming": 0.5},
+			"effect": func() -> void:
+				ashfields["contacted"] = true
+				ashfields["finding_heard"] = true
+				_log("[b]Caeris shares the finding.[/b] Old-tongue anchoring: a freely chosen purpose, selected before death, binds the Returned against the settling. Tested. Held. Unpublished — 'because I have the finding and I cannot implement it alone and I do not know how to ask for what I need.' He has now asked.")})
+	raise_event(realm_id, ruler.id, "The Scholar of the Ashfields",
+		"The envoy is received in a farmhouse study east of Durn, by a man who is sixty-two years old, does not sleep, and speaks with the specific irritation of someone with more important things to do. Approximately sixty-three percent alive, by his own measurement. Thirty-six monographs on the wall.",
+		opts, false, false, false, false, true)
+	return "An envoy rides east into the grey country."
+
+
+func _thessaly_leads_library() -> bool:
+	var thessaly: SimCharacter = characters.get(thessaly_id)
+	var marek: SimCharacter = characters.get(marek_id)
+	return thessaly != null and thessaly.alive and (marek == null or not marek.alive)
+
+
+func ashfields_commit_gate(realm_id: int = 0) -> String:
+	if ashfields.is_empty() or str(ashfields["resolved"]) != "":
+		return "There is nothing left to build."
+	if not bool(ashfields["finding_heard"]):
+		return "You have not heard the finding — send an envoy who can ask the right question."
+	if int(ashfields["framework_stage"]) > 0:
+		return "The framework is already underway."
+	if not _thessaly_leads_library():
+		return "The Iron Library must sponsor the framework, and Thessaly Vorn is not yet free to lead it."
+	return ""
+
+
+func ashfields_commit_framework(realm_id: int = 0) -> String:
+	var gate := ashfields_commit_gate(realm_id)
+	if gate != "":
+		return gate
+	ashfields["framework_stage"] = 1
+	ashfields["stage_started"] = tick
+	ashfields["endorsements"] = [realm_id]
+	_log("[b]The consent framework begins[/b] — %s commits its seal, and Thessaly Vorn brings the Iron Library's sponsorship. Political coordination first: the framework needs %d realms' formal endorsement before the drafting council can sit." % [realms[realm_id].name, ENDORSEMENTS_NEEDED])
+	return "The work Caeris could not ask for has begun."
+
+
+func ashfields_seek_endorsement(map_realm_id: int, realm_id: int = 0) -> String:
+	if int(ashfields["framework_stage"]) != 1:
+		return "There is no coordination underway to endorse."
+	if (ashfields["endorsements"] as Array).has(map_realm_id):
+		return "That seal is already on the framework."
+	var r: Realm = realms[realm_id]
+	if r.gold < ENDORSE_COST:
+		return "The embassy costs %d gold." % int(ENDORSE_COST)
+	var target: SimCharacter = cast_ruler_of(map_realm_id)
+	if target == null and map_realm_id == 1 and realms[1].ruler_id >= 0:
+		target = characters[realms[1].ruler_id]
+	if target == null or not target.alive:
+		return "No crown answers there."
+	r.gold -= ENDORSE_COST
+	# dispositions are the rulers' own — deterministic, no dice
+	var score := 0
+	for pair in [["Compassionate", 2], ["Patient", 1], ["Methodical", 1], ["Gregarious", 1],
+			["Honest", 1], ["Zealous", -3], ["Wrathful", -2], ["Paranoid", -1]]:
+		if target.traits.has(pair[0]):
+			score += int(pair[1])
+	if score >= 1:
+		(ashfields["endorsements"] as Array).append(map_realm_id)
+		_log("[b]%s endorses the consent framework[/b] — %d of %d seals gathered." % [
+			full_name(target), (ashfields["endorsements"] as Array).size(), ENDORSEMENTS_NEEDED])
+		return "%s sets their seal to the framework." % full_name(target)
+	_log("%s declines the framework embassy — the dead, they answer, should stay received, not Returned." % full_name(target))
+	return "%s declines." % full_name(target)
+
+
+func ashfields_march(realm_id: int = 0) -> String:
+	## Doc §6, the military option: legitimate, achievable, and a specific
+	## choice about what the player is willing to lose.
+	if ashfields.is_empty() or str(ashfields["resolved"]) != "":
+		return "There is nothing in the Ashfields to march against."
+	var a: Army = main_army_of(realm_id)
+	if a == null or a.regiments.is_empty():
+		return "No army stands ready to march east."
+	var defense: Array = []
+	for i in maxi(3, int(ceil(float(ashfields["warden_dead"]) / 40.0))):
+		defense.append({"kind": "warden_dead", "soldiers": 40})
+	defense.append({"kind": "caeris_retinue", "soldiers": 12})
+	var cmdr_martial := 0
+	var cmdr_traits: Array = []
+	if a.commander_id >= 0 and characters.has(a.commander_id):
+		cmdr_martial = characters[a.commander_id].martial
+		cmdr_traits = characters[a.commander_id].traits
+	var sim := BattleSim.new()
+	sim.setup_from_rosters(a.regiments, defense, cmdr_martial, 8,
+		[str(realms[realm_id].name), "The Ashfields"], cmdr_traits, [], "ashfields", {"silence": true})
+	if a.commander_id >= 0 and characters.has(a.commander_id):
+		var cmdr: SimCharacter = characters[a.commander_id]
+		sim.set_commander_info(0, {"name": full_name(cmdr), "martial": cmdr.martial,
+			"intrigue": cmdr.intrigue, "prowess": cmdr.prowess, "traits": cmdr.traits.duplicate(),
+			"oath_intact": cmdr.oath_token_intact, "faith": faith_of(cmdr)})
+	sim.set_commander_info(1, {"name": "Caeris the Unfinished", "martial": 8, "intrigue": 12,
+		"prowess": 6, "traits": ["Threshold-Sensitive", "Patient", "Methodical"],
+		"oath_intact": true, "faith": ""})
+	sim.run_headless()
+	for reg: BattleSim.Regiment in sim.regiments:
+		if reg.side == 0 and reg.roster_index < a.regiments.size():
+			a.regiments[reg.roster_index]["soldiers"] = reg.soldiers if reg.alive() else 0
+	a.regiments = a.regiments.filter(func(reg) -> bool: return int(reg["soldiers"]) > 0)
+	if sim.winner == 0:
+		_ashfields_destroyed(realm_id)
+		return "The Ashfields falls. What was lost there will be counted for a long time."
+	_log("[b]The Ashfields holds.[/b] The Warden-Dead do not pursue past the boundary stones — Caeris considers the entire engagement a failure of communication, and says so, in writing, to the Iron Library. He finds it professionally frustrating.")
+	return "The assault breaks against the Warden-Dead. Caeris does not pursue."
+
+
+func _ashfields_destroyed(realm_id: int) -> void:
+	## Doc §6's consequences, all of them. The game does not judge the
+	## choice; it writes down the price.
+	ashfields["resolved"] = "destroyed"
+	ashfields["dispersed"] = ashfields_returned_total()
+	var c: SimCharacter = characters.get(caeris_id)
+	if c != null and c.alive:
+		_kill(c, "is destroyed among his instruments — thirty-six monographs, eleven field visits, one unpublished finding, ending as ash in a farmhouse study,")
+	var m: SimCharacter = characters.get(maret_id)
+	if m != null and m.alive:
+		_kill(m, "is unmade beside her work,")
+	_log("[b]The finding is lost.[/b] Nobody else in Khessar knows the anchor working. The settling problem is now unsolvable — every Returned in the grey country will thin to an outline and then to nothing in particular, with no one to direct them.")
+	_log("Four thousand living residents of the Ashfields scatter west as refugees. The Iron Library archives Thessaly Vorn's field notes as historical documentation, and records the destruction, in the Record's driest hand, as one of the most consequential wrong choices of the post-Silence period.")
+	_shift_coherence("Aelindran Orthodox", 0.10)   # the destruction of heresy reads as orthodox victory
+	var sil: Dictionary = faiths.get("The Silent Path", {})
+	if bool(sil.get("active", false)):
+		sil["membership"] = minf(0.6, float(sil.get("membership", 0.0)) + 0.03)
+		_shift_coherence("The Silent Path", 0.05)  # the institutions chose suppression over understanding
+	var ruler: SimCharacter = characters.get(realms[realm_id].ruler_id) if realms[realm_id].ruler_id >= 0 else null
+	if ruler != null and ruler.alive:
+		add_corruption(ruler, 2.0, "what the Ashfields was, and what was done to it")
+		add_stress(ruler, 20.0, "the weight of the grey country")
+	ashfields["living"] = 0.0
+	for key in ["recently", "settling", "settled", "hollow", "anchored", "warden_dead"]:
+		ashfields[key] = 0.0
+
+
+# ------------------------------------------------ the Forsaken (doc §7-8)
+
+func forsaken_region_of(realm_id: int) -> String:
+	## Which regional variant a live realm's politics answer to.
+	return "vael" if realm_id == 0 else "karn_vol"
+
+
+func _forsaken_tick() -> void:
+	## The generation born under the Silence organizes — slowly, then
+	## undeniably. Growth accelerates with the cohort's age.
+	var years := float(tick) / 12.0
+	var sp_active := bool(faiths.get("The Silent Path", {}).get("active", false))
+	for region in forsaken_movements:
+		var mv: Dictionary = forsaken_movements[region]
+		var g := (0.5 + 0.05 * years) * srng.randf_range(0.8, 1.2) * float(mv["growth_mult"])
+		if sp_active:
+			g *= 1.4
+		if region == "southern_reach":
+			g *= 0.9  # the least ideologically consolidated variant
+		mv["strength"] = float(mv["strength"]) + g
+		while int(mv["stage"]) < 4 and float(mv["strength"]) >= float(FORSAKEN_STAGES[int(mv["stage"])]):
+			mv["stage"] = int(mv["stage"]) + 1
+			_forsaken_stage_reached(str(region), int(mv["stage"]))
+	# organized movements feed the Silent Path — but only once the canon-
+	# asserted years (religion brief's Y20 numbers) are safely behind us
+	if sp_active and tick > 250:
+		var organized := 0
+		for region in forsaken_movements:
+			if int(forsaken_movements[region]["stage"]) >= 4:
+				organized += 1
+		if organized > 0:
+			var f: Dictionary = faiths["The Silent Path"]
+			f["membership"] = minf(0.6, float(f["membership"]) + 0.0004 * organized)
+	# travelers cross-fertilize — and some of them go east to study
+	if str(ashfields.get("resolved", "")) == "" and srng.randf() < 0.02:
+		_log("A traveler Forsaken crosses into the Ashfields with a letter of introduction and a list of questions. Caeris answers the good ones. Some stay a season; some leave arguing with him in their heads for years.")
+
+
+func _forsaken_stage_reached(region: String, stage: int) -> void:
+	var label: String = FORSAKEN_VARIANTS[region]
+	match stage:
+		1:
+			_log("Whispers in %s: the first Forsaken cells of %s begin meeting — young enough that the Silence is the only sky they have known." % [region.capitalize().replace("_", "-"), label])
+		2:
+			_log("[b]The Forsaken of %s organize openly[/b] — %s can no longer be dismissed as youth. Their claim is simple: they belong to the world the Silence produced, not the one their parents lost." % [region.capitalize().replace("_", "-"), label])
+			var live_realm := _forsaken_live_realm(region)
+			if live_realm >= 0 and realms[live_realm].ruler_id >= 0:
+				_raise_forsaken_visible(live_realm, region)
+		3:
+			_log("[b]The Forsaken of %s become a political movement[/b] — candidates, publications, organizational capacity. %s now shapes appointments and votes." % [region.capitalize().replace("_", "-"), label])
+		4:
+			_log("[b]Regional dominance: the Forsaken are the loudest political voice of %s[/b] — a generation with organizational capacity and no nostalgia. Their militias drill openly now." % region.capitalize().replace("_", "-"))
+
+
+func _forsaken_live_realm(region: String) -> int:
+	for rid in realms.size():
+		if forsaken_region_of(rid) == region:
+			return rid
+	return -1
+
+
+func _raise_forsaken_visible(realm_id: int, region: String) -> void:
+	## The visible-movement choice (doc §8): engage or suppress. Effects
+	## stay inside the movement's own ledger — the realm's history keeps
+	## its stream regardless of the answer.
+	var mv: Dictionary = forsaken_movements[region]
+	raise_event(realm_id, realms[realm_id].ruler_id, "The Generation the Silence Made",
+		"They organize in open view now — the young who never knew an answering sky. Petitions, meeting halls, a newspaper of sorts. They are not asking permission.",
+		[
+			{"label": "Engage the movement", "base": 9, "ai": {"patience": 1.0},
+				"effect": func() -> void:
+					mv["growth_mult"] = float(mv["growth_mult"]) * 0.85
+					mv["engaged"] = true
+					_log("The crown engages the Forsaken — seats at minor tables, petitions answered in writing. The movement grows slower for being heard.")},
+			{"label": "Suppress the cells", "base": 7, "ai": {"aggression": 1.0, "orthodoxy": 0.5},
+				"effect": func() -> void:
+					mv["strength"] = maxf(0.0, float(mv["strength"]) - 15.0)
+					mv["growth_mult"] = float(mv["growth_mult"]) * 1.15
+					_log("The cells are broken up, the meeting halls shuttered. The movement loses a season's strength and gains a decade's conviction — suppression is the best recruiter the Forsaken ever had.")},
+		], false, false, false, false, true)
+
+
+func forsaken_status_line() -> String:
+	if forsaken_movements.is_empty():
+		return ""
+	var stage_names := ["quiet", "whispered", "visible", "political", "dominant"]
+	var parts: Array = []
+	for region in FORSAKEN_VARIANTS:
+		var mv: Dictionary = forsaken_movements[region]
+		if int(mv["stage"]) >= 1:
+			parts.append("%s %s (%d)" % [region.capitalize().replace("_", "-"),
+				stage_names[int(mv["stage"])], int(float(mv["strength"]))])
+	if parts.is_empty():
+		return "The Forsaken: children still — the generation born under the Silence has not yet found its voice."
+	return "The Forsaken: " + ", ".join(PackedStringArray(parts)) + "."
+
+
+# ------------------------------------------------ endgame convergence (doc §9)
+
+func _convergence_tick() -> void:
+	## Year 50: the three antagonist structures reach threshold together.
+	## This pass names the ending's shape; the full Silence-cascade
+	## mechanics stay with the endgame module (flagged).
+	if convergence != "" or tick < CONVERGENCE_TICK or realms[0].ruler_id < 0:
+		return
+	var caeris_state := str(ashfields.get("resolved", ""))
+	var pieces: Array = []
+	pieces.append("The Architect's truth: %s." % central_secret_state)
+	match caeris_state:
+		"framework":
+			pieces.append("The Ashfields: the framework holds — the settling problem is solved for the willing.")
+		"destroyed":
+			pieces.append("The Ashfields: destroyed, the finding lost.")
+		"settled":
+			pieces.append("The Ashfields: the scholar settled, still waiting.")
+		_:
+			pieces.append("The Ashfields: Caeris waits, still.")
+	var strongest := 0.0
+	for region in forsaken_movements:
+		strongest = maxf(strongest, float(forsaken_movements[region]["strength"]))
+	pieces.append("The Forsaken: the Silence-born are the working generation now (strongest movement: %d)." % int(strongest))
+	var opts: Array = []
+	if caeris_state == "framework" and central_secret_state in ["revealed", "leveraged", "contained"]:
+		opts.append({"label": "A unified response — build the new order", "base": 14, "ai": {"patience": 1.0},
+			"effect": func() -> void:
+				convergence = "unified"
+				_log("[b]THE WORLD THE SILENCE MADE:[/b] the truth published, the framework holding, the Forsaken given chairs instead of gallows. Khessar becomes something new — not the world before the Silence restored, but a genuine post-Silence order. (The full cascade arrives with the endgame module.)")})
+	opts.append({"label": "Hold the institutions by force", "base": 6, "ai": {"aggression": 1.0, "orthodoxy": 0.5},
+		"effect": func() -> void:
+			convergence = "military"
+			_log("[b]THE WORLD THE SILENCE MADE:[/b] suppression as policy — the institutions keep their form at genuine cost, and the cascade gathers. (The full consequences arrive with the endgame module.)")})
+	opts.append({"label": "Yield to the new orthodoxies", "base": 8, "ai": {"greed": 0.5},
+		"effect": func() -> void:
+			convergence = "ideological"
+			_log("[b]THE WORLD THE SILENCE MADE:[/b] the Silent Path preaches openly, the Ashfields keeps its autonomy%s, and the Forsaken inherit by default — a peaceful, transformed continent. (The full consequences arrive with the endgame module.)" % ("" if caeris_state != "" else " — and the settling problem continues"))})
+	opts.append({"label": "Endure — and let it fragment", "base": 4, "ai": {},
+		"effect": func() -> void:
+			convergence = "fragmented"
+			_log("[b]THE WORLD THE SILENCE MADE:[/b] no coalition forms. The three pressures exceed the continent's political capacity, and Aelindran civilization begins its long fragmentation into successor states. (The full consequences arrive with the endgame module.)")})
+	raise_event(0, realms[0].ruler_id, "The World the Silence Made",
+		"Year Fifty of the Silence. " + " ".join(PackedStringArray(pieces)),
+		opts, false, false, false, false, true)
+
+
 func live_ruler_title(realm_id: int, c: SimCharacter) -> String:
 	## What a live realm's crown is actually called (Administrative
 	## v1.0): the Magistocracy elects a Grand Magister; the clan follows
@@ -7230,16 +7796,17 @@ func eligible_singles(female: bool) -> Array:
 # the spot by the decider's personality — the same trait AI weights
 # (aggression / scheming / greed / patience) score every option.
 
-func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array, magic: bool = false, admin: bool = false, faith: bool = false, vigil: bool = false) -> void:
+func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array, magic: bool = false, admin: bool = false, faith: bool = false, vigil: bool = false, silence: bool = false) -> void:
 	if options.is_empty():
 		return
 	# magic-born events resolve on the magic RNG (Magic v1.0), Council
 	# events on the Council's (Administrative v1.0), faith events on the
-	# theology's (Module 9), vigil events on the Architect's (Vigil v1.0) —
+	# theology's (Module 9), vigil events on the Architect's (Vigil v1.0),
+	# Ashfields/Forsaken events on the Silence-made stream (v1.1) —
 	# the main history stream never feels any system's bookkeeping
 	var ev := {"id": next_event_id, "realm_id": realm_id, "decider": decider_id,
 		"title": title, "text": text, "options": options, "magic": magic, "admin": admin,
-		"faith": faith, "vigil": vigil}
+		"faith": faith, "vigil": vigil, "silence": silence}
 	next_event_id += 1
 	if realm_id != 0 or auto_resolve_events:
 		_ai_resolve_event(ev)
@@ -7253,7 +7820,9 @@ func _ai_resolve_event(ev: Dictionary) -> void:
 	## decider's trait weights, plus a little human unpredictability.
 	var decider: SimCharacter = characters.get(int(ev["decider"]))
 	var jitter_rng: RandomNumberGenerator = rng
-	if bool(ev.get("vigil", false)):
+	if bool(ev.get("silence", false)):
+		jitter_rng = srng
+	elif bool(ev.get("vigil", false)):
 		jitter_rng = vrng
 	elif bool(ev.get("admin", false)):
 		jitter_rng = arng
