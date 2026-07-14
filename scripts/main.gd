@@ -1814,7 +1814,13 @@ func _fill_char_options(opt: OptionButton, chars: Array, vacant_label: String, w
 	for c in chars:
 		var label: String = world.full_name(c)
 		if c.hero_level > 0:
+			# a hero-tier soul is their class (the SRD chassis)...
 			label += " — L%d %s" % [c.hero_level, HeroDB.class_label(c.hero_class)]
+		else:
+			# ...everyone else is their office (Hero System v1.1)
+			var pos: String = world.position_of(c)
+			if pos != "" and pos != "Courtier":
+				label += " — %s" % pos
 		if stat_keys.is_empty():
 			label += " (%d)" % c.age_years(world.tick)
 		else:

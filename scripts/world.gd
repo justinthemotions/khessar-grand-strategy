@@ -538,10 +538,12 @@ var convergence := ""                 # "" until the Year-50 crisis names its sh
 # the hero ledger (XP, personal HP, the pool counts) — the Core Six move
 # only under the player's hand.
 var hrng := RandomNumberGenerator.new()
-var hero_cast := {}                   # id -> true: seeded heroes guarded out of the main stream
+var hero_cast := {}                   # id -> true: hero-pass-seeded souls guarded out of the main stream
 var hero_deploys := {}                # id -> never|rarely|normal|eager (doc §6 deployment styles)
 var hero_pool := {}                   # region key -> unnamed hero-tier count (doc §2/§5 density)
 var hero_pool_carry := 0.0            # fractional accumulator for the yearly drift
+var court_positions := {}             # id -> canonical position label (SRD rule: NPCs are their
+                                      # office, not a class — Master Merchant, Chief Archivist...)
 
 # The event framework: choice events with trait-weighted AI resolution.
 var pending_events: Array = []       # events awaiting the player's decision
@@ -3779,8 +3781,12 @@ func _cast_tick() -> void:
 			var th: SimCharacter = characters.get(thessaly_id)
 			if th != null and th.alive and not th.traits.has("Focused"):
 				_add_trait(th, "Focused")
-			# the named succession award (Hero System v1.0 §3, by name)
+			# the office passes with the desk (Hero System v1.1: Thessaly is
+			# her position, not a class — the SRD rule). The XP award the
+			# doc names for this succession self-activates if Opus ever
+			# gives her a chassis.
 			if th != null and th.alive:
+				court_positions[thessaly_id] = "Chief Archivist of the Iron Library"
 				award_hero_xp(th.id, HeroDB.XP_AWARDS["chief_archivist"], "the Chief Archivist's desk")
 		48:
 			var grimhold2 := cast_ruler_of(_map_realm_named("Kharak-Dum"))
@@ -6403,14 +6409,20 @@ func _seed_heroes() -> void:
 	## get one — companions, the Reactionary Council, the Order's field
 	## commanders, the dwarven court, the Southern Reach circle.
 	hrng.seed = 75  # the XP capstone: what a level-10 life amounts to
+	# SRD 5.1 discipline (v1.1): classes are the PC chassis — the eleven,
+	# for hero-tier souls only. Everyone else is their office
+	# (position_of): the Queen is a Queen, not a "level 5 diplomat";
+	# the merchant is a merchant; most people are courtiers and
+	# commoners, ordinary until the day they pass, and that is fine.
 	# --- the Magistocracy of Vael (realm 0) ---
 	_hero_bless(anselm_id, "wizard", 3, {"combat": 1, "deploys": "never"})   # L3 admin, L1 combat (doc §8)
 	_hero_bless(halloran_id, "wizard", 4, {"deploys": "rarely"})
 	_hero_bless(davriand_id, "wizard", 3, {"deploys": "rarely"})
 	_hero_bless(kreth_id, "wizard", 3, {"deploys": "never"})                 # dying
-	_hero_bless(architect_id, "scholar", 8, {"combat": 1, "deploys": "never"})
-	_hero_bless(mareck_id, "rogue", 6, {"deploys": "rarely"})
-	_hero_bless(sevrin_id, "bureaucrat", 3, {"deploys": "rarely"})
+	_hero_bless(architect_id, "wizard", 8, {"sub": "archive", "combat": 1, "deploys": "never"})  # Veril: the craft is the Sublevel
+	_hero_bless(mareck_id, "rogue", 6, {"sub": "watchful", "deploys": "rarely"})
+	court_positions[mareck_id] = "Chief Spymaster"
+	court_positions[sevrin_id] = "Secretary to the Council"                  # no class — a very good clerk
 	for seat_level in [["Chancellor", 4], ["Master of War", 4], ["Chief Physician", 4]]:
 		if magister_seats.has(seat_level[0]):
 			_hero_bless(int(magister_seats[seat_level[0]]["holder"]), "wizard", int(seat_level[1]),
@@ -6420,33 +6432,31 @@ func _seed_heroes() -> void:
 	var garran := _hero_find("Garran", 0)
 	if garran != null:
 		_hero_bless(garran.id, "fighter", 5, {})                             # aging, still the realm's sword
-	_hero_bless(sera_id, "noble", 2, {"deploys": "rarely"})
+	# Sera: no class — a House heir the Vigil may yet find (Courtier)
 	var vorak := _hero_find("Vorak", 1)
 	if vorak != null:
-		_hero_bless(vorak.id, "fighter", 5, {})                              # Diplomacy 20 already canon
-	# --- Pellar and the Iron Library ---
+		_hero_bless(vorak.id, "fighter", 5, {"sub": "clan_sworn"})           # Diplomacy 20 already canon
+	# --- Pellar and the Iron Library (the crowns and scholars are their
+	# offices, not classes; only Vovel's old wizardry is a chassis) ---
 	var pellar := _map_realm_named("Pellar")
-	if cast_rulers.has(pellar):
-		_hero_bless(int(cast_rulers[pellar]["id"]), "diplomat", 5, {"deploys": "rarely"})  # Eithne (doc: 4-5)
 	var ilyra := _hero_find("Ilyra", pellar)
 	if ilyra != null:
-		_hero_bless(ilyra.id, "scholar", 3, {"deploys": "rarely"})           # Library-trained, growing
-	_hero_bless(marek_id, "scholar", 8, {"combat": 2, "deploys": "never"})   # Vovel: L7 wizard in his prime, aged out of it
-	_hero_bless(thessaly_id, "scholar", 6, {"deploys": "rarely"})            # will reach L8 as Chief Archivist — through play
+		court_positions[ilyra.id] = "Princess of Pellar"
+	_hero_bless(marek_id, "wizard", 8, {"sub": "archive", "combat": 2, "deploys": "never"})  # Vovel: L7 evoker in his prime, archive now
+	court_positions[marek_id] = "Chief Archivist of the Iron Library"
+	court_positions[thessaly_id] = "Archivist of the Iron Library"           # the desk comes at tick 44
 	# --- Halven ---
 	var halven := _map_realm_named("Halven")
-	if cast_rulers.has(halven):
-		_hero_bless(int(cast_rulers[halven]["id"]), "diplomat", 5, {"deploys": "rarely"})  # Ferren
 	var selia := _hero_find("Selia", halven)
 	if selia != null:
-		_hero_bless(selia.id, "diplomat", 4, {"deploys": "rarely"})
+		court_positions[selia.id] = "Counselor of Halven"
 	var mira := _hero_find("Mira", halven)
 	if mira != null:
-		_hero_bless(mira.id, "rogue", 3, {})                                 # the Forsaken Underground's future
+		_hero_bless(mira.id, "rogue", 3, {"sub": "thief"})                   # the Forsaken Underground's future
 	# --- the Drevak world ---
 	var vor_grim := _map_realm_named("Vor-Grim")
 	if cast_rulers.has(vor_grim):
-		_hero_bless(int(cast_rulers[vor_grim]["id"]), "fighter", 5, {})      # Grimkar
+		_hero_bless(int(cast_rulers[vor_grim]["id"]), "fighter", 5, {"sub": "clan_sworn"})  # Grimkar
 	# --- Kharak-Dum ---
 	var kharak := _map_realm_named("Kharak-Dum")
 	if cast_rulers.has(kharak):
@@ -6460,15 +6470,14 @@ func _seed_heroes() -> void:
 		_hero_bless(int(cast_rulers[veldarin]["id"]), "wizard", 8, {"deploys": "never"})  # Analinth (doc: 8-9)
 	var thaladris := _map_realm_named("Thaladris")
 	if cast_rulers.has(thaladris):
-		_hero_bless(int(cast_rulers[thaladris]["id"]), "bard", 8, {"deploys": "never"})   # Ariorwe, 120 names
+		_hero_bless(int(cast_rulers[thaladris]["id"]), "bard", 8, {"sub": "carried_names", "deploys": "never"})  # Ariorwe, 120 names
 	# --- the Southern Reach ---
 	var saren := _map_realm_named("Saren-Vesh")
-	if cast_rulers.has(saren):
-		_hero_bless(int(cast_rulers[saren]["id"]), "diplomat", 5, {"deploys": "rarely"})  # Vessa
+	# Vessa: First Councilor — the office is the identity (cast_title_of)
 	# --- the faith cast and the Ashfields ---
-	_hero_bless(halvar_id, "gravewarden", 7, {"deploys": "rarely"})          # aging; the wooden birds outnumber him
-	_hero_bless(caeris_id, "scholar", 9, {"deploys": "never"})               # Legendary (doc: 8-9; MM Vol. II)
-	_hero_bless(maret_id, "scholar", 5, {"deploys": "never"})                # the Revenant research associate
+	_hero_bless(halvar_id, "cleric", 7, {"sub": "threshold", "deploys": "rarely"})  # the Gravewarden: a Cleric domain, not a class
+	_hero_bless(caeris_id, "wizard", 9, {"sub": "unfinished", "deploys": "never"})  # Legendary (doc: 8-9; MM Vol. II) — his own school
+	_hero_bless(maret_id, "wizard", 5, {"sub": "unfinished", "deploys": "never"})   # the Revenant research associate, his one student
 	# ---------------- the 27 the chronicle owed a body (doc §8) ----------------
 	# The wandering companions (Class Archetypes):
 	var marak := _hero_character("Marak", "House Khorul", false, 41, 0, "human", "aelindran",
@@ -6478,20 +6487,20 @@ func _seed_heroes() -> void:
 	var selene := _hero_character("Selene", "House Tharn", true, 36, 0, "human", "aelindran",
 		{"dip": 16, "mar": 6, "stw": 10, "int": 8, "lrn": 14, "prw": 6},
 		["Compassionate", "Patient", "Faith-Practicing"], "Zealous")
-	_hero_bless(selene.id, "cleric", 4, {"deploys": "rarely"})               # Vesper's End keeps her close
+	_hero_bless(selene.id, "cleric", 4, {"sub": "life", "deploys": "rarely"})  # Vesper's End keeps her close
 	var tavisol := _hero_character("Tavisol", "House of the Road", false, 24, 0, "human", "aelindran",
 		{"dip": 8, "mar": 12, "stw": 6, "int": 5, "lrn": 8, "prw": 16},
 		["Brave", "Honest", "Oath-Sworn"], "Zealous")
-	_hero_bless(tavisol.id, "paladin", 3, {"deploys": "eager"})
+	_hero_bless(tavisol.id, "paladin", 3, {"sub": "devotion", "deploys": "eager"})
 	# The Council of Reclaimed Rites (the Reactionaries hold Vael's old cathedral):
 	var velmarin := _hero_character("Henrak", "House Velmarin", false, 71, 0, "human", "aelindran",
 		{"dip": 18, "mar": 6, "stw": 14, "int": 10, "lrn": 20, "prw": 3},
 		["Patient", "Purist", "Faith-Practicing"], "Zealous")
-	_hero_bless(velmarin.id, "cleric", 6, {"deploys": "never"})              # the Presiding Voice rarely leaves the cathedral
+	_hero_bless(velmarin.id, "cleric", 6, {"sub": "reclaimed_rites", "deploys": "never"})  # the Presiding Voice rarely leaves the cathedral
 	var mareldin := _hero_character("Lucius", "House Mareldin", false, 52, 0, "human", "aelindran",
 		{"dip": 14, "mar": 5, "stw": 10, "int": 14, "lrn": 18, "prw": 5},
 		["Purist", "Methodical", "Faith-Practicing"], "Zealous")
-	_hero_bless(mareldin.id, "cleric", 5, {"deploys": "rarely"})             # the Warden of Doctrine travels for doctrine
+	_hero_bless(mareldin.id, "cleric", 5, {"sub": "reclaimed_rites", "deploys": "rarely"})  # the Warden of Doctrine travels for doctrine
 	var vossa := _hero_character("Vossa", "House Thaledrin", false, 48, 0, "human", "aelindran",
 		{"dip": 8, "mar": 22, "stw": 10, "int": 8, "lrn": 8, "prw": 18},
 		["Brave", "Methodical"], "Zealous")
@@ -6499,41 +6508,42 @@ func _seed_heroes() -> void:
 	var veskren := _hero_character("Tamlin", "House Veskren", false, 39, 0, "human", "aelindran",
 		{"dip": 20, "mar": 4, "stw": 8, "int": 8, "lrn": 12, "prw": 5},
 		["Gregarious", "Altruistic", "Faith-Practicing"], "Zealous")
-	_hero_bless(veskren.id, "cleric", 4, {})                                 # the Voice to the Common travels widest
+	_hero_bless(veskren.id, "cleric", 4, {"sub": "life"})                    # the Voice to the Common travels widest
 	var thossmar := _hero_character("Olyric", "House Thossmar", false, 44, 0, "human", "aelindran",
 		{"dip": 8, "mar": 4, "stw": 12, "int": 18, "lrn": 20, "prw": 6},
 		["Methodical", "Paranoid"], "Zealous")
-	_hero_bless(thossmar.id, "rogue", 5, {"deploys": "rarely"})              # Keeper of Records; a scholar's rogue
+	_hero_bless(thossmar.id, "rogue", 5, {"sub": "watchful", "deploys": "rarely"})  # Keeper of Records; a scholar's rogue
 	var arlina := _hero_character("Arlina", "House Veth", true, 37, 0, "human", "aelindran",
 		{"dip": 10, "mar": 6, "stw": 8, "int": 22, "lrn": 12, "prw": 12},
 		["Paranoid", "Deceitful"], "Zealous")
-	_hero_bless(arlina.id, "rogue", 5, {})                                   # the Watchful
+	_hero_bless(arlina.id, "rogue", 5, {"sub": "watchful"})                  # the Watchful — the subclass is named for her office
 	var youngric := _hero_character("Youngric", "House Halden", false, 26, 0, "human", "aelindran",
 		{"dip": 16, "mar": 6, "stw": 8, "int": 6, "lrn": 14, "prw": 7},
 		["Gregarious", "Ambitious", "Faith-Practicing"], "Zealous")
-	_hero_bless(youngric.id, "cleric", 3, {})                                # the Rising Voice — Anra Halden's kin by house
+	_hero_bless(youngric.id, "cleric", 3, {"sub": "life"})                   # the Rising Voice — Anra Halden's kin by house
 	# The Order of the Vigil-Sworn's field commanders:
 	var vaelmark := _hero_character("Aldric", "House Vaelmark", false, 45, 0, "human", "aelindran",
 		{"dip": 12, "mar": 20, "stw": 10, "int": 6, "lrn": 10, "prw": 20},
 		["Brave", "Honest", "Patient", "Oath-Sworn"], "Zealous")
-	_hero_bless(vaelmark.id, "paladin", 6, {})                               # the founding commander
+	_hero_bless(vaelmark.id, "paladin", 6, {"sub": "vigil"})                 # the founding commander
 	var ilsen := _hero_character("Ilsen", "House the Righteous", true, 38, 0, "human", "aelindran",
 		{"dip": 8, "mar": 18, "stw": 6, "int": 5, "lrn": 6, "prw": 21},
 		["Brave", "Wrathful", "Oath-Sworn"], "Zealous")
-	_hero_bless(ilsen.id, "paladin", 5, {"deploys": "eager"})                # Dame Ilsen leads infantry from the front
+	_hero_bless(ilsen.id, "paladin", 5, {"sub": "vigil", "deploys": "eager"})  # Dame Ilsen leads infantry from the front
 	var voss := _hero_character("Marek", "House Voss", false, 33, 0, "human", "aelindran",
 		{"dip": 8, "mar": 16, "stw": 6, "int": 6, "lrn": 7, "prw": 17},
 		["Brave", "Impulsive", "Oath-Sworn"], "Zealous")
-	_hero_bless(voss.id, "paladin", 4, {"deploys": "eager"})                 # Brother-Captain, cavalry
+	_hero_bless(voss.id, "paladin", 4, {"sub": "vigil", "deploys": "eager"})  # Brother-Captain, cavalry
 	var thornhardt := _hero_character("Vell", "House Thornhardt", true, 42, 0, "human", "aelindran",
 		{"dip": 16, "mar": 8, "stw": 16, "int": 12, "lrn": 10, "prw": 6},
 		["Ambitious", "Purist"], "Zealous")
-	_hero_bless(thornhardt.id, "noble", 4, {"deploys": "rarely"})            # the Reactionary-aligned Baroness
+	court_positions[thornhardt.id] = "Baroness"                              # Reactionary-aligned; no class, plenty of leverage
 	# The dwarven court (Kharak-Dum):
 	var bronvor := _hero_character("Bronvor", "House Iron-Deep", false, 96, kharak, "dwarf", "kharak_dum",
 		{"dip": 10, "mar": 10, "stw": 16, "int": 8, "lrn": 22, "prw": 8},
 		["Methodical", "Patient", "Focused"], "Pragmatic")
-	_hero_bless(bronvor.id, "ward_speaker", 6, {"deploys": "rarely"})        # Chief Ward-Speaker
+	_hero_bless(bronvor.id, "wizard", 6, {"sub": "ward_speech", "deploys": "rarely"})  # Chief Ward-Speaker: a Wizard school, not a class
+	court_positions[bronvor.id] = "Chief Ward-Speaker"
 	var veldrin_oh := _hero_character("Veldrin", "House Oak-Hammer", false, 64, kharak, "dwarf", "kharak_dum",
 		{"dip": 8, "mar": 20, "stw": 12, "int": 6, "lrn": 8, "prw": 16},
 		["Brave", "Stoic"], "Pragmatic")
@@ -6542,29 +6552,29 @@ func _seed_heroes() -> void:
 	var drev := _hero_character("Drev", "House Karn-Vol", false, 31, 1, "orc", "karn_vol",
 		{"dip": 6, "mar": 16, "stw": 6, "int": 8, "lrn": 5, "prw": 18},
 		["Brave", "Impulsive"], "Pragmatic")
-	_hero_bless(drev.id, "fighter", 4, {"deploys": "eager"})
+	_hero_bless(drev.id, "fighter", 4, {"sub": "clan_sworn", "deploys": "eager"})
 	var grim_vg := _hero_character("Grim", "House Vol-Gar", false, 61, 1, "orc", "karn_vol",
 		{"dip": 12, "mar": 18, "stw": 10, "int": 10, "lrn": 9, "prw": 14},
 		["Patient", "Stoic"], "Pragmatic")
-	_hero_bless(grim_vg.id, "fighter", 5, {"deploys": "rarely"})             # the Elder
+	_hero_bless(grim_vg.id, "fighter", 5, {"sub": "clan_sworn", "deploys": "rarely"})  # the Elder
 	var kaal := _hero_character("Kaal", "House Vor-Grathkaz", false, 39, 1, "orc", "karn_vol",
 		{"dip": 4, "mar": 20, "stw": 6, "int": 12, "lrn": 5, "prw": 20},
 		["Wrathful", "Ambitious", "Cruel"], "Opportunistic")
-	_hero_bless(kaal.id, "fighter", 5, {"deploys": "eager"})                 # the compact-breaker
+	_hero_bless(kaal.id, "fighter", 5, {"sub": "clan_sworn", "deploys": "eager"})  # the compact-breaker
 	# Pellar's marshal:
 	var pellburn := _hero_character("Harold", "House Pellburn", false, 51, pellar, "human", "free_city",
 		{"dip": 10, "mar": 20, "stw": 12, "int": 8, "lrn": 10, "prw": 14},
 		["Methodical", "Honest"], "Pragmatic")
 	_hero_bless(pellburn.id, "fighter", 5, {})                               # Lord Marshal Sir Harold
-	# Halven's merchants and houses:
+	# Halven's merchants and houses — offices, not classes (SRD rule):
 	var otter := _hero_character("Otter", "House Straven", false, 45, halven, "human", "halveni",
 		{"dip": 18, "mar": 4, "stw": 22, "int": 14, "lrn": 12, "prw": 5},
 		["Gregarious", "Avaricious"], "Opportunistic")
-	_hero_bless(otter.id, "merchant", 5, {"deploys": "rarely"})              # the Salt Road knows his ledgers
+	court_positions[otter.id] = "Master Merchant of the Salt Road"
 	var aldon := _hero_character("Aldon", "House Halven-Rothe", false, 50, halven, "human", "halveni",
 		{"dip": 16, "mar": 8, "stw": 16, "int": 12, "lrn": 12, "prw": 6},
 		["Patient", "Content"], "Pragmatic")
-	_hero_bless(aldon.id, "noble", 4, {"deploys": "rarely"})
+	court_positions[aldon.id] = "Lord of House Halven-Rothe"
 	# The Southern Reach circle:
 	var iliana := _hero_character("Iliana", "House Vesh", true, 27, saren, "human", "southern_reach",
 		{"dip": 18, "mar": 5, "stw": 6, "int": 12, "lrn": 12, "prw": 8},
@@ -6572,27 +6582,28 @@ func _seed_heroes() -> void:
 	iliana.names_carried = 40  # canonical; the Song-Marked trait is withheld in v1.0 —
 	# _bard_tick draws an mrng die per Song-Marked soul, and her arrival
 	# must not reshuffle the magic stream (flagged for Opus)
-	_hero_bless(iliana.id, "bard", 4, {"deploys": "eager"})                  # the unlanded adventurer
+	_hero_bless(iliana.id, "bard", 4, {"sub": "carried_names", "deploys": "eager"})  # the unlanded adventurer
 	var ren := _hero_character("Ren", "House Korren", false, 22, saren, "human", "southern_reach",
 		{"dip": 14, "mar": 6, "stw": 8, "int": 10, "lrn": 10, "prw": 8},
 		["Ambitious", "Gregarious"], "Pragmatic")
-	_hero_bless(ren.id, "diplomat", 3, {})                                   # Vessa's house, the next generation
+	court_positions[ren.id] = "Envoy of Saren-Vesh"                          # Vessa's house, the next generation
 	var verrik := _hero_character("Halven", "House Verrik", false, 55, saren, "human", "southern_reach",
 		{"dip": 18, "mar": 4, "stw": 14, "int": 12, "lrn": 12, "prw": 4},
 		["Patient", "Honest"], "Pragmatic")
-	_hero_bless(verrik.id, "diplomat", 4, {"deploys": "rarely"})             # Master Verrik (doc: 3-4)
+	court_positions[verrik.id] = "Master Envoy of Saren-Vesh"                # Master Verrik: the office is the man
 	# The Free City crowns the map already names (not yet cast_rulers —
 	# the Carath/Dunmore crown pass stays with Faction Cast; flagged):
 	var carath := _map_realm_named("Carath")
 	var carathwell := _hero_character("Harrold", "House Carathwell", false, 47, carath, "human", "free_city",
 		{"dip": 12, "mar": 18, "stw": 14, "int": 8, "lrn": 8, "prw": 12},
 		["Brave", "Content"], "Pragmatic")
-	_hero_bless(carathwell.id, "fighter", 5, {"deploys": "rarely"})          # Duke Harrold
+	_hero_bless(carathwell.id, "fighter", 5, {"deploys": "rarely"})          # a Duke who earned the chassis young
+	court_positions[carathwell.id] = "Duke of Carath"
 	var dunmore := _map_realm_named("Dunmore")
 	var thelren := _hero_character("Thelren", "House Dunmoreth", false, 44, dunmore, "human", "free_city",
 		{"dip": 14, "mar": 10, "stw": 16, "int": 12, "lrn": 8, "prw": 6},
 		["Avaricious", "Patient"], "Opportunistic")
-	_hero_bless(thelren.id, "noble", 4, {"deploys": "rarely"})               # Baron Thelren
+	court_positions[thelren.id] = "Baron of Dunmore"                         # no class; the ledgers are weapon enough
 	# --- the unnamed hero-tier population (doc §2/§5 density) ---
 	# Named ≈57; the pool carries the rest of the continent's 200-400.
 	hero_pool = {
@@ -6635,18 +6646,55 @@ func _hero_character(p_name: String, house_name: String, female: bool, age: int,
 
 
 func _hero_bless(cid: int, class_id: String, level: int, opts: Dictionary = {}) -> void:
-	## Grant hero-tier to an existing character: class, level, the XP
-	## that level implies, and the personal HP pool. No dice.
+	## Grant hero-tier to an existing character: class (SRD chassis),
+	## subclass (where the tradition lives), level, the XP that level
+	## implies, and the personal HP pool. No dice.
 	var c: SimCharacter = characters.get(cid)
 	if c == null or not HeroDB.has_class(class_id):
 		return
 	c.hero_class = class_id
+	c.hero_subclass = str(opts.get("sub", HeroDB.default_subclass(class_id)))
 	c.hero_level = clampi(level, 1, HeroDB.MAX_LEVEL)
 	c.hero_xp = HeroDB.xp_for_level(c.hero_level)
 	c.hero_hp_max = HeroDB.hp_max(class_id, c.hero_level)
 	c.hero_hp = c.hero_hp_max
 	c.hero_combat_level = int(opts.get("combat", -1))
 	hero_deploys[cid] = str(opts.get("deploys", "normal"))
+
+
+func position_of(c: SimCharacter) -> String:
+	## The SRD rule (Hero System v1.1): ordinary souls have no class —
+	## they are identified by what they do at court. Canonical offices
+	## first, then the offices the sim itself hands out, then the
+	## defaults every court has: courtiers, and the children who will be.
+	if c == null or not c.alive:
+		return ""
+	if court_positions.has(c.id):
+		return str(court_positions[c.id])
+	var cast_t := cast_title_of(c.id)
+	if cast_t != "":
+		return cast_t
+	if c.realm_id >= 0 and c.realm_id < realms.size() and realms[c.realm_id].ruler_id == c.id:
+		return live_ruler_title(c.realm_id, c)
+	var seat := magister_seat_of(c.id)
+	if seat != "":
+		return seat
+	if c.realm_id >= 0 and c.realm_id < realms.size():
+		for seat_name in SEAT_STAT:
+			var m := council_member(c.realm_id, str(seat_name))
+			if m != null and m.id == c.id:
+				return str(seat_name)
+	for a: Army in armies:
+		if a.commander_id == c.id:
+			return "Commander"
+	for pid in county_holders:
+		if int(county_holders[pid]) == c.id:
+			return "Lady" if c.is_female else "Lord"
+	if wards.has(c.id) and bool(wards[c.id].get("hostage", false)):
+		return "Hostage"
+	if c.age_years(tick) < ADULT_AGE:
+		return "Child of the Court"
+	return "Courtier"
 
 
 func _hero_find(given_name: String, realm_id: int) -> SimCharacter:
@@ -6696,6 +6744,7 @@ func hero_info(cid: int) -> Dictionary:
 		return {}
 	return {
 		"id": c.id, "name": full_name(c), "class": c.hero_class,
+		"subclass": c.hero_subclass if c.hero_subclass != "" else HeroDB.default_subclass(c.hero_class),
 		"level": c.hero_level, "combat_level": hero_combat_level(c),
 		"legendary": c.hero_level >= HeroDB.LEGENDARY_LEVEL,
 		"hp": c.hero_hp, "hp_max": c.hero_hp_max,

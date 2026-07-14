@@ -13,10 +13,21 @@ class_name HeroDB
 ## Doc fidelity notes:
 ##  - Fireball unlocks at LEVEL 5, per the doc's "(per your instinct)"
 ##    ruling — level 4 keeps Lightning Bolt / Ice Storm / Counterspell.
-##  - The doc's 11 progression classes are here in full; the canonical
-##    cast also needs the civil hero classes the §8 roster uses
-##    (scholar, diplomat, merchant, bureaucrat, noble) plus the two
-##    Khessar-specific callings (gravewarden, ward_speaker).
+##  - Khessar follows the SRD 5.1: EXACTLY the eleven progression
+##    classes, and classes belong to hero-tier (PC-chassis) characters
+##    only. Everyone else is an ordinary soul identified by court
+##    position (world.position_of) — spymaster, envoy, lord, courtier,
+##    commoner — with no class, no level, no personal HP pool. Not
+##    every soul has the potential for greatness, and that is what
+##    makes the ones who do worth acquiring.
+##  - The SRD provides ONE subclass per class; Khessar's own traditions
+##    fill the gaps as SUBCLASSES (the Threshold Domain, the School of
+##    Ward-Speech, the Oath of the Vigil, the College of Carried
+##    Names...), never as new classes.
+##  - A class is the D&D chassis; the campaign's practice TRAITS
+##    (Arcane-Blooded, Faith-Practicing, Gravewarden-Sworn...) remain a
+##    separate layer. Caeris is a level-9 Wizard by chassis and holds
+##    no arcane practice trait — his school never touched the academy.
 ##  - "Intelligence" in the doc's stat-growth table maps to the Core
 ##    Six's Intrigue (the `int` short key), as in TraitData stats.
 
@@ -58,7 +69,7 @@ const XP_AWARDS := {
 # per level. practice: which binary casting gate the class's workings
 # roll (battle_sim.casting_reliability); "" = the craft never gates.
 const CLASSES := {
-	# --- the eleven progression classes (doc §4) ---
+	# --- the eleven, exactly as the SRD gives them (doc §4) ---
 	"wizard":      {"label": "Wizard",      "base_hp": 30, "growth": ["lrn", "int"], "practice": "arcane"},
 	"sorcerer":    {"label": "Sorcerer",    "base_hp": 30, "growth": ["dip", "lrn"], "practice": "arcane",
 		"unreliable": 0.8, "cast_corruption": 0.5},   # doc §4.2: 20% less reliable, corruption per casting
@@ -71,15 +82,91 @@ const CLASSES := {
 	"fighter":     {"label": "Fighter",     "base_hp": 50, "growth": ["prw", "mar"], "practice": ""},
 	"ranger":      {"label": "Ranger",      "base_hp": 50, "growth": ["mar", "lrn"], "practice": ""},
 	"rogue":       {"label": "Rogue",       "base_hp": 40, "growth": ["int", "prw"], "practice": ""},
-	# --- the Khessar-specific callings (doc §5: distinctive hero types) ---
-	"gravewarden": {"label": "Gravewarden", "base_hp": 40, "growth": ["lrn", "prw"], "practice": ""},
-	"ward_speaker": {"label": "Ward-Speaker", "base_hp": 40, "growth": ["lrn", "stw"], "practice": ""},
-	# --- the civil hero classes the canonical roster requires (doc §8) ---
-	"scholar":     {"label": "Scholar",     "base_hp": 40, "growth": ["lrn", "stw"], "practice": ""},
-	"diplomat":    {"label": "Diplomat",    "base_hp": 40, "growth": ["dip", "int"], "practice": ""},
-	"merchant":    {"label": "Merchant",    "base_hp": 40, "growth": ["stw", "dip"], "practice": ""},
-	"bureaucrat":  {"label": "Bureaucrat",  "base_hp": 40, "growth": ["stw", "lrn"], "practice": ""},
-	"noble":       {"label": "Noble",       "base_hp": 40, "growth": ["dip", "mar"], "practice": ""},
+}
+
+# ---------------------------------------------------------------- subclasses
+#
+# The SRD provides exactly one subclass per class (srd: true). Khessar's
+# own traditions fill the rest of the shelf — this is where the setting's
+# creativity lives, never in new classes. Optional keys:
+#   practice: overrides the class's casting gate ("" = never gates —
+#             threshold-work and ward-speech run on older theologies)
+#   grants:   {level: [ability ids]} added to the class's grant flow
+#   exclusive: true = the subclass's grants REPLACE the class table (a
+#             tradition apart: Caeris never learned a fireball)
+#   mods:     {pow_mult, heal_mult, rally_mult, vs_silence_mult,
+#              song_cap, hero_strike_mult, aura: {...}} — battle tuning
+const SUBCLASSES := {
+	# --- Wizard ---
+	"evocation":     {"class": "wizard", "label": "School of Evocation", "srd": true,
+		"mods": {"pow_mult": 1.10}, "desc": "The academy's answer to most questions: more fire."},
+	"unfinished":    {"class": "wizard", "label": "School of the Unfinished", "exclusive": true,
+		"practice": "", "grants": {8: ["observe", "redirect", "settling_touch"]},
+		"desc": "Old-tongue anchor-work at the threshold — one practitioner, one student, thirty-one years. It never touched the academy, and it does not fizzle under the Ashfields' sky."},
+	"ward_speech":   {"class": "wizard", "label": "School of Ward-Speech", "exclusive": true,
+		"practice": "", "grants": {1: ["stone_word"], 3: ["ward_lattice"], 6: ["deep_ward"]},
+		"desc": "The Kharak-Dum lattice, spoken. Defense measured in generations, briefly portable."},
+	"archive":       {"class": "wizard", "label": "School of the Archive", "exclusive": true,
+		"practice": "", "grants": {},
+		"desc": "The Iron Library's scholarship: the craft is the campaign — correspondence, cataloguing, the Record. No field orders; the field was never the point."},
+	# --- Sorcerer ---
+	"draconic":      {"class": "sorcerer", "label": "Draconic Bloodline", "srd": true,
+		"mods": {"pow_mult": 1.05}, "desc": "The old blood, loud in the veins."},
+	"silence_touched": {"class": "sorcerer", "label": "Silence-Touched Bloodline",
+		"mods": {"pow_mult": 1.15}, "desc": "Manifestation the academies never caught — power with the ledger already open. (Awaits its named canon.)"},
+	# --- Cleric ---
+	"life":          {"class": "cleric", "label": "Life Domain", "srd": true,
+		"mods": {"heal_mult": 1.25}, "desc": "The office of mending, kept whether or not anything answers."},
+	"threshold":     {"class": "cleric", "label": "Threshold Domain",
+		"practice": "", "grants": {1: ["witness"], 3: ["threshold_ward"], 5: ["last_rite"], 7: ["hold_the_door"]},
+		"desc": "The Gravewarden's war: deaths witnessed, birds carved, doors held. The one practice that never stopped working — it does not gate."},
+	"reclaimed_rites": {"class": "cleric", "label": "Domain of the Reclaimed Rites",
+		"mods": {"rally_mult": 1.30, "aura": {"radius": 120.0, "lead": 3.0}},
+		"desc": "The Reactionary liturgy: the old forms sung at full voice, because the singing is the argument."},
+	# --- Paladin ---
+	"devotion":      {"class": "paladin", "label": "Oath of Devotion", "srd": true,
+		"desc": "The oath as the old orders swore it."},
+	"vigil":         {"class": "paladin", "label": "Oath of the Vigil",
+		"mods": {"vs_silence_mult": 2.0},
+		"desc": "The Vigil-Sworn's oath: sworn against what the Silence left standing. Smites read the wrongness precisely."},
+	# --- Druid ---
+	"land":          {"class": "druid", "label": "Circle of the Land", "srd": true,
+		"desc": "The green roads, where the green still answers."},
+	# --- Warlock ---
+	"fiend":         {"class": "warlock", "label": "The Fiend", "srd": true,
+		"desc": "The SRD's patron. Khessar's is quieter."},
+	"quiet_patron":  {"class": "warlock", "label": "The Patron of the Quiet",
+		"mods": {"pow_mult": 1.10}, "desc": "The bargain Khessar actually offers — Silence-adjacent, patient, and always collecting. (Awaits its named canon.)"},
+	# --- Bard ---
+	"lore":          {"class": "bard", "label": "College of Lore", "srd": true,
+		"mods": {"song_cap": 1.75}, "desc": "Songs learned from books."},
+	"carried_names": {"class": "bard", "label": "College of Carried Names",
+		"mods": {"song_cap": 2.0},
+		"desc": "The Song-Marked tradition: dead-names carried between the fires, and every one of them weight and power both."},
+	# --- Monk ---
+	"open_hand":     {"class": "monk", "label": "Way of the Open Hand", "srd": true,
+		"desc": "The body, precisely applied."},
+	"brushgate":     {"class": "monk", "label": "The Brushgate Way",
+		"mods": {"rally_mult": 1.20},
+		"desc": "Stillness as countermeasure: sit with it until it passes. The morning forms spend the body slowly."},
+	# --- Fighter ---
+	"champion":      {"class": "fighter", "label": "Champion", "srd": true,
+		"mods": {"aura": {"radius": 0.0, "ma": 2.0}},
+		"desc": "Physical excellence; the hero's own line strikes harder for having them in it."},
+	"clan_sworn":    {"class": "fighter", "label": "Clan-Sworn",
+		"mods": {"rally_mult": 1.20, "aura": {"radius": 0.0, "ma": 1.0}},
+		"desc": "The Drevak doctrine: clan-identity as armor, and a voice the war-columns answer."},
+	# --- Ranger ---
+	"hunter":        {"class": "ranger", "label": "Hunter", "srd": true,
+		"desc": "The quarry named, the quarry taken."},
+	"beastwarden":   {"class": "ranger", "label": "Beastwarden",
+		"mods": {"pow_mult": 1.10}, "desc": "The northern territories' answer to what comes out of them. (Awaits its named canon.)"},
+	# --- Rogue ---
+	"thief":         {"class": "rogue", "label": "Thief", "srd": true,
+		"desc": "The classic curriculum."},
+	"watchful":      {"class": "rogue", "label": "The Watchful",
+		"mods": {"hero_strike_mult": 1.5},
+		"desc": "Counter-intelligence as a calling: the Spymaster's craft, the Order's quiet sister. Hero-hunting comes naturally."},
 }
 
 # ---------------------------------------------------------------- abilities
@@ -321,24 +408,6 @@ const GRANTS := {
 		3: ["assassinate"],
 		5: ["uncanny_dodge"],
 	},
-	"gravewarden": {
-		1: ["witness"],
-		3: ["threshold_ward"],
-		5: ["last_rite"],
-		7: ["hold_the_door"],
-	},
-	"ward_speaker": {
-		1: ["stone_word"],
-		3: ["ward_lattice"],
-		6: ["deep_ward"],
-	},
-	# The scholar's craft is the campaign; only the Legendary tier walks
-	# onto a field with intent (Caeris — Observe / Redirect / The
-	# Settling Touch, per the Canon Updates translations).
-	"scholar": {
-		8: ["observe", "redirect", "settling_touch"],
-	},
-	"diplomat": {}, "merchant": {}, "bureaucrat": {}, "noble": {},
 }
 
 
@@ -379,31 +448,73 @@ static func growth(class_id: String) -> Array:
 	return CLASSES[class_id]["growth"]
 
 
-static func practice(class_id: String) -> String:
+static func has_subclass(sub_id: String) -> bool:
+	return SUBCLASSES.has(sub_id)
+
+
+static func default_subclass(class_id: String) -> String:
+	## The SRD's own subclass — what an unspecified hero of the class walks.
+	for sid in SUBCLASSES:
+		if str(SUBCLASSES[sid]["class"]) == class_id and bool(SUBCLASSES[sid].get("srd", false)):
+			return str(sid)
+	return ""
+
+
+static func sub_label(sub_id: String) -> String:
+	if not SUBCLASSES.has(sub_id):
+		return sub_id.capitalize()
+	return str(SUBCLASSES[sub_id]["label"])
+
+
+static func sub_mods(sub_id: String) -> Dictionary:
+	if not SUBCLASSES.has(sub_id):
+		return {}
+	return SUBCLASSES[sub_id].get("mods", {})
+
+
+static func practice_for(class_id: String, sub_id: String = "") -> String:
+	## The casting gate the hero's workings roll: a subclass may walk an
+	## older theology than its class ("" = never gates).
+	var sub: Dictionary = SUBCLASSES.get(sub_id, {})
+	if sub.has("practice"):
+		return str(sub["practice"])
 	if not CLASSES.has(class_id):
 		return ""
 	return str(CLASSES[class_id]["practice"])
+
+
+static func practice(class_id: String) -> String:
+	return practice_for(class_id, "")
 
 
 static func info(ability_id: String) -> Dictionary:
 	return ABILITIES.get(ability_id, {})
 
 
-static func abilities_at(class_id: String, level: int) -> Array:
-	## Every ability the class has unlocked by `level`, in grant order.
+static func abilities_at(class_id: String, level: int, sub_id: String = "") -> Array:
+	## Every ability unlocked by `level`: the class table plus the
+	## subclass's grants — or the subclass's grants ALONE when the
+	## tradition stands apart (exclusive: Caeris never learned a
+	## fireball, and the ward-speakers never wanted one).
 	var out: Array = []
-	var grants: Dictionary = GRANTS.get(class_id, {})
+	var sub: Dictionary = SUBCLASSES.get(sub_id, {})
+	if not bool(sub.get("exclusive", false)):
+		var grants: Dictionary = GRANTS.get(class_id, {})
+		for l in range(1, clampi(level, 1, MAX_LEVEL) + 1):
+			if grants.has(l):
+				out.append_array(grants[l])
+	var sub_grants: Dictionary = sub.get("grants", {})
 	for l in range(1, clampi(level, 1, MAX_LEVEL) + 1):
-		if grants.has(l):
-			out.append_array(grants[l])
+		if sub_grants.has(l):
+			out.append_array(sub_grants[l])
 	return out
 
 
-static func battle_actives(class_id: String, level: int) -> Array:
+static func battle_actives(class_id: String, level: int, sub_id: String = "") -> Array:
 	## The unlocked abilities that are usable orders on the field —
 	## everything except utility entries and passives.
 	var out: Array = []
-	for aid in abilities_at(class_id, level):
+	for aid in abilities_at(class_id, level, sub_id):
 		var kind := str(ABILITIES[aid]["kind"])
 		if kind in ["utility", "aura", "counterspell", "death_ward", "dodge"]:
 			continue
@@ -411,9 +522,9 @@ static func battle_actives(class_id: String, level: int) -> Array:
 	return out
 
 
-static func battle_passives(class_id: String, level: int) -> Array:
+static func battle_passives(class_id: String, level: int, sub_id: String = "") -> Array:
 	var out: Array = []
-	for aid in abilities_at(class_id, level):
+	for aid in abilities_at(class_id, level, sub_id):
 		var kind := str(ABILITIES[aid]["kind"])
 		if kind in ["aura", "counterspell", "death_ward", "dodge"]:
 			out.append(aid)

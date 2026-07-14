@@ -698,13 +698,14 @@ func set_hero(side: int, h: Dictionary) -> void:
 	hero_auras[side] = []
 	hero_actions_used[side] = 0
 	var cls := str(h.get("class", ""))
+	var sub := str(h.get("subclass", ""))
 	var lvl := int(h.get("combat_level", h.get("level", 1)))
 	var legendary := bool(h.get("legendary", false))
-	for aid in HeroDB.battle_actives(cls, lvl):
+	for aid in HeroDB.battle_actives(cls, lvl, sub):
 		# Legendary heroes take additional actions: +1 use of everything
 		hero_uses[side][aid] = int(HeroDB.info(aid).get("uses", 1)) + (1 if legendary else 0)
 		hero_cd[side][aid] = 0
-	for aid in HeroDB.battle_passives(cls, lvl):
+	for aid in HeroDB.battle_passives(cls, lvl, sub):
 		var info := HeroDB.info(aid)
 		match str(info["kind"]):
 			"aura":
@@ -716,6 +717,11 @@ func set_hero(side: int, h: Dictionary) -> void:
 				hero_death_ward[side] = true
 			"dodge":
 				hero_dodge[side] = minf(hero_dodge[side], float(info.get("mult", 1.0)))
+	# the subclass's own signature (Hero System v1.1): tuning mods and a
+	# standing aura where the tradition carries one
+	var smods := HeroDB.sub_mods(sub)
+	if smods.has("aura"):
+		hero_auras[side].append(smods["aura"])
 	_hero_host_assign(side)
 
 
@@ -728,7 +734,8 @@ func hero_abilities(side: int) -> Array:
 	if heroes[side].is_empty():
 		return []
 	return HeroDB.battle_actives(str(heroes[side].get("class", "")),
-		int(heroes[side].get("combat_level", heroes[side].get("level", 1))))
+		int(heroes[side].get("combat_level", heroes[side].get("level", 1))),
+		str(heroes[side].get("subclass", "")))
 
 
 func _hero_host_assign(side: int) -> void:
@@ -782,7 +789,9 @@ func use_hero_ability(side: int, aid: String, target: Vector2 = Vector2.ZERO) ->
 	hero_cd[side][aid] = combat_ticks + int(info.get("cd", 20))
 	hero_global_cd[side] = combat_ticks + (HERO_GLOBAL_CD_LEGENDARY if legendary else HERO_GLOBAL_CD)
 	# --- the cost of asking, answered or not ---
-	var practice := HeroDB.practice(cls)
+	# the subclass may walk an older theology than its class: threshold-
+	# work and ward-speech never gate (Hero System v1.1)
+	var practice := HeroDB.practice_for(cls, str(h.get("subclass", "")))
 	if practice != "":
 		commander_stress[side] += 1.0 if practice == "faith" else 0.5
 	if CLASSES_CAST_CORRUPTION.has(cls):
@@ -820,16 +829,23 @@ const CLASSES_CAST_CORRUPTION := {"sorcerer": 0.5}
 
 func _hero_song_scale(side: int, info: Dictionary) -> float:
 	## The Bard's law: what the carried names weigh (the commander-scale
-	## song aura's own formula, reused).
+	## song aura's own formula, reused). The College of Carried Names
+	## holds the full cap; book-taught colleges carry a little less.
 	if not bool(info.get("song_scaled", false)):
 		return 1.0
-	return clampf(1.0 + float(heroes[side].get("names", 0)) / 200.0, 1.0, 2.0)
+	var cap := float(HeroDB.sub_mods(str(heroes[side].get("subclass", ""))).get("song_cap", 2.0))
+	return clampf(1.0 + float(heroes[side].get("names", 0)) / 200.0, 1.0, cap)
 
 
 func _hero_apply_effect(side: int, aid: String, info: Dictionary, target: Vector2) -> void:
 	var h: Dictionary = heroes[side]
 	var hname := str(h.get("name", "The hero"))
 	var label := str(info.get("label", aid))
+	# the subclass's signature tuning (Hero System v1.1)
+	var smods := HeroDB.sub_mods(str(h.get("subclass", "")))
+	var dmg_m := float(smods.get("pow_mult", 1.0))
+	var heal_m := float(smods.get("heal_mult", 1.0))
+	var rally_m := float(smods.get("rally_mult", 1.0))
 	var scale := _hero_song_scale(side, info)
 	match str(info["kind"]):
 		"aoe":
@@ -881,15 +897,16 @@ func _hero_apply_effect(side: int, aid: String, info: Dictionary, target: Vector
 		"single":
 			var t := _nearest_enemy_to_point(side, target)
 			if t != null:
-				var strike := float(info.get("pow", 20.0)) * scale
+				var strike := float(info.get("pow", 20.0)) * scale * dmg_m
 				if t.silence_kind:
-					strike *= float(info.get("vs_silence", 1.0))
+					# the oath (or the tradition that carries it) reads the wrongness precisely
+					strike *= maxf(float(info.get("vs_silence", 1.0)), float(smods.get("vs_silence_mult", 1.0)))
 				_hero_damage(t, strike, float(info.get("shock", 0.0)))
 				casts.append({"pos": t.pos, "radius": 20.0, "ttl": 8, "color": "bolt"})
 				event.emit("%s strikes %s with %s!" % [hname, t.label, label])
 		"zone":
 			zones.append({"pos": target, "radius": float(info.get("radius", 50.0)),
-				"dpt": float(info.get("dpt", 5.0)) * scale, "ticks": int(info.get("dur", 20)),
+				"dpt": float(info.get("dpt", 5.0)) * scale * dmg_m, "ticks": int(info.get("dur", 20)),
 				"side": side, "label": label})
 			casts.append({"pos": target, "radius": float(info.get("radius", 50.0)), "ttl": 12, "color": "fire"})
 			event.emit("%s raises %s — the ground itself takes a side." % [hname, label])
@@ -911,7 +928,7 @@ func _hero_apply_effect(side: int, aid: String, info: Dictionary, target: Vector
 					event.emit("%s casts %s on %s." % [hname, label, t2.label])
 		"rally":
 			var radius2 := float(info.get("radius", 90.0))
-			var amount := float(info.get("amount", 15.0)) * scale
+			var amount := float(info.get("amount", 15.0)) * scale * rally_m
 			var lifted := 0
 			for r: Regiment in regiments:
 				if r.side == side and r.active() and r.pos.distance_to(target) <= radius2:
@@ -938,19 +955,19 @@ func _hero_apply_effect(side: int, aid: String, info: Dictionary, target: Vector
 		"heal":
 			var f2 := _nearest_friend_to_point(side, target)
 			if f2 != null:
-				_hero_heal(f2, float(info.get("amount", 40.0)) * scale)
+				_hero_heal(f2, float(info.get("amount", 40.0)) * scale * heal_m)
 				casts.append({"pos": f2.pos, "radius": 26.0, "ttl": 10, "color": "gold"})
 				event.emit("%s: %s — %s's fallen stand back up." % [hname, label, f2.label])
 		"heal_area":
 			var radius4 := float(info.get("radius", 80.0))
 			for r: Regiment in regiments:
 				if r.side == side and r.alive() and r.pos.distance_to(target) <= radius4:
-					_hero_heal(r, float(info.get("amount", 30.0)) * scale)
+					_hero_heal(r, float(info.get("amount", 30.0)) * scale * heal_m)
 			casts.append({"pos": target, "radius": radius4, "ttl": 10, "color": "gold"})
 			event.emit("%s: %s — the lines nearby are mended." % [hname, label])
 		"hero_strike":
 			if not heroes[1 - side].is_empty() and hero_state[1 - side] == "fighting":
-				_hero_take_damage(1 - side, float(info.get("pow", 25.0)))
+				_hero_take_damage(1 - side, float(info.get("pow", 25.0)) * float(smods.get("hero_strike_mult", 1.0)))
 				event.emit("%s finds the enemy commander — %s bleeds for it!" % [hname,
 					str(heroes[1 - side].get("name", "the enemy hero"))])
 			else:

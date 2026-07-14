@@ -1152,6 +1152,8 @@ func _refresh_unit_panel() -> void:
 			lines += "\nHero: Level %d %s%s" % [int(h.get("level", 1)),
 				HeroDB.class_label(str(h.get("class", ""))),
 				" — LEGENDARY" if bool(h.get("legendary", false)) else ""]
+			if str(h.get("subclass", "")) != "":
+				lines += "\n%s" % HeroDB.sub_label(str(h.get("subclass", "")))
 			lines += "\nPersonal HP: %d / %d" % [int(sim.hero_hp[0]), int(h.get("hp_max", 40))]
 			match str(sim.hero_state[0]):
 				"unconscious":
