@@ -58,6 +58,16 @@ var faith: String = ""             # faith name; "" falls back by culture (SimWo
 var threshold_binding_bonus_permanent: float = 0.0  # earned rite by rite, capped at +0.6
 var wooden_birds_carved: int = 0   # Gravewarden-Sworn: one per dead received
 
+# The Hero System v1.0: hero-tier characters carry a class, a level, and
+# a personal HP pool separate from any unit's. hero_level 0 = ordinary.
+var hero_level: int = 0
+var hero_xp: int = 0
+var hero_class: String = ""
+var hero_hp: int = 0               # current personal HP (battles spend it; months restore it)
+var hero_hp_max: int = 0
+var hero_combat_level: int = -1    # field-ability tier when it lags the craft (-1 = hero_level)
+var hero_wounded_until: int = -1   # campaign tick before which the hero cannot take a field
+
 # The Memory Log: typed, decaying opinions of other characters.
 # Entries: {"type": String, "subject": int, "value": float, "tick": int, "decay": float(/year)}
 var memories: Array = []

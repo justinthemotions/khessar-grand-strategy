@@ -174,9 +174,12 @@ response is canonically N/A ("The Silence did not surprise him").
 - ~~The old Tactical-doc Caeris commander block~~ — **RULED SUPERSEDED**; the
   scholar-commander stats are now implemented (§11 below). COMBAT_SYSTEM.md §14.7's
   "Caeris awaits her faction" flag is resolved — *he* is on the map now.
-- Legendary Actions (Observe, Redirect, Settling Touch) are folded into the
+- ~~Legendary Actions (Observe, Redirect, Settling Touch) are folded into the
   commander-scale defense; per-action tactical mechanics await hero-scale battle
-  units.
+  units~~ — **RESOLVED** by the Hero System v1.0 pass: Caeris takes the
+  Ashfields field as a Level 9 Legendary scholar, and Observe / Redirect /
+  The Settling Touch are live per-action field orders with Legendary
+  Resistance behind them (HERO_SYSTEM.md §5-6).
 - Contact currently requires the *ruler's* Learning ≥ 16 — the engine has no
   envoy-character abstraction yet; when characters travel, gate on the envoy.
 - Endgame convergence is chronicle-level; the four endings' full mechanical

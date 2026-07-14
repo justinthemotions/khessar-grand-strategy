@@ -65,6 +65,11 @@ var end_box: CenterContainer
 var tactic_buttons: Dictionary = {}   # kind -> Button (the Battle Grid's command cards)
 var commander_selected := false       # the hero card is clicked — the panel shows him
 var ammo_start: Dictionary = {}       # regiment id -> starting ammunition (the orange strip)
+# Hero System v1.0: the hero's spell bar and targeted casting
+var hero_bar: HBoxContainer = null    # built lazily once sim.heroes[0] is set
+var hero_buttons: Dictionary = {}     # ability id -> Button
+var pending_ability := ""             # a working awaiting its target on the field
+var spell_fx: Array = []              # consumed sim.casts, animated locally
 var camera_center := Vector2.ZERO
 var camera_zoom := 1.0
 var battle_time := 0.0
@@ -184,6 +189,58 @@ func _refresh_tactic_buttons() -> void:
 		b.tooltip_text = gate if gate != "" else "Give the order."
 
 
+func _ensure_hero_bar() -> void:
+	## The hero's spell bar, built once the sim knows a hero rides with
+	## side 0 (main.gd sets the hero after the view is constructed).
+	if hero_bar != null or (sim.heroes[0] as Dictionary).is_empty():
+		return
+	hero_bar = HBoxContainer.new()
+	hero_bar.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	hero_bar.offset_left = -560.0
+	hero_bar.offset_right = -12.0
+	hero_bar.offset_top = -158.0
+	hero_bar.offset_bottom = -132.0  # sits just above the card bar
+	hero_bar.alignment = BoxContainer.ALIGNMENT_END
+	hero_bar.add_theme_constant_override("separation", 4)
+	add_child(hero_bar)
+	for aid in sim.hero_abilities(0):
+		var info: Dictionary = HeroDB.info(str(aid))
+		var b := Button.new()
+		b.text = str(info.get("label", aid))
+		b.add_theme_font_size_override("font_size", 12)
+		var a: String = str(aid)
+		b.pressed.connect(func() -> void: _hero_button_pressed(a))
+		hero_bar.add_child(b)
+		hero_buttons[a] = b
+
+
+func _hero_button_pressed(aid: String) -> void:
+	if pending_ability == aid:
+		pending_ability = ""  # pressing again puts the working down
+		return
+	var kind := str(HeroDB.info(aid).get("kind", ""))
+	if kind in ["dispel", "hero_strike"]:
+		var _e := sim.use_hero_ability(0, aid, sim.hero_pos(0))
+		pending_ability = ""
+	else:
+		pending_ability = aid  # the next click on the field places it
+
+
+func _refresh_hero_buttons() -> void:
+	_ensure_hero_bar()
+	if hero_bar == null:
+		return
+	for aid in hero_buttons:
+		var b: Button = hero_buttons[aid]
+		var gate: String = sim.hero_ability_gate(0, str(aid))
+		var info: Dictionary = HeroDB.info(str(aid))
+		b.disabled = gate != ""
+		b.text = "%s (%d)" % [str(info.get("label", aid)), int(sim.hero_uses[0].get(aid, 0))]
+		if pending_ability == str(aid):
+			b.text = "» %s «" % str(info.get("label", aid))
+		b.tooltip_text = str(info.get("desc", "")) + ("" if gate == "" else "\n" + gate)
+
+
 func _process(delta: float) -> void:
 	if not over and speed_scale > 0.0:
 		var scaled := delta * speed_scale
@@ -199,6 +256,17 @@ func _process(delta: float) -> void:
 		for v in sim.volleys:
 			arrows.append({"from": v["from"], "to": v["to"], "age": 0.0})
 		sim.volleys.clear()
+		# consume the heroes' workings the same way
+		for cst in sim.casts:
+			spell_fx.append({"pos": cst["pos"], "radius": cst["radius"],
+				"color": cst["color"], "age": 0.0})
+		sim.casts.clear()
+		var fx_kept: Array = []
+		for fx in spell_fx:
+			fx["age"] = float(fx["age"]) + scaled
+			if float(fx["age"]) < 0.7:
+				fx_kept.append(fx)
+		spell_fx = fx_kept
 		var kept: Array = []
 		for a in arrows:
 			a["age"] = float(a["age"]) + scaled
@@ -215,6 +283,7 @@ func _process(delta: float) -> void:
 	_update_camera(delta)
 	_refresh_unit_panel()
 	_refresh_tactic_buttons()
+	_refresh_hero_buttons()
 	queue_redraw()
 
 
@@ -248,6 +317,15 @@ func _gui_input(event: InputEvent) -> void:
 			return
 		if _card_click(event.position, event.button_index, event.pressed):
 			return
+		# a working awaiting its target lands where the next click falls
+		if pending_ability != "" and event.pressed:
+			if event.button_index == MOUSE_BUTTON_LEFT:
+				var _e := sim.use_hero_ability(0, pending_ability, _to_field(event.position))
+				pending_ability = ""
+				return
+			elif event.button_index == MOUSE_BUTTON_RIGHT:
+				pending_ability = ""  # the working is put down unspent
+				return
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			selected_id = -1
 			commander_selected = false
@@ -448,6 +526,16 @@ func _draw() -> void:
 			_:
 				draw_rect(Rect2(p, Vector2(ps, ps * 0.6)), GRASS_DARK if int(patch["kind"]) % 2 == 0 else GRASS_LIGHT)
 
+	# persistent workings burn on the ground beneath the formations
+	for z in sim.zones:
+		var zp := _to_screen(z["pos"])
+		var zr := float(z["radius"]) * _scale()
+		var pulse := 0.55 + 0.15 * sin(battle_time * 5.0)
+		draw_circle(zp, zr, Color(0.85, 0.35, 0.10, 0.16 * pulse))
+		draw_arc(zp, zr, 0.0, TAU, 40, Color(0.95, 0.55, 0.15, 0.65), 2.0)
+		draw_arc(zp, zr * 0.7, battle_time * 1.5, battle_time * 1.5 + TAU * 0.7, 30,
+			Color(0.95, 0.45, 0.10, 0.35), 1.5)
+
 	# Fallen sprites sit below the surviving formations and fade quickly; the
 	# authoritative soldier count has already changed in the sim and UI.
 	for fallen in fallen_soldiers:
@@ -472,6 +560,20 @@ func _draw() -> void:
 		var dir := (to - from).normalized()
 		draw_line(p - dir * 4.0, p + dir * 4.0, Color("2a2118"), 1.5)
 
+	# the heroes' workings flare and fade where they landed
+	for fx in spell_fx:
+		var age: float = float(fx["age"]) / 0.7
+		var fp := _to_screen(fx["pos"])
+		var fr := float(fx["radius"]) * _scale() * (0.4 + 0.6 * age)
+		var col := Color(0.95, 0.55, 0.15)
+		match str(fx["color"]):
+			"gold": col = Color(0.85, 0.75, 0.35)
+			"bolt": col = Color(0.55, 0.75, 0.95)
+			"dread": col = Color(0.55, 0.30, 0.65)
+		col.a = (1.0 - age) * 0.8
+		draw_arc(fp, fr, 0.0, TAU, 40, col, 3.0 * (1.0 - age) + 1.0)
+		draw_circle(fp, fr * 0.25 * (1.0 - age), Color(col, col.a * 0.5))
+
 	for r: BattleSim.Regiment in order:
 		_draw_banner(r)
 
@@ -484,6 +586,16 @@ func _draw() -> void:
 			var font := get_theme_default_font()
 			draw_string(font, mouse_now + Vector2(12, -6), "%d files" % files,
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, GOLD)
+
+	# a working awaiting its target: the reach previewed under the cursor
+	if pending_ability != "":
+		var pinfo: Dictionary = HeroDB.info(pending_ability)
+		var preview := float(pinfo.get("radius", pinfo.get("length", 30.0))) * _scale()
+		draw_arc(mouse_now, preview, 0.0, TAU, 40, Color(0.95, 0.65, 0.25, 0.85), 2.0)
+		draw_arc(mouse_now, 4.0, 0.0, TAU, 12, Color(0.95, 0.65, 0.25, 0.85), 2.0)
+		var pfont := get_theme_default_font()
+		draw_string(pfont, mouse_now + Vector2(12, -10), str(pinfo.get("label", pending_ability)),
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 13, GOLD)
 
 	_draw_card_bar()
 
@@ -947,14 +1059,29 @@ func _draw_commander_card(rect: Rect2) -> void:
 	draw_rect(rect, CARD_BG)
 	var band := Rect2(rect.position, Vector2(rect.size.x, 13.0))
 	draw_rect(band, Color("3a2b1c"))
-	draw_string(font, band.position + Vector2(3, 10), "CMDR", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, GOLD)
-	var portrait := Rect2(rect.position + Vector2(0, 14.0), Vector2(rect.size.x, rect.size.y - 14.0))
+	var is_hero := not (sim.heroes[0] as Dictionary).is_empty()
+	var cmdr_tag := "CMDR"
+	if is_hero:
+		cmdr_tag = "L%d" % int(sim.heroes[0].get("level", 1))
+	draw_string(font, band.position + Vector2(3, 10), cmdr_tag, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, GOLD)
+	var y := band.end.y + 1.0
+	if is_hero:
+		# the hero's personal HP, TW-style: a red strip under the band
+		var hp := clampf(float(sim.hero_hp[0]) / maxf(1.0, float(sim.heroes[0].get("hp_max", 40))), 0.0, 1.0)
+		draw_rect(Rect2(Vector2(rect.position.x, y), Vector2(rect.size.x, 3.0)), CARD_BAND)
+		draw_rect(Rect2(Vector2(rect.position.x, y), Vector2(rect.size.x * hp, 3.0)), Color("c9403a"))
+		y += 4.0
+	var portrait := Rect2(Vector2(rect.position.x, y), Vector2(rect.size.x, rect.end.y - y))
 	draw_rect(portrait, (side_colors[0] as Color).darkened(0.5))
 	var base := Vector2(portrait.get_center().x, portrait.end.y - 7.0)
 	var ps := minf(3.4, portrait.size.y / 17.0)
 	_draw_soldier(base, "sword", side_colors[0], ps)
 	# the plume marks him out among his own
 	draw_line(base + Vector2(0.0, -9.0) * ps, base + Vector2(-3.0, -13.0) * ps, GOLD, 2.5)
+	# a fallen hero shades his own card, exactly like a fallen line
+	if is_hero and str(sim.hero_state[0]) in ["unconscious", "stable", "dead"]:
+		draw_rect(rect, Color(0.05, 0.04, 0.03, 0.68))
+		_draw_skull(rect.get_center(), 7.0)
 	var nc := Vector2(rect.get_center().x, rect.end.y - 1.0)
 	draw_circle(nc, 9.0, CARD_BAND)
 	draw_arc(nc, 9.0, PI, TAU, 16, GOLD, 1.5)
@@ -1020,6 +1147,19 @@ func _refresh_unit_panel() -> void:
 		unit_status.add_theme_color_override("font_color", GOLD)
 		var lines := "Martial  %d\nIntrigue  %d\nProwess  %d" % [
 			int(info.get("martial", 0)), int(info.get("intrigue", 0)), int(info.get("prowess", 0))]
+		var h: Dictionary = sim.heroes[0]
+		if not h.is_empty():
+			lines += "\nHero: Level %d %s%s" % [int(h.get("level", 1)),
+				HeroDB.class_label(str(h.get("class", ""))),
+				" — LEGENDARY" if bool(h.get("legendary", false)) else ""]
+			lines += "\nPersonal HP: %d / %d" % [int(sim.hero_hp[0]), int(h.get("hp_max", 40))]
+			match str(sim.hero_state[0]):
+				"unconscious":
+					lines += "\nDOWN — rolling death saves"
+				"stable":
+					lines += "\nCarried from the field, alive"
+				"dead":
+					lines += "\nDEAD"
 		var traits: Array = info.get("traits", [])
 		if not traits.is_empty():
 			lines += "\nTraits: %s" % ", ".join(PackedStringArray(traits))

@@ -229,6 +229,22 @@ class Regiment:
 	var crit_mult := 1.0         # deterministic EV critical layer (commander-set)
 	var dmg_vs_silence := 1.0    # Gravewarden-witnessed side: × vs silence-born units
 	var oath_conflict := false   # the Order facing heresy: OATH_CONFLICT_MULT applies
+	# Hero System v1.0 hooks: the hero's hand on this line
+	var hero_ma_bonus := 0.0     # projected by hero auras, recomputed each aura tick
+	var hero_md_bonus := 0.0
+	var hero_missile_block := 0.0
+	var hero_terror_block := 0.0
+	var fx_ticks := 0            # a timed working holds this line (one at a time)
+	var fx_ma := 0.0
+	var fx_md := 0.0
+	var fx_ws_mult := 1.0
+	var fx_dmg_mult := 1.0       # damage-taken multiplier while the working holds
+	var fx_speed_mult := 1.0
+	var fx_lead := 0.0
+	var fx_missile_immune := false
+
+	func fx_on() -> bool:
+		return fx_ticks > 0
 	var pos := Vector2.ZERO
 	var facing := Vector2.RIGHT
 	var has_move_order := false
@@ -335,6 +351,32 @@ var ground_library := false          # Iron Library adjacency (Pellar)
 var ground_wardstone := false        # the sealed Kharak-Dum holds
 var side_threshold := [false, false] # a Gravewarden-Sworn hand commands this side
 var side_faith := ["", ""]           # the commander's faith — oath-conflict reads it
+
+# Hero System v1.0: heroes on the field. A hero rides with a host line
+# (personal HP separate from unit HP), spends leveled abilities on
+# cooldowns, and at 0 HP rolls death saves on the battle's own dice.
+const HERO_GLOBAL_CD := 10           # combat ticks between any two workings...
+const HERO_GLOBAL_CD_LEGENDARY := 5  # ...halved for Legendary Actions (doc §7)
+const HERO_SAVE_CHANCE := 0.55       # a death save succeeds at this rate
+const HERO_SPLASH := 0.15            # abilities striking the host splash onto the hero
+const HERO_CHIP := 0.45              # hero damage per host casualty in the press
+var heroes: Array = [{}, {}]         # per side: world.hero_info dict (empty = none)
+var hero_hp := [0.0, 0.0]
+var hero_state := ["", ""]           # "" | fighting | unconscious | stable | dead
+var hero_saves: Array = [[0, 0], [0, 0]]  # [fails, successes] while unconscious
+var hero_resist := [0, 0]            # Legendary Resistance charges (3/battle at L8+)
+var hero_cd: Array = [{}, {}]        # ability id -> combat tick it comes off cooldown
+var hero_uses: Array = [{}, {}]      # ability id -> uses left this battle
+var hero_global_cd := [0, 0]         # combat tick the hero may act again
+var hero_host := [-1, -1]            # regiment id the hero rides with
+var hero_host_pool := [0.0, 0.0]     # host hp_pool last tick (chip-damage bookkeeping)
+var hero_counterspells := [0, 0]     # interceptions left (wizard passive)
+var hero_death_ward := [false, false]  # the first killing blow is refused (cleric passive)
+var hero_dodge := [1.0, 1.0]         # damage-in multiplier (rogue passive 0.5)
+var hero_auras: Array = [[], []]     # armed passive auras: [{radius, lead, md, ma, ...}]
+var hero_actions_used := [0, 0]      # successful workings (XP for Legendary Actions)
+var zones: Array = []                # persistent workings: {pos, radius, dpt, ticks, side, label}
+var casts: Array = []                # visual flashes the view consumes: {pos, radius, ttl, color}
 
 
 func setup_from_rosters(roster_a: Array, roster_b: Array, lead_bonus_a: int, lead_bonus_b: int, side_names: Array,
@@ -634,6 +676,513 @@ func _has_ward_retinue(side: int) -> bool:
 		if r.side == side and r.ward_shield:
 			return true
 	return false
+
+
+# --------------------------------------------- heroes on the field (v1.0)
+
+func set_hero(side: int, h: Dictionary) -> void:
+	## A hero takes the field: personal HP, leveled abilities on
+	## cooldowns, passives armed. Consumes no dice — the gates roll at
+	## each working, and only when genuinely uncertain.
+	heroes[side] = h
+	hero_hp[side] = float(h.get("hp", 40))
+	hero_state[side] = "fighting"
+	hero_saves[side] = [0, 0]
+	hero_resist[side] = 3 if bool(h.get("legendary", false)) else 0
+	hero_cd[side] = {}
+	hero_uses[side] = {}
+	hero_global_cd[side] = 0
+	hero_counterspells[side] = 0
+	hero_death_ward[side] = false
+	hero_dodge[side] = 1.0
+	hero_auras[side] = []
+	hero_actions_used[side] = 0
+	var cls := str(h.get("class", ""))
+	var lvl := int(h.get("combat_level", h.get("level", 1)))
+	var legendary := bool(h.get("legendary", false))
+	for aid in HeroDB.battle_actives(cls, lvl):
+		# Legendary heroes take additional actions: +1 use of everything
+		hero_uses[side][aid] = int(HeroDB.info(aid).get("uses", 1)) + (1 if legendary else 0)
+		hero_cd[side][aid] = 0
+	for aid in HeroDB.battle_passives(cls, lvl):
+		var info := HeroDB.info(aid)
+		match str(info["kind"]):
+			"aura":
+				hero_auras[side].append(info)
+			"counterspell":
+				# doc §4.1: the L6 wizard's Contingency covers a second interruption
+				hero_counterspells[side] += int(info.get("uses", 1)) + (1 if lvl >= 6 else 0)
+			"death_ward":
+				hero_death_ward[side] = true
+			"dodge":
+				hero_dodge[side] = minf(hero_dodge[side], float(info.get("mult", 1.0)))
+	_hero_host_assign(side)
+
+
+func hero_active(side: int) -> bool:
+	return not heroes[side].is_empty() and hero_state[side] == "fighting"
+
+
+func hero_abilities(side: int) -> Array:
+	## The hero's field orders, in grant order (the view's button bar).
+	if heroes[side].is_empty():
+		return []
+	return HeroDB.battle_actives(str(heroes[side].get("class", "")),
+		int(heroes[side].get("combat_level", heroes[side].get("level", 1))))
+
+
+func _hero_host_assign(side: int) -> void:
+	## The hero rides with the strongest line still standing.
+	var best: Regiment = null
+	for r: Regiment in regiments:
+		if r.side == side and r.active():
+			if best == null or r.soldiers > best.soldiers:
+				best = r
+	hero_host[side] = best.id if best != null else -1
+	hero_host_pool[side] = best.hp_pool if best != null else 0.0
+
+
+func hero_pos(side: int) -> Vector2:
+	if hero_host[side] >= 0 and hero_host[side] < regiments.size():
+		return (regiments[hero_host[side]] as Regiment).pos
+	return Vector2(120.0, field.y * 0.5) if side == 0 else Vector2(field.x - 120.0, field.y * 0.5)
+
+
+func hero_ability_gate(side: int, aid: String) -> String:
+	## "" = the working can be attempted. Otherwise, why not.
+	if ended:
+		return "The field is decided."
+	if heroes[side].is_empty():
+		return "No hero stands on this field."
+	if hero_state[side] != "fighting":
+		return "The hero is down."
+	if not hero_uses[side].has(aid):
+		return "That working is beyond this hero."
+	if int(hero_uses[side][aid]) <= 0:
+		return "That working is spent."
+	if combat_ticks < int(hero_cd[side].get(aid, 0)):
+		return "The working is not ready again yet."
+	if combat_ticks < int(hero_global_cd[side]):
+		return "The hero has just acted."
+	return ""
+
+
+func use_hero_ability(side: int, aid: String, target: Vector2 = Vector2.ZERO) -> String:
+	## A hero's working: the binary gate rolls first (Tactical v1.0 law —
+	## it fires whole or fizzles whole), the enemy's Counterspell may
+	## interrupt, and the cost lands either way.
+	var gate := hero_ability_gate(side, aid)
+	if gate != "":
+		return gate
+	var info := HeroDB.info(aid)
+	var h: Dictionary = heroes[side]
+	var cls := str(h.get("class", ""))
+	var legendary := bool(h.get("legendary", false))
+	hero_uses[side][aid] = int(hero_uses[side][aid]) - 1
+	hero_cd[side][aid] = combat_ticks + int(info.get("cd", 20))
+	hero_global_cd[side] = combat_ticks + (HERO_GLOBAL_CD_LEGENDARY if legendary else HERO_GLOBAL_CD)
+	# --- the cost of asking, answered or not ---
+	var practice := HeroDB.practice(cls)
+	if practice != "":
+		commander_stress[side] += 1.0 if practice == "faith" else 0.5
+	if CLASSES_CAST_CORRUPTION.has(cls):
+		commander_corruption[side] += float(CLASSES_CAST_CORRUPTION[cls])
+	commander_corruption[side] += float(info.get("corruption", 0.0))
+	# --- the enemy's counter-formula (magical workings only) ---
+	if practice != "" and hero_counterspells[1 - side] > 0 and hero_active(1 - side):
+		hero_counterspells[1 - side] -= 1
+		event.emit("%s begins the working — and %s's counter-formula snuffs it mid-air." % [
+			str(h.get("name", "The hero")), str(heroes[1 - side].get("name", "the enemy hero"))])
+		return ""
+	# --- the binary gate ---
+	var rel := 1.0
+	if practice == "oath":
+		rel = casting_reliability("oath", h.get("traits", []), bool(h.get("oath_intact", true)))
+	elif practice != "":
+		rel = casting_reliability(practice, h.get("traits", []))
+	if cls == "sorcerer":
+		rel *= float(HeroDB.CLASSES["sorcerer"].get("unreliable", 1.0))
+	if not _gate(rel):
+		if practice == "faith":
+			commander_stress[side] += 5.0  # asking and not receiving has its cost
+		event.emit("%s reaches for %s — and this ground does not carry it." % [
+			str(h.get("name", "The hero")), str(info.get("label", aid))])
+		return ""
+	# --- the working fires whole ---
+	hero_actions_used[side] += 1
+	_hero_apply_effect(side, aid, info, target)
+	return ""
+
+
+# Sorcerers pay corruption on every casting (doc §4.2).
+const CLASSES_CAST_CORRUPTION := {"sorcerer": 0.5}
+
+
+func _hero_song_scale(side: int, info: Dictionary) -> float:
+	## The Bard's law: what the carried names weigh (the commander-scale
+	## song aura's own formula, reused).
+	if not bool(info.get("song_scaled", false)):
+		return 1.0
+	return clampf(1.0 + float(heroes[side].get("names", 0)) / 200.0, 1.0, 2.0)
+
+
+func _hero_apply_effect(side: int, aid: String, info: Dictionary, target: Vector2) -> void:
+	var h: Dictionary = heroes[side]
+	var hname := str(h.get("name", "The hero"))
+	var label := str(info.get("label", aid))
+	var scale := _hero_song_scale(side, info)
+	match str(info["kind"]):
+		"aoe":
+			var radius := float(info.get("radius", 50.0))
+			var struck := 0
+			for r: Regiment in regiments:
+				if r.side != side and r.alive() and r.pos.distance_to(target) <= radius + r.radius() * 0.5:
+					_hero_damage(r, float(info.get("pow", 20.0)) * scale, float(info.get("shock", 0.0)))
+					struck += 1
+			casts.append({"pos": target, "radius": radius, "ttl": 10, "color": "fire"})
+			if struck > 0:
+				event.emit("%s casts %s — %d enemy line%s caught in it!" % [hname, label, struck, "" if struck == 1 else "s"])
+			else:
+				event.emit("%s casts %s — it lands on empty ground." % [hname, label])
+		"line":
+			var origin := hero_pos(side)
+			var dir := (target - origin)
+			if dir.length() < 1.0:
+				dir = Vector2.RIGHT if side == 0 else Vector2.LEFT
+			dir = dir.normalized()
+			var length := float(info.get("length", 240.0))
+			var struck2 := 0
+			for r: Regiment in regiments:
+				if r.side == side or not r.alive():
+					continue
+				var to := r.pos - origin
+				var along := to.dot(dir)
+				if along < 0.0 or along > length:
+					continue
+				if (to - dir * along).length() <= r.radius() * 0.6 + 14.0:
+					_hero_damage(r, float(info.get("pow", 30.0)) * scale, 4.0)
+					struck2 += 1
+			casts.append({"pos": origin + dir * length * 0.5, "radius": length * 0.5, "ttl": 8, "color": "bolt"})
+			event.emit("%s looses %s down the field%s" % [hname, label,
+				" — %d lines struck!" % struck2 if struck2 > 0 else ". It grounds harmlessly."])
+		"multi":
+			var count := int(info.get("count", 3))
+			var reach := float(info.get("range", 260.0))
+			var pool: Array = []
+			for r: Regiment in regiments:
+				if r.side != side and r.alive() and r.pos.distance_to(target) <= reach:
+					pool.append(r)
+			pool.sort_custom(func(a, b) -> bool:
+				return a.pos.distance_squared_to(target) < b.pos.distance_squared_to(target))
+			for i in mini(count, pool.size()):
+				_hero_damage(pool[i], float(info.get("pow", 15.0)) * scale, 3.0)
+				casts.append({"pos": (pool[i] as Regiment).pos, "radius": 24.0, "ttl": 8, "color": "bolt"})
+			event.emit("%s casts %s — %d strikes find their lines." % [hname, label, mini(count, pool.size())])
+		"single":
+			var t := _nearest_enemy_to_point(side, target)
+			if t != null:
+				var strike := float(info.get("pow", 20.0)) * scale
+				if t.silence_kind:
+					strike *= float(info.get("vs_silence", 1.0))
+				_hero_damage(t, strike, float(info.get("shock", 0.0)))
+				casts.append({"pos": t.pos, "radius": 20.0, "ttl": 8, "color": "bolt"})
+				event.emit("%s strikes %s with %s!" % [hname, t.label, label])
+		"zone":
+			zones.append({"pos": target, "radius": float(info.get("radius", 50.0)),
+				"dpt": float(info.get("dpt", 5.0)) * scale, "ticks": int(info.get("dur", 20)),
+				"side": side, "label": label})
+			casts.append({"pos": target, "radius": float(info.get("radius", 50.0)), "ttl": 12, "color": "fire"})
+			event.emit("%s raises %s — the ground itself takes a side." % [hname, label])
+		"timed":
+			if bool(info.get("all_enemies", false)):
+				for r: Regiment in regiments:
+					if r.side != side and r.active():
+						_apply_timed(r, info, scale)
+				event.emit("%s casts %s — the whole enemy line staggers out of time." % [hname, label])
+			elif str(info.get("target", "enemy")) == "friend":
+				var f := _nearest_friend_to_point(side, target)
+				if f != null:
+					_apply_timed(f, info, scale)
+					event.emit("%s lays %s on %s." % [hname, label, f.label])
+			else:
+				var t2 := _nearest_enemy_to_point(side, target)
+				if t2 != null:
+					_apply_timed(t2, info, scale)
+					event.emit("%s casts %s on %s." % [hname, label, t2.label])
+		"rally":
+			var radius2 := float(info.get("radius", 90.0))
+			var amount := float(info.get("amount", 15.0)) * scale
+			var lifted := 0
+			for r: Regiment in regiments:
+				if r.side == side and r.active() and r.pos.distance_to(target) <= radius2:
+					r.shock = maxf(0.0, r.shock - amount)
+					lifted += 1
+			casts.append({"pos": target, "radius": radius2, "ttl": 10, "color": "gold"})
+			if lifted > 0:
+				event.emit("%s: %s — the lines nearby remember their feet." % [hname, label])
+		"shockwave":
+			var amount2 := float(info.get("amount", 10.0)) * scale
+			if str(info.get("target", "point")) == "enemy":
+				var t3 := _nearest_enemy_to_point(side, target)
+				if t3 != null and not t3.no_morale:
+					t3.shock += amount2 * t3.shock_mult
+					event.emit("%s turns %s on %s — the line flinches." % [hname, label, t3.label])
+			else:
+				var radius3 := float(info.get("radius", 120.0))
+				for r: Regiment in regiments:
+					if r.side != side and r.active() and not r.no_morale \
+							and r.silence_immunity < 1.0 and r.pos.distance_to(target) <= radius3:
+						r.shock += amount2 * (1.0 - r.silence_immunity) * r.shock_mult
+				casts.append({"pos": target, "radius": radius3, "ttl": 10, "color": "dread"})
+				event.emit("%s: %s — a wrongness sweeps the enemy lines." % [hname, label])
+		"heal":
+			var f2 := _nearest_friend_to_point(side, target)
+			if f2 != null:
+				_hero_heal(f2, float(info.get("amount", 40.0)) * scale)
+				casts.append({"pos": f2.pos, "radius": 26.0, "ttl": 10, "color": "gold"})
+				event.emit("%s: %s — %s's fallen stand back up." % [hname, label, f2.label])
+		"heal_area":
+			var radius4 := float(info.get("radius", 80.0))
+			for r: Regiment in regiments:
+				if r.side == side and r.alive() and r.pos.distance_to(target) <= radius4:
+					_hero_heal(r, float(info.get("amount", 30.0)) * scale)
+			casts.append({"pos": target, "radius": radius4, "ttl": 10, "color": "gold"})
+			event.emit("%s: %s — the lines nearby are mended." % [hname, label])
+		"hero_strike":
+			if not heroes[1 - side].is_empty() and hero_state[1 - side] == "fighting":
+				_hero_take_damage(1 - side, float(info.get("pow", 25.0)))
+				event.emit("%s finds the enemy commander — %s bleeds for it!" % [hname,
+					str(heroes[1 - side].get("name", "the enemy hero"))])
+			else:
+				event.emit("%s stalks the enemy command — and finds no one worth the knife." % hname)
+		"dispel":
+			var cleared := 0
+			for z in zones:
+				if int(z["side"]) != side:
+					z["ticks"] = 0
+					cleared += 1
+			for r: Regiment in regiments:
+				if r.side == side and r.fx_on() and (r.fx_ma < 0.0 or r.fx_dmg_mult > 1.0 or r.fx_speed_mult < 1.0):
+					r.fx_ticks = 0
+			event.emit("%s: %s — the workings on this field are dismissed." % [hname, label])
+
+
+func _apply_timed(r: Regiment, info: Dictionary, scale: float = 1.0) -> void:
+	r.fx_ticks = int(info.get("dur", 12))
+	r.fx_ma = float(info.get("ma", 0.0)) * scale
+	r.fx_md = float(info.get("md", 0.0)) * scale
+	r.fx_ws_mult = float(info.get("ws_mult", 1.0))
+	r.fx_dmg_mult = float(info.get("dmg_mult", 1.0))
+	r.fx_speed_mult = float(info.get("speed_mult", 1.0))
+	r.fx_lead = float(info.get("lead", 0.0)) * scale
+	r.fx_missile_immune = bool(info.get("missile_immune", false))
+
+
+func _hero_damage(r: Regiment, amount: float, shock_amt: float) -> void:
+	## Ability damage runs the same pipeline as combat damage: pool,
+	## soldiers, casualty shock — plus the working's own dread.
+	var before := r.soldiers
+	r.hp_pool = maxf(0.0, r.hp_pool - amount * r.dmg_taken_mult * (r.fx_dmg_mult if r.fx_on() else 1.0))
+	r.soldiers = int(ceil(r.hp_pool / r.hp_per))
+	var cas := before - r.soldiers
+	if cas > 0 and not r.no_morale:
+		r.shock += (float(cas) / maxf(1.0, float(before))) * CASUALTY_SHOCK * r.shock_mult
+	if shock_amt > 0.0 and not r.no_morale:
+		r.shock += shock_amt * (1.0 - r.silence_immunity if r.silence_kind else 1.0) * r.shock_mult
+	# the enemy hero rides somewhere — a working that strikes the host
+	# splashes onto the rider
+	if r.id == hero_host[r.side] and hero_state[r.side] == "fighting":
+		_hero_take_damage(r.side, amount * HERO_SPLASH)
+	if r.soldiers <= 0:
+		r.fled = true
+		event.emit("%s %s under the working!" % [r.label,
+			"are dispersed" if r.no_morale else "is annihilated"])
+		_check_end()
+
+
+func _hero_heal(r: Regiment, amount: float) -> void:
+	var cap := float(r.start_soldiers) * r.hp_per
+	r.hp_pool = minf(cap, r.hp_pool + amount)
+	r.soldiers = mini(r.start_soldiers, int(ceil(r.hp_pool / r.hp_per)))
+
+
+func _hero_take_damage(side: int, amount: float) -> void:
+	if heroes[side].is_empty() or hero_state[side] != "fighting":
+		return
+	hero_hp[side] -= amount * hero_dodge[side]
+	if hero_hp[side] <= 0.0:
+		if hero_death_ward[side]:
+			hero_death_ward[side] = false
+			hero_hp[side] = 1.0
+			event.emit("The killing blow reaches %s — and is refused. The ward is spent." % str(heroes[side].get("name", "the hero")))
+			return
+		hero_hp[side] = 0.0
+		hero_state[side] = "unconscious"
+		hero_saves[side] = [0, 0]
+		event.emit("[b]%s goes down![/b] The line closes around the body — the saves begin." % str(heroes[side].get("name", "The hero")))
+
+
+func _nearest_enemy_to_point(side: int, pos: Vector2) -> Regiment:
+	var best: Regiment = null
+	var best_d := INF
+	for r: Regiment in regiments:
+		if r.side == side or not r.alive():
+			continue
+		var d := r.pos.distance_squared_to(pos)
+		if d < best_d:
+			best_d = d
+			best = r
+	return best
+
+
+func _nearest_friend_to_point(side: int, pos: Vector2) -> Regiment:
+	var best: Regiment = null
+	var best_d := INF
+	for r: Regiment in regiments:
+		if r.side != side or not r.alive():
+			continue
+		var d := r.pos.distance_squared_to(pos)
+		if d < best_d:
+			best_d = d
+			best = r
+	return best
+
+
+func _hero_battle_tick() -> void:
+	## The heroes' own combat tick: zones burn, hosts bleed onto their
+	## riders, and the fallen roll their saves on the battle's dice.
+	# persistent workings
+	for z in zones:
+		if int(z["ticks"]) <= 0:
+			continue
+		z["ticks"] = int(z["ticks"]) - 1
+		for r: Regiment in regiments:
+			if r.side != int(z["side"]) and r.alive() \
+					and r.pos.distance_to(z["pos"]) <= float(z["radius"]) + r.radius() * 0.4:
+				_hero_damage(r, float(z["dpt"]), 0.0)
+	zones = zones.filter(func(z2) -> bool: return int(z2["ticks"]) > 0)
+	for side in 2:
+		if heroes[side].is_empty():
+			continue
+		match str(hero_state[side]):
+			"fighting":
+				# the host may have broken or fallen — find a new line
+				var host_id: int = hero_host[side]
+				var host: Regiment = regiments[host_id] if host_id >= 0 and host_id < regiments.size() else null
+				if host == null or not host.active():
+					_hero_host_assign(side)
+					host_id = hero_host[side]
+					host = regiments[host_id] if host_id >= 0 else null
+					hero_host_pool[side] = host.hp_pool if host != null else 0.0
+					continue
+				# riding a bleeding line costs the rider (prowess keeps you alive)
+				if host.engaged_id >= 0:
+					var lost := maxf(0.0, hero_host_pool[side] - host.hp_pool)
+					if lost > 0.0:
+						var cas := lost / maxf(1.0, host.hp_per)
+						var guard := maxf(0.2, 1.0 - float(heroes[side].get("prowess", 6)) * 0.025)
+						_hero_take_damage(side, cas * HERO_CHIP * guard)
+				hero_host_pool[side] = host.hp_pool
+			"unconscious":
+				# death saves, one per combat tick: three failures and the
+				# campaign loses a name; three successes and it keeps one
+				var ok := brng.randf() < HERO_SAVE_CHANCE
+				if not ok and hero_resist[side] > 0:
+					hero_resist[side] -= 1
+					ok = true  # Legendary Resistance refuses the failure (doc §7)
+					event.emit("%s refuses the dark — Legendary Resistance, %d left." % [
+						str(heroes[side].get("name", "The hero")), hero_resist[side]])
+				hero_saves[side][1 if ok else 0] += 1
+				if hero_saves[side][0] >= 3:
+					hero_state[side] = "dead"
+					event.emit("[b]%s dies on the field.[/b] The chronicle will mark where." % str(heroes[side].get("name", "The hero")))
+				elif hero_saves[side][1] >= 3:
+					hero_state[side] = "stable"
+					event.emit("%s is dragged clear, breathing — barely. Their part in this battle is over." % str(heroes[side].get("name", "The hero")))
+
+
+func _ai_hero(side: int) -> void:
+	## The hero AI plays deterministically: mend what is breaking, break
+	## what is massed, steady what wavers. One working per window.
+	if not hero_active(side) or combat_ticks < 4 or combat_ticks < int(hero_global_cd[side]):
+		return
+	var best_aid := ""
+	var best_target := Vector2.ZERO
+	var best_value := 0.0
+	for aid in hero_abilities(side):
+		if hero_ability_gate(side, aid) != "":
+			continue
+		var info := HeroDB.info(aid)
+		match str(info["kind"]):
+			"aoe", "zone", "line", "multi":
+				# aim at the enemy line with the most company around it
+				var radius := float(info.get("radius", info.get("length", 60.0)))
+				for r: Regiment in regiments:
+					if r.side == side or not r.active():
+						continue
+					var mass := 0
+					for o: Regiment in regiments:
+						if o.side != side and o.active() and o.pos.distance_to(r.pos) <= radius:
+							mass += o.soldiers
+					var value := float(mass) * (1.5 if str(info["kind"]) == "aoe" else 1.0)
+					if value > best_value and mass >= 24:
+						best_value = value
+						best_aid = aid
+						best_target = r.pos
+			"heal", "heal_area":
+				for r: Regiment in regiments:
+					if r.side != side or not r.active():
+						continue
+					var frac := float(r.soldiers) / maxf(1.0, float(r.start_soldiers))
+					if frac < 0.6:
+						var value2 := (1.0 - frac) * 120.0
+						if value2 > best_value:
+							best_value = value2
+							best_aid = aid
+							best_target = r.pos
+			"rally":
+				for r: Regiment in regiments:
+					if r.side == side and r.active() and r.shock > 45.0 and not r.no_morale:
+						if r.shock > best_value:
+							best_value = r.shock
+							best_aid = aid
+							best_target = r.pos
+			"timed":
+				if str(info.get("target", "enemy")) == "friend":
+					var host: Regiment = regiments[hero_host[side]] if hero_host[side] >= 0 else null
+					if host != null and host.active() and host.engaged_id >= 0 and best_value < 30.0:
+						best_value = 30.0
+						best_aid = aid
+						best_target = host.pos
+				else:
+					var t := _biggest_enemy(side)
+					if t != null and t.engaged_id >= 0 and best_value < 26.0:
+						best_value = 26.0
+						best_aid = aid
+						best_target = t.pos
+			"single", "shockwave":
+				var t2 := _biggest_enemy(side)
+				if t2 != null and best_value < 20.0:
+					best_value = 20.0
+					best_aid = aid
+					best_target = t2.pos
+			"hero_strike":
+				if hero_active(1 - side) and hero_hp[1 - side] < float(heroes[1 - side].get("hp_max", 40)) * 0.6 \
+						and best_value < 40.0:
+					best_value = 40.0
+					best_aid = aid
+					best_target = hero_pos(1 - side)
+	if best_aid != "":
+		var _e := use_hero_ability(side, best_aid, best_target)
+
+
+func _biggest_enemy(side: int) -> Regiment:
+	var best: Regiment = null
+	for r: Regiment in regiments:
+		if r.side != side and r.active():
+			if best == null or r.soldiers > best.soldiers:
+				best = r
+	return best
 
 
 func _arm_opposition() -> void:
@@ -974,7 +1523,8 @@ func _move_substep(delta: float) -> void:
 			var to_lure := r.move_target - r.pos
 			if to_lure.length() >= 6.0:
 				var lure_dir := to_lure.normalized()
-				r.pos += lure_dir * r.speed * (1.0 - r.fatigue) * delta
+				r.pos += lure_dir * r.speed * (1.0 - r.fatigue) \
+					* (r.fx_speed_mult if r.fx_on() else 1.0) * delta
 				r.facing = lure_dir
 				r.was_moving = true
 				continue
@@ -1015,7 +1565,8 @@ func _move_substep(delta: float) -> void:
 					r.hold_facing = true
 			else:
 				var dir := to.normalized()
-				r.pos += dir * r.speed * (1.0 - r.fatigue) * delta
+				r.pos += dir * r.speed * (1.0 - r.fatigue) \
+					* (r.fx_speed_mult if r.fx_on() else 1.0) * delta
 				r.facing = dir
 				r.was_moving = true
 		else:
@@ -1065,8 +1616,10 @@ func ai_step(control_side_0: bool) -> void:
 	## Simple AI: unengaged regiments march at the nearest enemy.
 	## Side 0 is normally the player; pass true to automate both sides.
 	_ai_tactics(1)
+	_ai_hero(1)
 	if control_side_0:
 		_ai_tactics(0)
+		_ai_hero(0)
 	for r: Regiment in regiments:
 		if not r.active():
 			continue
@@ -1181,8 +1734,8 @@ func combat_tick() -> void:
 			continue
 		# envelopment: a wider line brings up to 1.4× the enemy frontage to bear
 		var engaged_count := mini(mini(r.files_now(), int(float(t.files_now()) * 1.4)), mini(r.soldiers, t.soldiers))
-		var ma := r.ma * (1.0 - r.fatigue)
-		var ws := r.ws * (1.0 - r.fatigue)
+		var ma := (r.ma + r.hero_ma_bonus + (r.fx_ma if r.fx_on() else 0.0)) * (1.0 - r.fatigue)
+		var ws := r.ws * (1.0 - r.fatigue) * (r.fx_ws_mult if r.fx_on() else 1.0)
 		var mult := 1.0
 		if t.is_cav and r.bonus_cav > 0.0:
 			ma += r.bonus_cav
@@ -1211,7 +1764,8 @@ func combat_tick() -> void:
 		if t.silence_kind:
 			mult *= r.dmg_vs_silence  # threshold-work against the unwitnessed dead
 		mult *= r.crit_mult
-		var hit := clampf(BASE_HIT + (ma - t.md * (1.0 - t.fatigue)) * HIT_PER_POINT, HIT_MIN, HIT_MAX)
+		var hit := clampf(BASE_HIT + (ma - (t.md + t.hero_md_bonus + (t.fx_md if t.fx_on() else 0.0)) \
+			* (1.0 - t.fatigue)) * HIT_PER_POINT, HIT_MIN, HIT_MAX)
 		var per_hit := maxf(ws * (ARMOUR_PIVOT / (ARMOUR_PIVOT + t.armour)), ws * CHIP_FRACTION)
 		dmg[t.id] = dmg.get(t.id, 0.0) + float(engaged_count) * ATTACKS_PER_TICK * hit * per_hit * mult
 
@@ -1235,7 +1789,8 @@ func combat_tick() -> void:
 		if dmg.has(r.id):
 			var before := r.soldiers
 			var depth_before := r.depth_for_count(before)
-			r.hp_pool = maxf(0.0, r.hp_pool - dmg[r.id] * r.dmg_taken_mult)
+			r.hp_pool = maxf(0.0, r.hp_pool - dmg[r.id] * r.dmg_taken_mult \
+				* (r.fx_dmg_mult if r.fx_on() else 1.0))
 			r.soldiers = int(ceil(r.hp_pool / r.hp_per))
 			var cas := before - r.soldiers
 			if cas > 0 and r.soldiers > 0 and r.engaged_id >= 0:
@@ -1245,9 +1800,12 @@ func combat_tick() -> void:
 				r.pos += r.facing.normalized() * lost_depth * 0.5
 			if cas > 0 and not r.no_morale:
 				r.shock += (float(cas) / maxf(1.0, float(before))) * CASUALTY_SHOCK * r.shock_mult
+		# a timed working runs out where it stands
+		if r.fx_ticks > 0:
+			r.fx_ticks -= 1
 		# morale regen: silence-touched ground starves the nerve of every
 		# line the Silence can still reach; nearby terror starves it more
-		var lead_eff := r.leadership + r.aura_bonus
+		var lead_eff := r.leadership + r.aura_bonus + (r.fx_lead if r.fx_on() else 0.0)
 		if ground_silence:
 			lead_eff -= SILENCE_LEAD_PENALTY * (1.0 - r.silence_immunity)
 		lead_eff = maxf(0.0, lead_eff) * (1.0 - r.terror_penalty) * r.lead_regen_mult
@@ -1266,6 +1824,7 @@ func combat_tick() -> void:
 			r.routed = true
 			event.emit("%s breaks and runs!" % r.label)
 			_cascade_panic(r)
+	_hero_battle_tick()
 	_check_end()
 
 
@@ -1296,6 +1855,10 @@ func _aura_tick() -> void:
 	for r: Regiment in regiments:
 		r.aura_bonus = 0.0
 		r.terror_penalty = 0.0
+		r.hero_ma_bonus = 0.0
+		r.hero_md_bonus = 0.0
+		r.hero_missile_block = 0.0
+		r.hero_terror_block = 0.0
 	for src: Regiment in regiments:
 		if src.aura_lead <= 0.0 or not src.active():
 			continue
@@ -1306,6 +1869,28 @@ func _aura_tick() -> void:
 				continue
 			if src.pos.distance_to(r.pos) <= src.aura_range:
 				r.aura_bonus = maxf(r.aura_bonus, src.aura_lead)
+	# the heroes' standing auras (v1.0): projected from wherever the hero
+	# rides, for as long as the hero still stands. Radius 0 reaches only
+	# the host line itself (a hero fighting in the ranks).
+	for side in 2:
+		if not hero_active(side) or hero_host[side] < 0:
+			continue
+		var origin: Vector2 = hero_pos(side)
+		for info in hero_auras[side]:
+			var radius := float(info.get("radius", 0.0))
+			for r: Regiment in regiments:
+				if r.side != side or not r.active():
+					continue
+				if radius <= 0.0:
+					if r.id != hero_host[side]:
+						continue
+				elif origin.distance_to(r.pos) > radius:
+					continue
+				r.aura_bonus = maxf(r.aura_bonus, float(info.get("lead", 0.0)))
+				r.hero_ma_bonus = maxf(r.hero_ma_bonus, float(info.get("ma", 0.0)))
+				r.hero_md_bonus = maxf(r.hero_md_bonus, float(info.get("md", 0.0)))
+				r.hero_missile_block = maxf(r.hero_missile_block, float(info.get("missile_block", 0.0)))
+				r.hero_terror_block = maxf(r.hero_terror_block, float(info.get("terror_block", 0.0)))
 	# silence terror (doc §5.13): the Warden-Dead's wrongness starves the
 	# nerve of every line near them — except those warded against it, and
 	# halved where a Gravewarden commander holds the threshold
@@ -1319,6 +1904,8 @@ func _aura_tick() -> void:
 				var felt := src.silence_terror * (1.0 - r.silence_immunity)
 				if side_threshold[r.side]:
 					felt *= 0.5
+				# a hero's aura holds the door against the wrongness (v1.0)
+				felt *= 1.0 - r.hero_terror_block
 				r.terror_penalty = maxf(r.terror_penalty, felt)
 
 
@@ -1336,6 +1923,9 @@ func _ranged_tick(dmg: Dictionary) -> void:
 		r.ammo -= 1
 		# arcane wards protect every arc; physical shields only by facing
 		var block: float = t.shield * (1.0 if t.ward_shield else SHIELD_ARC_FACTOR[_arc(r, t)])
+		block = minf(1.0, block + t.hero_missile_block)  # a hero's lattice adds its own
+		if t.fx_on() and t.fx_missile_immune:
+			block = 1.0  # a wall of force does not negotiate with arrows
 		var per_hit := maxf(r.missile * (ARMOUR_PIVOT / (ARMOUR_PIVOT + t.armour)), r.missile * CHIP_FRACTION)
 		if t.silence_kind and r.ward_shield:
 			per_hit *= ARCANE_VS_RETURNED_MULT  # arcane volleys find what swords cannot (doc §5.13)

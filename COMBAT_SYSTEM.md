@@ -100,7 +100,12 @@ immediate-mode in `_draw` like everything else in the view:
   crown notch, plumed portrait. Clicking it (`commander_selected`) turns the bottom-left
   panel into the commander's sheet — name (`_cmdr_info` now carries `world.full_name`),
   Martial/Intrigue/Prowess, traits, faith, oath-token state, and the battle's running
-  stress/corruption ledgers.
+  stress/corruption ledgers. **Hero System v1.0**: when the commander is hero-tier
+  (`world.hero_info` non-empty, passed via `sim.set_hero`), the card's band shows the
+  level tag with a red personal-HP strip beneath, the sheet adds class/level/HP and
+  DOWN/dead states, and a **spell bar** of the hero's field orders docks above the card
+  bar — targeted casting with a reach preview under the cursor. Zones burn on the field;
+  workings flash where they land. Full mechanics in HERO_SYSTEM.md §5-7.
 - **One card per side-0 regiment**: remaining men over a green strength band
   (`soldiers / start_soldiers`), a gold morale strip, an orange ammunition strip for
   missile units (`ammo_start` records the starting pouch), the unit's own pixel soldier
@@ -314,6 +319,10 @@ modules land).
   geometry, the archetype glyph mapping, click routing (unit cards, the hero card,
   consumed bar clicks), remaining-men/ammunition tracking, the commander panel, and
   card shrinking on narrow windows — all headless, via `_card_layout()`.
+- `tests/hero_system_test.gd` (8 groups, Hero System v1.0) validates the hero layer's
+  battle half here: ability gates and cooldowns, Fireball through the standard damage
+  pipeline, fizzle-whole on grey ground, the paladin aura in `_aura_tick`, faith-gated
+  healing, death saves, Legendary Resistance, and battle determinism with heroes live.
 - Visual check: `--path . -- --battle-screenshot` boots straight into a battle and saves
   a PNG to `user://`.
 - The sim is deterministic given the same rosters; campaign RNG uses a fixed seed (1066),

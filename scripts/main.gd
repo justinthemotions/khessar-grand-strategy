@@ -1813,6 +1813,8 @@ func _fill_char_options(opt: OptionButton, chars: Array, vacant_label: String, w
 			opt.select(0)
 	for c in chars:
 		var label: String = world.full_name(c)
+		if c.hero_level > 0:
+			label += " — L%d %s" % [c.hero_level, HeroDB.class_label(c.hero_class)]
 		if stat_keys.is_empty():
 			label += " (%d)" % c.age_years(world.tick)
 		else:
@@ -2384,6 +2386,13 @@ func _start_battle() -> void:
 		world.battle_site_ground())
 	battle_layer.sim.set_commander_info(0, _cmdr_info(pair[0]))
 	battle_layer.sim.set_commander_info(1, _cmdr_info(pair[1]))
+	# a hero-tier commander takes the field in person (Hero System v1.0)
+	for side in 2:
+		var pa: SimWorld.Army = pair[side]
+		if pa.commander_id >= 0:
+			var h: Dictionary = world.hero_info(pa.commander_id)
+			if not h.is_empty():
+				battle_layer.sim.set_hero(side, h)
 	battle_layer.finished.connect(_on_battle_finished)
 	battle_layer.sim.event.connect(_on_event)
 	add_child(battle_layer)
@@ -2403,6 +2412,12 @@ func _auto_resolve() -> void:
 		world.battle_site_ground())
 	sim.set_commander_info(0, _cmdr_info(pair[0]))
 	sim.set_commander_info(1, _cmdr_info(pair[1]))
+	for side in 2:
+		var pa: SimWorld.Army = pair[side]
+		if pa.commander_id >= 0:
+			var h: Dictionary = world.hero_info(pa.commander_id)
+			if not h.is_empty():
+				sim.set_hero(side, h)
 	sim.run_headless()
 	_apply_battle_sim_results(sim)
 	_refresh()
@@ -2433,3 +2448,7 @@ func _apply_battle_sim_results(sim: BattleSim) -> void:
 	if winner >= 0:
 		loss = 1.0 - sim.survivors_fraction(1 - winner)
 	world.apply_battle_result(winner, loss, sim.commander_charged, sim.commander_corruption, sim.commander_stress)
+	# the heroes' own fates: wounds, chains, the chronicle (Hero System v1.0)
+	for side in 2:
+		if not (sim.heroes[side] as Dictionary).is_empty():
+			var _line := world.apply_hero_battle(sim, side, true)

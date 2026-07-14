@@ -529,6 +529,20 @@ var ashfields: Dictionary = {}        # the community ledger — see _seed_silen
 var forsaken_movements: Dictionary = {}  # region -> {strength, stage, growth_mult, engaged}
 var convergence := ""                 # "" until the Year-50 crisis names its shape
 
+# The Hero System v1.0 (Opus doc, 2026-07-08): hero-tier characters —
+# distinguished practitioners whose personal actions shape battles and
+# campaigns. Every hero die rolls on `hrng` (seed 75 — the XP capstone);
+# the seeded canonical heroes are `hero_cast`, folded into is_cast(), so
+# the fixed-seed history never feels their arrival. The hero stream
+# discipline extends the house invariant: auto-firing beats fill only
+# the hero ledger (XP, personal HP, the pool counts) — the Core Six move
+# only under the player's hand.
+var hrng := RandomNumberGenerator.new()
+var hero_cast := {}                   # id -> true: seeded heroes guarded out of the main stream
+var hero_deploys := {}                # id -> never|rarely|normal|eager (doc §6 deployment styles)
+var hero_pool := {}                   # region key -> unnamed hero-tier count (doc §2/§5 density)
+var hero_pool_carry := 0.0            # fractional accumulator for the yearly drift
+
 # The event framework: choice events with trait-weighted AI resolution.
 var pending_events: Array = []       # events awaiting the player's decision
 var next_event_id: int = 0
@@ -725,6 +739,9 @@ func setup() -> void:
 	# The World the Silence Made v1.1: the scholar in the Ashfields has been
 	# waiting six years already, and the Forsaken are being born.
 	_seed_silence_made()
+	# The Hero System v1.0: the named canonical heroes take their levels,
+	# and the ones the chronicle owed a body finally get one.
+	_seed_heroes()
 
 
 func _seed_house(realm: Realm, house_name: String, ruling: bool) -> void:
@@ -837,6 +854,7 @@ func advance_month() -> void:
 	_religion_tick()
 	_vigil_tick()
 	_silence_made_tick()
+	_hero_tick()
 	_diplomacy_tick()
 	_ai_diplomacy()
 	_economy()
@@ -1400,6 +1418,8 @@ func _assign_commander(a: Army) -> void:
 			continue  # magisters mind ledgers, not columns (Administrative v1.0)
 		if c.age_years(tick) < ADULT_AGE or taken.has(c.id):
 			continue
+		if hero_wounded(c.id):
+			continue  # a hero in recovery does not take a field (Hero System v1.0)
 		if best == null or c.martial > best.martial:
 			best = c
 	a.commander_id = best.id if best != null else -1
@@ -1419,6 +1439,8 @@ func set_commander(army_id: int, char_id: int) -> String:
 		return "Too young to lead men to war."
 	if c.denounced:
 		return "No soldier follows a denounced criminal."
+	if hero_wounded(char_id):
+		return "%s is still recovering from the last field." % c.name
 	for other: Army in armies:
 		if other != a and other.commander_id == char_id:
 			return "%s already commands another army." % c.name
@@ -1867,6 +1889,8 @@ func negotiate_peace() -> String:
 		_log("[b]Peace.[/b] %s comes to the drafting table with %d leverage over %s." % [
 			winner.name, int(leverage), loser.name])
 		_raise_treaty(winner, loser, leverage)
+		if winner.ruler_id >= 0:
+			award_hero_xp(winner.ruler_id, HeroDB.XP_AWARDS["peace_treaty"], "a war ended on their terms")
 	else:
 		_log("[b]White peace.[/b] The war ends with nothing gained.")
 	_end_war()
@@ -2238,6 +2262,20 @@ func apply_battle_result(winner_side: int, loser_loss_fraction: float, charged: 
 	_commander_fate(pb, pa, winner_side == 1, loser_loss_fraction, site, bool(charged[1]))
 	_champion_fates(pa, pb, winner_side == 0, loser_loss_fraction, site)
 	_champion_fates(pb, pa, winner_side == 1, loser_loss_fraction, site)
+	# hero-tier commanders bank the field (Hero System v1.0 §3). These
+	# battles reach here only through the player's battle panel — the
+	# award moves stats (by_hand) exactly because a hand moved it.
+	for i in 2:
+		var host2: Army = pa if i == 0 else pb
+		if host2 == null or host2.commander_id < 0:
+			continue
+		var cmdr2: SimCharacter = characters.get(host2.commander_id)
+		if cmdr2 == null or not cmdr2.alive or cmdr2.hero_level <= 0:
+			continue
+		var xp2: int = HeroDB.XP_AWARDS["battle_survived"]
+		if winner_side == i:
+			xp2 += int(HeroDB.XP_AWARDS["battle_victory"])
+		award_hero_xp(cmdr2.id, xp2, "the Battle of %s" % site, true)
 	if absf(war_score) >= 100.0:
 		var _msg := negotiate_peace()
 
@@ -2250,6 +2288,9 @@ func _commander_fate(a: Army, enemy: Army, won: bool, loss: float, site: String,
 	var c: SimCharacter = characters.get(a.commander_id)
 	if c == null or not c.alive:
 		return
+	if c.hero_level > 0:
+		return  # a hero's fate was decided on the field itself — personal
+		        # HP and death saves, not the abstract roll (Hero System v1.0)
 	var chance := 0.04
 	if not won:
 		chance = 0.15 + 0.20 * clampf(loss, 0.0, 1.0)
@@ -2999,6 +3040,13 @@ func marry(groom_id: int, bride_id: int) -> String:
 	if cross_realm:
 		marriage_alliances.append([g.id, b.id])
 		_log("[b]The marriage binds %s and %s in alliance.[/b]" % [realms[0].name, realms[1].name])
+	# diplomatic experience for the arranging crowns (Hero System v1.0 §3);
+	# the bride has already joined her husband's court, so a cross-realm
+	# match credits both live crowns
+	for rid in ([0, 1] if cross_realm else [g.realm_id]):
+		if rid >= 0 and rid < realms.size() and realms[rid].ruler_id >= 0:
+			award_hero_xp(realms[rid].ruler_id, HeroDB.XP_AWARDS["marriage_arranged"] \
+				+ (HeroDB.XP_AWARDS["alliance_formed"] if cross_realm else 0), "a match well made")
 	return ""
 
 
@@ -3556,10 +3604,13 @@ func _best_unpracticed(realm_id: int, stat: String) -> SimCharacter:
 
 func is_cast(c: SimCharacter) -> bool:
 	## Outside the main stream's dice: the map-realm cast, the seeded
-	## Council of Magisters (Administrative v1.0), and the canonical
+	## Council of Magisters (Administrative v1.0), the canonical
 	## threshold practitioners (Module 9 — their fates are scheduled
-	## beats and theology, never the monthly actuarial rolls).
-	return c != null and (c.realm_id >= 2 or admin_cast.has(c.id) or faith_cast.has(c.id))
+	## beats and theology, never the monthly actuarial rolls), and the
+	## seeded canonical heroes (Hero System v1.0 — their fates are
+	## battles and the chronicle, never the marriage pools).
+	return c != null and (c.realm_id >= 2 or admin_cast.has(c.id) or faith_cast.has(c.id) \
+		or hero_cast.has(c.id))
 
 
 func _map_realm_named(name_part: String) -> int:
@@ -3728,6 +3779,9 @@ func _cast_tick() -> void:
 			var th: SimCharacter = characters.get(thessaly_id)
 			if th != null and th.alive and not th.traits.has("Focused"):
 				_add_trait(th, "Focused")
+			# the named succession award (Hero System v1.0 §3, by name)
+			if th != null and th.alive:
+				award_hero_xp(th.id, HeroDB.XP_AWARDS["chief_archivist"], "the Chief Archivist's desk")
 		48:
 			var grimhold2 := cast_ruler_of(_map_realm_named("Kharak-Dum"))
 			if grimhold2 != null and grimhold2.alive:
@@ -3779,7 +3833,10 @@ func _admin_character(p_name: String, house_name: String, female: bool, age: int
 
 
 func _seat_magister(seat: String, char_id: int, since_tick: int) -> void:
+	var newly := not magister_seats.has(seat) or int(magister_seats[seat]["holder"]) != char_id
 	magister_seats[seat] = {"holder": char_id, "since": since_tick}
+	if newly and char_id >= 0:
+		award_hero_xp(char_id, HeroDB.XP_AWARDS["council_appointment"], "a Council seat taken")
 
 
 func _seed_administration() -> void:
@@ -3998,6 +4055,11 @@ func magister_vote(matter: String, proposer_id: int, base: float) -> Dictionary:
 	council_vote_history.append(record)
 	if council_vote_history.size() > 60:
 		council_vote_history.pop_front()
+	# a vote spoken in the chamber is experience (Hero System v1.0 §3) —
+	# ledger-only: no stat drifts from an auto-firing division
+	for m in seated_magisters():
+		if str(votes.get(m.id, "abstain")) != "abstain":
+			award_hero_xp(m.id, HeroDB.XP_AWARDS["council_vote"], "the chamber heard them")
 	return record
 
 
@@ -4989,7 +5051,10 @@ func _cathedral_tick() -> void:
 	var orth: Dictionary = faiths["Aelindran Orthodox"]
 	var priest: SimCharacter = null
 	for c in characters.values():
-		if c.alive and c.realm_id == 0 and c.traits.has("Faith-Practicing") and faith_of(c) == "Aelindran Orthodox":
+		if c.alive and c.realm_id == 0 and c.traits.has("Faith-Practicing") \
+				and faith_of(c) == "Aelindran Orthodox" and not hero_cast.has(c.id):
+			# the Reactionary clergy are hero_cast: the cathedral's quarterly
+			# rite keeps its pre-hero hands, or the frng stream reshuffles
 			priest = c
 			break
 	if priest != null:
@@ -5093,6 +5158,9 @@ func _faith_change_tick() -> void:
 			continue
 		if c.realm_id != 0 and c.realm_id != 1 and not admin_cast.has(c.id):
 			continue
+		if hero_cast.has(c.id):
+			continue  # the hero cast converts by beats, not by weather — their
+			          # consideration dice would reshuffle the faith stream (v1.0)
 		if tick - int(faith_change_cooldown.get(c.id, -999)) < 60:
 			continue
 		var cur := faith_of(c)
@@ -5281,6 +5349,7 @@ func _threshold_on_death(dead: SimCharacter) -> void:
 		return
 	pr.threshold_binding_bonus_permanent = minf(0.6, pr.threshold_binding_bonus_permanent + 0.02)
 	pr.wooden_birds_carved += 1
+	award_hero_xp(pr.id, HeroDB.XP_AWARDS["threshold_rite"], "a crossing witnessed")
 	if dead.spouse_id >= 0:
 		var sp: SimCharacter = characters.get(dead.spouse_id)
 		if sp != null and sp.alive:
@@ -5301,6 +5370,7 @@ func _threshold_maintenance_tick() -> void:
 			continue
 		add_stress(c, -4.0, "carving the birds")
 		c.wooden_birds_carved += 1
+		award_hero_xp(c.id, HeroDB.XP_AWARDS["ceremony"], "the quarter's carving discipline")
 		if frng.randf() < 0.05:
 			_log("%s spends the quarter's quiet hours carving — %d wooden birds now, one for every crossing witnessed." % [full_name(c), c.wooden_birds_carved])
 
@@ -5486,6 +5556,7 @@ func _vigil_tick() -> void:
 				_shift_coherence("Aelindran Orthodox", -0.10)
 				_shift_coherence("The Vael Rationalist Faith", -0.10)
 				_log("[b]The Iron Library publishes its first paper on the Council of Year 112.[/b] 'On the Administrative Continuity of the Magistocracy' — dry as bone, footnoted like a fortress, and unanswerable. It names no bargain. It establishes who was in the room. The second paper is already being set.")
+				award_hero_xp(thessaly_id, HeroDB.XP_AWARDS["research_published"], "the Year-112 paper")
 			elif tick == ARCHITECT_DEATH_TICK + 26:
 				# the vigil closes here whatever became of the containment:
 				# held → the gradual reveal (half fury); leaked or preempted →
@@ -5945,6 +6016,10 @@ func _framework_implemented() -> void:
 	var maret: SimCharacter = characters.get(maret_id)
 	if maret != null and maret.alive:
 		_log("Maret is among the first to receive the anchor — three years of holding herself together by purpose alone, and now the purpose is held by something more than will. Thessaly Vorn records the placement personally.")
+	# the framework is the player's diplomatic masterwork (Hero System §3)
+	if realms[0].ruler_id >= 0:
+		award_hero_xp(realms[0].ruler_id, HeroDB.XP_AWARDS["political_conversion"], "the consent framework carried", true)
+	award_hero_xp(caeris_id, HeroDB.XP_AWARDS["research_published"], "the finding published at last")
 	_log("[b]The Ashfields becomes an institution[/b] — boundary stones, a registry, and a scholar with a purpose beyond waiting. Thessaly Vorn's twelfth field note is one line: 'He offered me tea, and this time he remembered that he had already asked.'")
 
 
@@ -6115,14 +6190,25 @@ func ashfields_march(realm_id: int = 0) -> String:
 		sim.set_commander_info(0, {"name": full_name(cmdr), "martial": cmdr.martial,
 			"intrigue": cmdr.intrigue, "prowess": cmdr.prowess, "traits": cmdr.traits.duplicate(),
 			"oath_intact": cmdr.oath_token_intact, "faith": faith_of(cmdr)})
+		# the marching commander's hero tier walks with them (Hero System v1.0)
+		var atk_hero := hero_info(a.commander_id)
+		if not atk_hero.is_empty():
+			sim.set_hero(0, atk_hero)
 	sim.set_commander_info(1, {"name": "Caeris the Unfinished", "martial": 8, "intrigue": 12,
 		"prowess": 6, "traits": ["Threshold-Sensitive", "Focused", "Methodical", "Patient"],
 		"oath_intact": true, "faith": ""})
+	# Caeris himself stands with the retinue: a level-9 Legendary scholar
+	# whose actions on this field are Observe, Redirect, and the Settling
+	# Touch (Hero System v1.0 §7; the Canon Updates translations, live).
+	var caeris_hero := hero_info(caeris_id)
+	if not caeris_hero.is_empty():
+		sim.set_hero(1, caeris_hero)
 	sim.run_headless()
 	for reg: BattleSim.Regiment in sim.regiments:
 		if reg.side == 0 and reg.roster_index < a.regiments.size():
 			a.regiments[reg.roster_index]["soldiers"] = reg.soldiers if reg.alive() else 0
 	a.regiments = a.regiments.filter(func(reg) -> bool: return int(reg["soldiers"]) > 0)
+	apply_hero_battle(sim, 0, true)  # the marcher's wounds, capture has no meaning here
 	if sim.winner == 0:
 		_ashfields_destroyed(realm_id)
 		return "The Ashfields falls. What was lost there will be counted for a long time."
@@ -6301,6 +6387,416 @@ func _convergence_tick() -> void:
 		opts, false, false, false, false, true)
 
 
+# ================================================================
+# The Hero System v1.0 (Opus doc, 2026-07-08). Heroes amplify their
+# armies; they do not replace them. All hero dice roll on hrng (seed
+# 75); the seeded heroes are hero_cast — the fixed-seed history never
+# feels their arrival. Auto-firing beats fill only the hero ledger
+# (XP, personal HP, pool counts); the Core Six move only under the
+# player's hand (level-ups from player-initiated awards apply stat
+# growth; the chronicle's own awards bank the experience).
+# ================================================================
+
+func _seed_heroes() -> void:
+	## §8's comprehensive list: the 30 canonical figures already alive in
+	## the sim take their levels, and the 27 the chronicle owed a body
+	## get one — companions, the Reactionary Council, the Order's field
+	## commanders, the dwarven court, the Southern Reach circle.
+	hrng.seed = 75  # the XP capstone: what a level-10 life amounts to
+	# --- the Magistocracy of Vael (realm 0) ---
+	_hero_bless(anselm_id, "wizard", 3, {"combat": 1, "deploys": "never"})   # L3 admin, L1 combat (doc §8)
+	_hero_bless(halloran_id, "wizard", 4, {"deploys": "rarely"})
+	_hero_bless(davriand_id, "wizard", 3, {"deploys": "rarely"})
+	_hero_bless(kreth_id, "wizard", 3, {"deploys": "never"})                 # dying
+	_hero_bless(architect_id, "scholar", 8, {"combat": 1, "deploys": "never"})
+	_hero_bless(mareck_id, "rogue", 6, {"deploys": "rarely"})
+	_hero_bless(sevrin_id, "bureaucrat", 3, {"deploys": "rarely"})
+	for seat_level in [["Chancellor", 4], ["Master of War", 4], ["Chief Physician", 4]]:
+		if magister_seats.has(seat_level[0]):
+			_hero_bless(int(magister_seats[seat_level[0]]["holder"]), "wizard", int(seat_level[1]),
+				{"deploys": "rarely"})
+	_hero_bless(odric_id, "wizard", 5, {"deploys": "rarely"})                # Vasse, the senior of the four
+	# --- the noble houses and the clans (realms 0-1) ---
+	var garran := _hero_find("Garran", 0)
+	if garran != null:
+		_hero_bless(garran.id, "fighter", 5, {})                             # aging, still the realm's sword
+	_hero_bless(sera_id, "noble", 2, {"deploys": "rarely"})
+	var vorak := _hero_find("Vorak", 1)
+	if vorak != null:
+		_hero_bless(vorak.id, "fighter", 5, {})                              # Diplomacy 20 already canon
+	# --- Pellar and the Iron Library ---
+	var pellar := _map_realm_named("Pellar")
+	if cast_rulers.has(pellar):
+		_hero_bless(int(cast_rulers[pellar]["id"]), "diplomat", 5, {"deploys": "rarely"})  # Eithne (doc: 4-5)
+	var ilyra := _hero_find("Ilyra", pellar)
+	if ilyra != null:
+		_hero_bless(ilyra.id, "scholar", 3, {"deploys": "rarely"})           # Library-trained, growing
+	_hero_bless(marek_id, "scholar", 8, {"combat": 2, "deploys": "never"})   # Vovel: L7 wizard in his prime, aged out of it
+	_hero_bless(thessaly_id, "scholar", 6, {"deploys": "rarely"})            # will reach L8 as Chief Archivist — through play
+	# --- Halven ---
+	var halven := _map_realm_named("Halven")
+	if cast_rulers.has(halven):
+		_hero_bless(int(cast_rulers[halven]["id"]), "diplomat", 5, {"deploys": "rarely"})  # Ferren
+	var selia := _hero_find("Selia", halven)
+	if selia != null:
+		_hero_bless(selia.id, "diplomat", 4, {"deploys": "rarely"})
+	var mira := _hero_find("Mira", halven)
+	if mira != null:
+		_hero_bless(mira.id, "rogue", 3, {})                                 # the Forsaken Underground's future
+	# --- the Drevak world ---
+	var vor_grim := _map_realm_named("Vor-Grim")
+	if cast_rulers.has(vor_grim):
+		_hero_bless(int(cast_rulers[vor_grim]["id"]), "fighter", 5, {})      # Grimkar
+	# --- Kharak-Dum ---
+	var kharak := _map_realm_named("Kharak-Dum")
+	if cast_rulers.has(kharak):
+		_hero_bless(int(cast_rulers[kharak]["id"]), "fighter", 6, {"deploys": "never"})  # Grimhold, aging
+	var karth := _hero_find("Karth", kharak)
+	if karth != null:
+		_hero_bless(karth.id, "fighter", 4, {})
+	# --- the Elven Great Houses ---
+	var veldarin := _map_realm_named("Veldarin")
+	if cast_rulers.has(veldarin):
+		_hero_bless(int(cast_rulers[veldarin]["id"]), "wizard", 8, {"deploys": "never"})  # Analinth (doc: 8-9)
+	var thaladris := _map_realm_named("Thaladris")
+	if cast_rulers.has(thaladris):
+		_hero_bless(int(cast_rulers[thaladris]["id"]), "bard", 8, {"deploys": "never"})   # Ariorwe, 120 names
+	# --- the Southern Reach ---
+	var saren := _map_realm_named("Saren-Vesh")
+	if cast_rulers.has(saren):
+		_hero_bless(int(cast_rulers[saren]["id"]), "diplomat", 5, {"deploys": "rarely"})  # Vessa
+	# --- the faith cast and the Ashfields ---
+	_hero_bless(halvar_id, "gravewarden", 7, {"deploys": "rarely"})          # aging; the wooden birds outnumber him
+	_hero_bless(caeris_id, "scholar", 9, {"deploys": "never"})               # Legendary (doc: 8-9; MM Vol. II)
+	_hero_bless(maret_id, "scholar", 5, {"deploys": "never"})                # the Revenant research associate
+	# ---------------- the 27 the chronicle owed a body (doc §8) ----------------
+	# The wandering companions (Class Archetypes):
+	var marak := _hero_character("Marak", "House Khorul", false, 41, 0, "human", "aelindran",
+		{"dip": 10, "mar": 8, "stw": 9, "int": 12, "lrn": 22, "prw": 8},
+		["Restless", "Honest", "Arcane-Blooded", "Academy-Sworn"], "Pragmatic")
+	_hero_bless(marak.id, "wizard", 5, {"deploys": "eager"})                 # walked away; walks the Salt Road
+	var selene := _hero_character("Selene", "House Tharn", true, 36, 0, "human", "aelindran",
+		{"dip": 16, "mar": 6, "stw": 10, "int": 8, "lrn": 14, "prw": 6},
+		["Compassionate", "Patient", "Faith-Practicing"], "Zealous")
+	_hero_bless(selene.id, "cleric", 4, {"deploys": "rarely"})               # Vesper's End keeps her close
+	var tavisol := _hero_character("Tavisol", "House of the Road", false, 24, 0, "human", "aelindran",
+		{"dip": 8, "mar": 12, "stw": 6, "int": 5, "lrn": 8, "prw": 16},
+		["Brave", "Honest", "Oath-Sworn"], "Zealous")
+	_hero_bless(tavisol.id, "paladin", 3, {"deploys": "eager"})
+	# The Council of Reclaimed Rites (the Reactionaries hold Vael's old cathedral):
+	var velmarin := _hero_character("Henrak", "House Velmarin", false, 71, 0, "human", "aelindran",
+		{"dip": 18, "mar": 6, "stw": 14, "int": 10, "lrn": 20, "prw": 3},
+		["Patient", "Purist", "Faith-Practicing"], "Zealous")
+	_hero_bless(velmarin.id, "cleric", 6, {"deploys": "never"})              # the Presiding Voice rarely leaves the cathedral
+	var mareldin := _hero_character("Lucius", "House Mareldin", false, 52, 0, "human", "aelindran",
+		{"dip": 14, "mar": 5, "stw": 10, "int": 14, "lrn": 18, "prw": 5},
+		["Purist", "Methodical", "Faith-Practicing"], "Zealous")
+	_hero_bless(mareldin.id, "cleric", 5, {"deploys": "rarely"})             # the Warden of Doctrine travels for doctrine
+	var vossa := _hero_character("Vossa", "House Thaledrin", false, 48, 0, "human", "aelindran",
+		{"dip": 8, "mar": 22, "stw": 10, "int": 8, "lrn": 8, "prw": 18},
+		["Brave", "Methodical"], "Zealous")
+	_hero_bless(vossa.id, "fighter", 6, {})                                  # Marshal of the Faithful (doc: 5-6)
+	var veskren := _hero_character("Tamlin", "House Veskren", false, 39, 0, "human", "aelindran",
+		{"dip": 20, "mar": 4, "stw": 8, "int": 8, "lrn": 12, "prw": 5},
+		["Gregarious", "Altruistic", "Faith-Practicing"], "Zealous")
+	_hero_bless(veskren.id, "cleric", 4, {})                                 # the Voice to the Common travels widest
+	var thossmar := _hero_character("Olyric", "House Thossmar", false, 44, 0, "human", "aelindran",
+		{"dip": 8, "mar": 4, "stw": 12, "int": 18, "lrn": 20, "prw": 6},
+		["Methodical", "Paranoid"], "Zealous")
+	_hero_bless(thossmar.id, "rogue", 5, {"deploys": "rarely"})              # Keeper of Records; a scholar's rogue
+	var arlina := _hero_character("Arlina", "House Veth", true, 37, 0, "human", "aelindran",
+		{"dip": 10, "mar": 6, "stw": 8, "int": 22, "lrn": 12, "prw": 12},
+		["Paranoid", "Deceitful"], "Zealous")
+	_hero_bless(arlina.id, "rogue", 5, {})                                   # the Watchful
+	var youngric := _hero_character("Youngric", "House Halden", false, 26, 0, "human", "aelindran",
+		{"dip": 16, "mar": 6, "stw": 8, "int": 6, "lrn": 14, "prw": 7},
+		["Gregarious", "Ambitious", "Faith-Practicing"], "Zealous")
+	_hero_bless(youngric.id, "cleric", 3, {})                                # the Rising Voice — Anra Halden's kin by house
+	# The Order of the Vigil-Sworn's field commanders:
+	var vaelmark := _hero_character("Aldric", "House Vaelmark", false, 45, 0, "human", "aelindran",
+		{"dip": 12, "mar": 20, "stw": 10, "int": 6, "lrn": 10, "prw": 20},
+		["Brave", "Honest", "Patient", "Oath-Sworn"], "Zealous")
+	_hero_bless(vaelmark.id, "paladin", 6, {})                               # the founding commander
+	var ilsen := _hero_character("Ilsen", "House the Righteous", true, 38, 0, "human", "aelindran",
+		{"dip": 8, "mar": 18, "stw": 6, "int": 5, "lrn": 6, "prw": 21},
+		["Brave", "Wrathful", "Oath-Sworn"], "Zealous")
+	_hero_bless(ilsen.id, "paladin", 5, {"deploys": "eager"})                # Dame Ilsen leads infantry from the front
+	var voss := _hero_character("Marek", "House Voss", false, 33, 0, "human", "aelindran",
+		{"dip": 8, "mar": 16, "stw": 6, "int": 6, "lrn": 7, "prw": 17},
+		["Brave", "Impulsive", "Oath-Sworn"], "Zealous")
+	_hero_bless(voss.id, "paladin", 4, {"deploys": "eager"})                 # Brother-Captain, cavalry
+	var thornhardt := _hero_character("Vell", "House Thornhardt", true, 42, 0, "human", "aelindran",
+		{"dip": 16, "mar": 8, "stw": 16, "int": 12, "lrn": 10, "prw": 6},
+		["Ambitious", "Purist"], "Zealous")
+	_hero_bless(thornhardt.id, "noble", 4, {"deploys": "rarely"})            # the Reactionary-aligned Baroness
+	# The dwarven court (Kharak-Dum):
+	var bronvor := _hero_character("Bronvor", "House Iron-Deep", false, 96, kharak, "dwarf", "kharak_dum",
+		{"dip": 10, "mar": 10, "stw": 16, "int": 8, "lrn": 22, "prw": 8},
+		["Methodical", "Patient", "Focused"], "Pragmatic")
+	_hero_bless(bronvor.id, "ward_speaker", 6, {"deploys": "rarely"})        # Chief Ward-Speaker
+	var veldrin_oh := _hero_character("Veldrin", "House Oak-Hammer", false, 64, kharak, "dwarf", "kharak_dum",
+		{"dip": 8, "mar": 20, "stw": 12, "int": 6, "lrn": 8, "prw": 16},
+		["Brave", "Stoic"], "Pragmatic")
+	_hero_bless(veldrin_oh.id, "fighter", 5, {})                             # Lord Marshal
+	# The clans (Karn-Vol and the interior):
+	var drev := _hero_character("Drev", "House Karn-Vol", false, 31, 1, "orc", "karn_vol",
+		{"dip": 6, "mar": 16, "stw": 6, "int": 8, "lrn": 5, "prw": 18},
+		["Brave", "Impulsive"], "Pragmatic")
+	_hero_bless(drev.id, "fighter", 4, {"deploys": "eager"})
+	var grim_vg := _hero_character("Grim", "House Vol-Gar", false, 61, 1, "orc", "karn_vol",
+		{"dip": 12, "mar": 18, "stw": 10, "int": 10, "lrn": 9, "prw": 14},
+		["Patient", "Stoic"], "Pragmatic")
+	_hero_bless(grim_vg.id, "fighter", 5, {"deploys": "rarely"})             # the Elder
+	var kaal := _hero_character("Kaal", "House Vor-Grathkaz", false, 39, 1, "orc", "karn_vol",
+		{"dip": 4, "mar": 20, "stw": 6, "int": 12, "lrn": 5, "prw": 20},
+		["Wrathful", "Ambitious", "Cruel"], "Opportunistic")
+	_hero_bless(kaal.id, "fighter", 5, {"deploys": "eager"})                 # the compact-breaker
+	# Pellar's marshal:
+	var pellburn := _hero_character("Harold", "House Pellburn", false, 51, pellar, "human", "free_city",
+		{"dip": 10, "mar": 20, "stw": 12, "int": 8, "lrn": 10, "prw": 14},
+		["Methodical", "Honest"], "Pragmatic")
+	_hero_bless(pellburn.id, "fighter", 5, {})                               # Lord Marshal Sir Harold
+	# Halven's merchants and houses:
+	var otter := _hero_character("Otter", "House Straven", false, 45, halven, "human", "halveni",
+		{"dip": 18, "mar": 4, "stw": 22, "int": 14, "lrn": 12, "prw": 5},
+		["Gregarious", "Avaricious"], "Opportunistic")
+	_hero_bless(otter.id, "merchant", 5, {"deploys": "rarely"})              # the Salt Road knows his ledgers
+	var aldon := _hero_character("Aldon", "House Halven-Rothe", false, 50, halven, "human", "halveni",
+		{"dip": 16, "mar": 8, "stw": 16, "int": 12, "lrn": 12, "prw": 6},
+		["Patient", "Content"], "Pragmatic")
+	_hero_bless(aldon.id, "noble", 4, {"deploys": "rarely"})
+	# The Southern Reach circle:
+	var iliana := _hero_character("Iliana", "House Vesh", true, 27, saren, "human", "southern_reach",
+		{"dip": 18, "mar": 5, "stw": 6, "int": 12, "lrn": 12, "prw": 8},
+		["Gregarious", "Restless"], "Pragmatic")
+	iliana.names_carried = 40  # canonical; the Song-Marked trait is withheld in v1.0 —
+	# _bard_tick draws an mrng die per Song-Marked soul, and her arrival
+	# must not reshuffle the magic stream (flagged for Opus)
+	_hero_bless(iliana.id, "bard", 4, {"deploys": "eager"})                  # the unlanded adventurer
+	var ren := _hero_character("Ren", "House Korren", false, 22, saren, "human", "southern_reach",
+		{"dip": 14, "mar": 6, "stw": 8, "int": 10, "lrn": 10, "prw": 8},
+		["Ambitious", "Gregarious"], "Pragmatic")
+	_hero_bless(ren.id, "diplomat", 3, {})                                   # Vessa's house, the next generation
+	var verrik := _hero_character("Halven", "House Verrik", false, 55, saren, "human", "southern_reach",
+		{"dip": 18, "mar": 4, "stw": 14, "int": 12, "lrn": 12, "prw": 4},
+		["Patient", "Honest"], "Pragmatic")
+	_hero_bless(verrik.id, "diplomat", 4, {"deploys": "rarely"})             # Master Verrik (doc: 3-4)
+	# The Free City crowns the map already names (not yet cast_rulers —
+	# the Carath/Dunmore crown pass stays with Faction Cast; flagged):
+	var carath := _map_realm_named("Carath")
+	var carathwell := _hero_character("Harrold", "House Carathwell", false, 47, carath, "human", "free_city",
+		{"dip": 12, "mar": 18, "stw": 14, "int": 8, "lrn": 8, "prw": 12},
+		["Brave", "Content"], "Pragmatic")
+	_hero_bless(carathwell.id, "fighter", 5, {"deploys": "rarely"})          # Duke Harrold
+	var dunmore := _map_realm_named("Dunmore")
+	var thelren := _hero_character("Thelren", "House Dunmoreth", false, 44, dunmore, "human", "free_city",
+		{"dip": 14, "mar": 10, "stw": 16, "int": 12, "lrn": 8, "prw": 6},
+		["Avaricious", "Patient"], "Opportunistic")
+	_hero_bless(thelren.id, "noble", 4, {"deploys": "rarely"})               # Baron Thelren
+	# --- the unnamed hero-tier population (doc §2/§5 density) ---
+	# Named ≈57; the pool carries the rest of the continent's 200-400.
+	hero_pool = {
+		"vael": 50, "pellar": 12, "halven": 9, "aelindran": 20,
+		"free_cities": 12, "drevak": 18, "kharak_dum": 14, "elven": 10,
+		"brushgate": 24, "reactionaries": 55, "southern_reach": 10,
+		"gravewardens": 16, "druids": 15, "warlocks": 16, "bards": 24,
+	}
+
+
+func _hero_character(p_name: String, house_name: String, female: bool, age: int,
+		realm_id: int, race: String, culture: String, stats: Dictionary,
+		p_traits: Array, response: String) -> SimCharacter:
+	## A seeded canonical hero: a real person whose fate is battles and
+	## the chronicle, never the marriage pools or the actuarial tables.
+	## All dice on hrng; the canonical Core Six land AFTER the traits
+	## (the Caeris rule — trait mods must not drift the doc's numbers).
+	var dyn: Dynasty = null
+	for d: Dynasty in dynasties.values():
+		if d.name == house_name:
+			dyn = d
+			break
+	if dyn == null:
+		dyn = Dynasty.new(dynasties.size(), house_name)
+		dynasties[dyn.id] = dyn
+	var c := _create_character(p_name, female, tick - age * 12 - hrng.randi_range(0, 11), dyn.id, realm_id)
+	c.race = race
+	c.culture = culture
+	c.genome = Genetics.founder(hrng)
+	for t in p_traits:
+		_add_trait(c, str(t))
+	if response != "":
+		_add_trait(c, response)
+	for k in stats:
+		c.set(STAT_PROPS[k], clampi(int(stats[k]), 1, 30))
+	if p_traits.has("Faith-Practicing") or p_traits.has("Oath-Sworn"):
+		c.faith = "Aelindran Orthodox"  # the Reactionaries and the Order keep the old rites
+	hero_cast[c.id] = true
+	return c
+
+
+func _hero_bless(cid: int, class_id: String, level: int, opts: Dictionary = {}) -> void:
+	## Grant hero-tier to an existing character: class, level, the XP
+	## that level implies, and the personal HP pool. No dice.
+	var c: SimCharacter = characters.get(cid)
+	if c == null or not HeroDB.has_class(class_id):
+		return
+	c.hero_class = class_id
+	c.hero_level = clampi(level, 1, HeroDB.MAX_LEVEL)
+	c.hero_xp = HeroDB.xp_for_level(c.hero_level)
+	c.hero_hp_max = HeroDB.hp_max(class_id, c.hero_level)
+	c.hero_hp = c.hero_hp_max
+	c.hero_combat_level = int(opts.get("combat", -1))
+	hero_deploys[cid] = str(opts.get("deploys", "normal"))
+
+
+func _hero_find(given_name: String, realm_id: int) -> SimCharacter:
+	## The canonical figures seeded before ids were kept: found by given
+	## name within their realm. Dictionary order is insertion order —
+	## deterministic by construction.
+	for c: SimCharacter in characters.values():
+		if c.alive and c.name == given_name and c.realm_id == realm_id:
+			return c
+	return null
+
+
+func hero_combat_level(c: SimCharacter) -> int:
+	return c.hero_combat_level if c.hero_combat_level > 0 else c.hero_level
+
+
+func hero_wounded(cid: int) -> bool:
+	var c: SimCharacter = characters.get(cid)
+	return c != null and c.hero_wounded_until > tick
+
+
+func award_hero_xp(cid: int, amount: int, reason: String, by_hand: bool = false) -> void:
+	## Experience lands on the hero ledger. Level-ups always raise the
+	## personal HP pool; the Core Six grow only when the award was the
+	## player's doing (the hero stream discipline — auto-firing beats
+	## must never drift a canonical stat block mid-history).
+	var c: SimCharacter = characters.get(cid)
+	if c == null or not c.alive or c.hero_level <= 0 or amount <= 0:
+		return
+	c.hero_xp += amount
+	while c.hero_level < HeroDB.MAX_LEVEL and c.hero_xp >= HeroDB.xp_for_level(c.hero_level + 1):
+		c.hero_level += 1
+		c.hero_hp_max = HeroDB.hp_max(c.hero_class, c.hero_level)
+		c.hero_hp = c.hero_hp_max
+		if by_hand:
+			for k in HeroDB.growth(c.hero_class):
+				var prop: String = STAT_PROPS[k]
+				c.set(prop, clampi(int(c.get(prop)) + 1, 1, 30))
+		_log("[b]%s reaches level %d[/b] as a %s — %s." % [full_name(c), c.hero_level,
+			HeroDB.class_label(c.hero_class), reason])
+
+
+func hero_info(cid: int) -> Dictionary:
+	## The dict a battle carries: everything battle_sim.set_hero needs.
+	var c: SimCharacter = characters.get(cid)
+	if c == null or c.hero_level <= 0 or not c.alive:
+		return {}
+	return {
+		"id": c.id, "name": full_name(c), "class": c.hero_class,
+		"level": c.hero_level, "combat_level": hero_combat_level(c),
+		"legendary": c.hero_level >= HeroDB.LEGENDARY_LEVEL,
+		"hp": c.hero_hp, "hp_max": c.hero_hp_max,
+		"prowess": c.prowess, "names": c.names_carried,
+		"traits": c.traits.duplicate(), "oath_intact": c.oath_token_intact,
+	}
+
+
+func apply_hero_battle(sim: BattleSim, side: int, player_initiated: bool = true) -> String:
+	## After the field: the hero's disposition, wounds, capture, death —
+	## and the experience the battle was worth. Returns a chronicle line.
+	var h: Dictionary = sim.heroes[side]
+	if h.is_empty():
+		return ""
+	var c: SimCharacter = characters.get(int(h["id"]))
+	if c == null or not c.alive:
+		return ""
+	var won: bool = sim.winner == side
+	var xp: int = HeroDB.XP_AWARDS["battle_survived"]
+	if won:
+		xp += int(HeroDB.XP_AWARDS["battle_victory"])
+	if str(sim.hero_state[1 - side]) == "dead":
+		xp += int(HeroDB.XP_AWARDS["enemy_hero_killed"])
+	if bool(h.get("legendary", false)):
+		xp += int(HeroDB.XP_AWARDS["legendary_action"]) * int(sim.hero_actions_used[side])
+	var line := ""
+	match str(sim.hero_state[side]):
+		"dead":
+			_kill(c, "fell on the field — the death saves ran out,")
+			line = "%s fell on the field." % full_name(c)
+		"unconscious", "stable":
+			c.hero_hp = 1
+			if won or sim.winner < 0:
+				_add_trait(c, "Wounded")
+				c.hero_wounded_until = tick + 6
+				line = "%s is carried from the field alive, barely — months of recovery ahead." % full_name(c)
+			else:
+				# taken alive on a lost field: the champion's-chains rule
+				var captor_realm := -1
+				var enemy_h: Dictionary = sim.heroes[1 - side]
+				if not enemy_h.is_empty():
+					var ec: SimCharacter = characters.get(int(enemy_h["id"]))
+					if ec != null and ec.realm_id >= 0 and ec.realm_id < realms.size():
+						captor_realm = ec.realm_id
+				if captor_realm >= 0 and realms[captor_realm].ruler_id >= 0:
+					wards[c.id] = {"home": c.realm_id, "host": captor_realm,
+						"guardian": realms[captor_realm].ruler_id,
+						"hostage": true, "since": tick, "of_age": true}
+					c.realm_id = captor_realm
+					line = "[b]%s is taken alive[/b] — a hero in chains, awaiting ransom." % full_name(c)
+				else:
+					_add_trait(c, "Wounded")
+					c.hero_wounded_until = tick + 6
+					line = "%s is dragged from the rout alive, barely." % full_name(c)
+		_:
+			c.hero_hp = maxi(1, int(round(float(sim.hero_hp[side]))))
+	if c.alive:
+		award_hero_xp(c.id, xp, "the field taught what it teaches", player_initiated)
+	if line != "":
+		_log(line)
+	return line
+
+
+func _hero_tick() -> void:
+	## The hero ledger's own month: wounds knit, the pool drifts.
+	for c: SimCharacter in characters.values():
+		if c.hero_level <= 0 or not c.alive:
+			continue
+		if c.hero_hp < c.hero_hp_max:
+			c.hero_hp = mini(c.hero_hp_max, c.hero_hp + 8)  # a month of rest
+	if tick % 12 != 0 or tick == 0:
+		return
+	# doc §2: +20-40 emerge and 15-30 die per year, steady state 300-500.
+	# Deterministic midpoints, scaled by how full the continent already is.
+	var total := hero_count()
+	var room := clampf(1.0 - float(total) / 500.0, 0.0, 1.0)
+	hero_pool_carry += 28.0 * room - 21.0 * minf(1.0, float(total) / 350.0)
+	var order: Array = hero_pool.keys()  # insertion order: deterministic
+	var i := 0
+	while hero_pool_carry >= 1.0 and not order.is_empty():
+		hero_pool_carry -= 1.0
+		hero_pool[order[i % order.size()]] = int(hero_pool[order[i % order.size()]]) + 1
+		i += 1
+	while hero_pool_carry <= -1.0 and not order.is_empty():
+		hero_pool_carry += 1.0
+		var key: String = order[i % order.size()]
+		hero_pool[key] = maxi(0, int(hero_pool[key]) - 1)
+		i += 1
+
+
+func hero_count() -> int:
+	## Named living heroes plus the unnamed pool: the continent's total.
+	var n := 0
+	for c: SimCharacter in characters.values():
+		if c.alive and c.hero_level > 0:
+			n += 1
+	for key in hero_pool:
+		n += int(hero_pool[key])
+	return n
+
+
 func live_ruler_title(realm_id: int, c: SimCharacter) -> String:
 	## What a live realm's crown is actually called (Administrative
 	## v1.0): the Magistocracy elects a Grand Magister; the clan follows
@@ -6350,10 +6846,13 @@ func faith_reliability(c: SimCharacter, p, threshold: bool = false) -> float:
 		# Ashfields' sky cannot stop a properly witnessed crossing
 		damp = maxf(damp, 0.55)
 	var r := trait_mult(c, "faith_channel_reliability_baseline") * damp
-	# shared attention: every ten faithful in the hall stand in for the sky
+	# shared attention: every ten faithful in the hall stand in for the sky.
+	# The hero cast stands outside the crowd (Hero System v1.0): the seeded
+	# canonical heroes must not thicken the halls the fixed-seed history
+	# already prayed in — their congregations arrive with future beats.
 	var crowd := 0
 	for o in characters.values():
-		if o.alive and o.realm_id == c.realm_id and o.id != c.id:
+		if o.alive and o.realm_id == c.realm_id and o.id != c.id and not hero_cast.has(o.id):
 			crowd += 1
 	r *= 1.0 + 0.01 * float(mini(crowd, 100))
 	for resp in RESPONSE_FAITH_MULT:
@@ -6696,6 +7195,7 @@ func _bard_tick() -> void:
 				if p.owner == c.realm_id:
 					settlements += 1
 			c.names_carried += 1 + settlements / 8
+			award_hero_xp(c.id, HeroDB.XP_AWARDS["bardic_performance"], "a season sung between the fires")
 			if mrng.randf() < 0.10:
 				_log("%s sings the dead of another village into the record — %d names carried now, and every one of them weight and power both." % [
 					full_name(c), c.names_carried])
