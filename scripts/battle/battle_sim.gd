@@ -12,6 +12,12 @@ signal event(text: String)
 
 const TICK_SECONDS := 0.5
 const SPACING := 7.0            # px between soldiers in formation
+const ROW_SPACING := SPACING * 0.85
+const SOLDIER_FOOTPRINT := 4.8  # formation collision width of one sprite
+const CONTACT_GAP := 1.2        # weapon/body gap between opposing front ranks
+const CONTACT_TOLERANCE := 2.0  # sticky allowance for floating-point movement
+const ALLY_GAP := 5.0           # friendly formations retain a readable seam
+const MAX_MOVE_SUBSTEP := 1.5   # prevents fast simulation steps tunnelling through a line
 const CHARGE_DURATION := 10     # combat ticks of decaying charge impact
 
 # --- Combat Lab tuning (same constants as the calculator) ---
@@ -246,17 +252,59 @@ class Regiment:
 	func active() -> bool:
 		return alive() and not routed
 
+	func files_for_count(count: int) -> int:
+		## Preserve the ordered aspect ratio while contracting both frontage and
+		## depth as casualties mount. Full-strength formations still obey the
+		## player's exact files order.
+		count = maxi(count, 1)
+		var maximum := mini(maxi(files, 1), count)
+		if count >= start_soldiers:
+			return maximum
+		var start_rows := int(ceil(float(maxi(start_soldiers, 1)) / float(maxi(files, 1))))
+		var aspect := float(maxi(files, 1)) / float(maxi(start_rows, 1))
+		var contracted := int(ceil(sqrt(float(count) * aspect)))
+		return clampi(contracted, 1, maximum)
+
+	func rows_for_count(count: int) -> int:
+		return int(ceil(float(maxi(count, 1)) / float(files_for_count(count))))
+
+	func soldier_footprint() -> float:
+		return 15.0 if is_cav else BattleSim.SOLDIER_FOOTPRINT
+
+	func file_spacing() -> float:
+		return 10.0 if is_cav else BattleSim.SPACING
+
+	func row_spacing() -> float:
+		return 10.0 if is_cav else BattleSim.ROW_SPACING
+
 	func files_now() -> int:
-		return mini(files, maxi(soldiers, 1))
+		return files_for_count(soldiers)
 
 	func rows_now() -> int:
-		return int(ceil(float(maxi(soldiers, 1)) / files_now()))
+		return rows_for_count(soldiers)
+
+	func frontage_for_count(count: int) -> float:
+		return float(files_for_count(count) - 1) * file_spacing() + soldier_footprint()
+
+	func depth_for_count(count: int) -> float:
+		return float(rows_for_count(count) - 1) * row_spacing() + soldier_footprint()
 
 	func frontage() -> float:
-		return files_now() * BattleSim.SPACING
+		return frontage_for_count(soldiers)
+
+	func depth() -> float:
+		return depth_for_count(soldiers)
+
+	func half_extent_along(direction: Vector2) -> float:
+		if direction.length_squared() < 0.0001:
+			return 0.0
+		var d := direction.normalized()
+		var forward := facing.normalized()
+		var across := forward.rotated(PI * 0.5)
+		return absf(d.dot(across)) * frontage() * 0.5 + absf(d.dot(forward)) * depth() * 0.5
 
 	func radius() -> float:
-		return maxf(frontage(), rows_now() * BattleSim.SPACING * 0.85) * 0.5
+		return Vector2(frontage(), depth()).length() * 0.5
 
 	func morale() -> float:
 		if no_morale:
@@ -896,6 +944,19 @@ func _cascade_panic(router: Regiment) -> void:
 func move_step(delta: float) -> void:
 	if ended:
 		return
+	var max_speed := 1.0
+	for r: Regiment in regiments:
+		if r.alive():
+			max_speed = maxf(max_speed, r.speed * (1.35 if r.routed else 1.0))
+	var steps := clampi(int(ceil(max_speed * maxf(delta, 0.0) / MAX_MOVE_SUBSTEP)), 1, 128)
+	var sub_delta := delta / float(steps)
+	for _step in steps:
+		_move_substep(sub_delta)
+
+
+func _move_substep(delta: float) -> void:
+	if ended:
+		return
 	for r: Regiment in regiments:
 		if not r.alive():
 			continue
@@ -980,16 +1041,24 @@ func _separate() -> void:
 			var b: Regiment = regiments[j]
 			if not b.alive() or b.routed:
 				continue
-			var min_d := (a.radius() + b.radius()) * (0.9 if a.side == b.side else 0.55)
 			var delta := b.pos - a.pos
 			var d := delta.length()
 			if d < 0.001:
 				b.pos += Vector2(1.0, 0.0)
 				continue
+			var dir := delta / d
+			var min_d := _formation_clearance(a, b, dir) + (ALLY_GAP if a.side == b.side else CONTACT_GAP)
 			if d < min_d:
-				var push := delta.normalized() * (min_d - d) * 0.5
-				a.pos -= push
-				b.pos += push
+				var overlap := min_d - d
+				# Let a stationary or defensive line hold its ground while the
+				# advancing formation absorbs the correction. Equal movers share it.
+				if a.has_move_order and not b.has_move_order:
+					a.pos -= dir * overlap
+				elif b.has_move_order and not a.has_move_order:
+					b.pos += dir * overlap
+				else:
+					a.pos -= dir * overlap * 0.5
+					b.pos += dir * overlap * 0.5
 
 
 func ai_step(control_side_0: bool) -> void:
@@ -1165,9 +1234,15 @@ func combat_tick() -> void:
 			r.fatigue = _fatigue_penalty(r)
 		if dmg.has(r.id):
 			var before := r.soldiers
+			var depth_before := r.depth_for_count(before)
 			r.hp_pool = maxf(0.0, r.hp_pool - dmg[r.id] * r.dmg_taken_mult)
 			r.soldiers = int(ceil(r.hp_pool / r.hp_per))
 			var cas := before - r.soldiers
+			if cas > 0 and r.soldiers > 0 and r.engaged_id >= 0:
+				# Ranks close from the rear. Moving the formation center forward by
+				# half the lost depth keeps its front rank on the contact line.
+				var lost_depth := maxf(0.0, depth_before - r.depth_for_count(r.soldiers))
+				r.pos += r.facing.normalized() * lost_depth * 0.5
 			if cas > 0 and not r.no_morale:
 				r.shock += (float(cas) / maxf(1.0, float(before))) * CASUALTY_SHOCK * r.shock_mult
 		# morale regen: silence-touched ground starves the nerve of every
@@ -1297,8 +1372,26 @@ func _nearest_enemy(r: Regiment) -> Regiment:
 	return best
 
 
+func _formation_clearance(a: Regiment, b: Regiment, direction: Vector2 = Vector2.ZERO) -> float:
+	var dir := direction
+	if dir.length_squared() < 0.0001:
+		dir = b.pos - a.pos
+	if dir.length_squared() < 0.0001:
+		dir = Vector2.RIGHT
+	dir = dir.normalized()
+	return a.half_extent_along(dir) + b.half_extent_along(-dir)
+
+
+func _contact_distance(a: Regiment, b: Regiment) -> float:
+	return _formation_clearance(a, b) + CONTACT_GAP
+
+
+func _surface_gap(a: Regiment, b: Regiment) -> float:
+	return a.pos.distance_to(b.pos) - _contact_distance(a, b)
+
+
 func _in_contact(a: Regiment, b: Regiment) -> bool:
-	return a.pos.distance_to(b.pos) < a.radius() + b.radius() + 4.0
+	return _surface_gap(a, b) <= CONTACT_TOLERANCE
 
 
 func _arc(att: Regiment, def: Regiment) -> int:

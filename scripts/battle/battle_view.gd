@@ -34,6 +34,13 @@ const CARD_W := 54.0
 const CARD_H := 88.0
 const CARD_GAP := 5.0
 const BAR_PAD := 8.0
+const CAMERA_MIN_ZOOM := 0.80
+const CAMERA_MAX_ZOOM := 3.25
+const CAMERA_ZOOM_STEP := 1.16
+const CAMERA_PAN_PX_PER_SEC := 520.0
+const CASUALTY_LIFETIME := 0.85
+const MAX_FALLEN_SPRITES := 96
+const ATTACK_CYCLE_PER_SECOND := 1.65
 
 var sim := BattleSim.new()
 var side_names: Array = ["Aldmark", "Sarova"]
@@ -58,6 +65,11 @@ var end_box: CenterContainer
 var tactic_buttons: Dictionary = {}   # kind -> Button (the Battle Grid's command cards)
 var commander_selected := false       # the hero card is clicked — the panel shows him
 var ammo_start: Dictionary = {}       # regiment id -> starting ammunition (the orange strip)
+var camera_center := Vector2.ZERO
+var camera_zoom := 1.0
+var battle_time := 0.0
+var visual_soldier_counts: Dictionary = {}  # regiment id -> last synchronized strength
+var fallen_soldiers: Array = []             # brief local death/fall animations
 
 
 func start(roster_a: Array, roster_b: Array, lead_a: int, lead_b: int,
@@ -68,7 +80,14 @@ func start(roster_a: Array, roster_b: Array, lead_a: int, lead_b: int,
 	side_colors = p_side_colors
 	battle_title = p_title
 	sim.setup_from_rosters(roster_a, roster_b, lead_a, lead_b, side_names, cmdr_traits_a, cmdr_traits_b, terrain, ground)
+	camera_center = sim.field * 0.5
+	camera_zoom = 1.0
+	battle_time = 0.0
+	visual_soldier_counts.clear()
+	fallen_soldiers.clear()
+	ammo_start.clear()
 	for r: BattleSim.Regiment in sim.regiments:
+		visual_soldier_counts[r.id] = r.soldiers
 		if r.ammo > 0:
 			ammo_start[r.id] = r.ammo
 	sim.battle_ended.connect(_on_battle_ended)
@@ -168,11 +187,13 @@ func _refresh_tactic_buttons() -> void:
 func _process(delta: float) -> void:
 	if not over and speed_scale > 0.0:
 		var scaled := delta * speed_scale
+		battle_time += scaled
 		sim.move_step(scaled)
 		tick_accum += scaled
 		while tick_accum >= BattleSim.TICK_SECONDS:
 			tick_accum -= BattleSim.TICK_SECONDS
 			sim.combat_tick()
+			_sync_visual_casualties()
 			sim.ai_step(false)
 		# consume fresh volleys from the sim and animate them
 		for v in sim.volleys:
@@ -184,6 +205,14 @@ func _process(delta: float) -> void:
 			if float(a["age"]) < 0.5:
 				kept.append(a)
 		arrows = kept
+		var fallen_kept: Array = []
+		for fallen in fallen_soldiers:
+			fallen["age"] = float(fallen["age"]) + scaled
+			fallen["pos"] = Vector2(fallen["pos"]) + Vector2(fallen["velocity"]) * scaled
+			if float(fallen["age"]) < float(fallen["duration"]):
+				fallen_kept.append(fallen)
+		fallen_soldiers = fallen_kept
+	_update_camera(delta)
 	_refresh_unit_panel()
 	_refresh_tactic_buttons()
 	queue_redraw()
@@ -196,6 +225,22 @@ func _gui_input(event: InputEvent) -> void:
 		mouse_now = event.position
 		return
 	if event is InputEventMouseButton:
+		if event.pressed and (event.button_index == MOUSE_BUTTON_WHEEL_UP
+				or event.button_index == MOUSE_BUTTON_WHEEL_DOWN):
+			var lay := _card_layout()
+			var bar: Rect2 = lay["bar"]
+			if bar.size.x > 0.0 and bar.has_point(event.position):
+				return
+			var before := _to_field(event.position)
+			if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+				camera_zoom = minf(CAMERA_MAX_ZOOM, camera_zoom * CAMERA_ZOOM_STEP)
+			else:
+				camera_zoom = maxf(CAMERA_MIN_ZOOM, camera_zoom / CAMERA_ZOOM_STEP)
+			var sc := _scale()
+			if sc > 0.0:
+				camera_center = before - (event.position - size * 0.5) / sc
+			_clamp_camera()
+			return
 		# a drag in progress finishes wherever the button lifts — even over the bar
 		if event.button_index == MOUSE_BUTTON_RIGHT and not event.pressed and dragging:
 			dragging = false
@@ -248,12 +293,16 @@ func _issue_order(a: Vector2, b: Vector2) -> void:
 
 # ---------------------------------------------------------------- coords
 
-func _scale() -> float:
+func _base_scale() -> float:
 	return minf(size.x / sim.field.x, size.y / sim.field.y)
 
 
+func _scale() -> float:
+	return _base_scale() * camera_zoom
+
+
 func _offset() -> Vector2:
-	return (size - sim.field * _scale()) * 0.5
+	return size * 0.5 - camera_center * _scale()
 
 
 func _to_screen(p: Vector2) -> Vector2:
@@ -264,13 +313,133 @@ func _to_field(p: Vector2) -> Vector2:
 	return (p - _offset()) / _scale()
 
 
+func _clamp_camera() -> void:
+	if camera_center == Vector2.ZERO:
+		camera_center = sim.field * 0.5
+	var sc := _scale()
+	if sc <= 0.0:
+		return
+	var half := size * 0.5 / sc
+	if half.x >= sim.field.x * 0.5:
+		camera_center.x = sim.field.x * 0.5
+	else:
+		camera_center.x = clampf(camera_center.x, half.x, sim.field.x - half.x)
+	if half.y >= sim.field.y * 0.5:
+		camera_center.y = sim.field.y * 0.5
+	else:
+		camera_center.y = clampf(camera_center.y, half.y, sim.field.y - half.y)
+
+
+func _update_camera(delta: float) -> void:
+	var dir := Vector2.ZERO
+	if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+		dir.x -= 1.0
+	if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+		dir.x += 1.0
+	if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
+		dir.y -= 1.0
+	if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
+		dir.y += 1.0
+	if dir == Vector2.ZERO:
+		return
+	var sc := _scale()
+	if sc <= 0.0:
+		return
+	camera_center += dir.normalized() * (CAMERA_PAN_PX_PER_SEC / sc) * delta
+	_clamp_camera()
+
+
+func _soldier_pose(r: BattleSim.Regiment, index: int, count: int,
+		at_time: float = -1.0, animate: bool = true) -> Dictionary:
+	## A stable procedural pose for one decorative soldier. This is deliberately
+	## local animation rather than a physics body: regiment collision remains
+	## authoritative while hundreds of sprites can move cheaply.
+	count = maxi(count, 1)
+	var files := r.files_for_count(count)
+	var rows := r.rows_for_count(count)
+	var row := int(index / files)
+	var col := index % files
+	var row_count := mini(files, count - row * files)
+	var across_offset := (float(col) - float(maxi(row_count, 1) - 1) * 0.5) * r.file_spacing()
+	var depth_offset := (float(rows - 1) * 0.5 - float(row)) * r.row_spacing()
+	var forward := r.facing.normalized()
+	if forward.length_squared() < 0.001:
+		forward = Vector2.RIGHT if r.side == 0 else Vector2.LEFT
+	var across := forward.rotated(PI * 0.5)
+	var seed: int = absi((index + 1) * 92821 + (r.id + 7) * 68917)
+	var jitter_across := (float(seed % 7) - 3.0) * 0.16
+	var jitter_depth := (float((seed / 7) % 5) - 2.0) * 0.08
+	if r.routed:
+		jitter_across *= 5.0
+		jitter_depth *= 5.0
+	var world := r.pos + across * (across_offset + jitter_across) + forward * (depth_offset + jitter_depth)
+	var action := 0.0
+	var phase := 0.0
+	if at_time < 0.0:
+		at_time = battle_time
+	if animate:
+		phase = fposmod(at_time * ATTACK_CYCLE_PER_SECOND + float(seed % 997) / 997.0, 1.0)
+		if r.engaged_id >= 0 and not r.routed and row <= 1:
+			if phase < 0.34:
+				action = sin((phase / 0.34) * PI)
+			elif phase < 0.62:
+				action = -0.34 * sin(((phase - 0.34) / 0.28) * PI)
+			var rank_weight := 1.0 if row == 0 else 0.38
+			world += forward * action * 2.4 * rank_weight
+			world += across * sin(phase * TAU) * 0.28 * rank_weight
+		else:
+			# Breathing, footing, and shield adjustment keep idle ranks alive
+			# without making the formation itself wobble.
+			world += across * sin(phase * TAU) * 0.10
+			world += forward * cos(phase * TAU) * 0.06
+	return {"world": world, "action": action, "phase": phase, "row": row}
+
+
+func _sync_visual_casualties() -> void:
+	## Strength is read directly from BattleSim. This cache exists only to know
+	## how many transient bodies to leave behind when that authoritative count
+	## drops between combat ticks.
+	for r: BattleSim.Regiment in sim.regiments:
+		var previous := int(visual_soldier_counts.get(r.id, r.soldiers))
+		var lost := maxi(0, previous - r.soldiers)
+		if lost > 0:
+			var shown := mini(lost, 14)
+			var old_files := r.files_for_count(previous)
+			for n in shown:
+				var index := r.soldiers + n
+				if r.engaged_id >= 0:
+					index = n % maxi(1, mini(old_files, previous))
+				var pose := _soldier_pose(r, index, maxi(previous, 1), battle_time, false)
+				var forward := r.facing.normalized()
+				if forward.length_squared() < 0.001:
+					forward = Vector2.RIGHT if r.side == 0 else Vector2.LEFT
+				var across := forward.rotated(PI * 0.5)
+				var seed: int = absi((r.id + 3) * 7919 + (n + 11) * 104729 + sim.combat_ticks * 17)
+				fallen_soldiers.append({
+					"pos": Vector2(pose["world"]),
+					"velocity": -forward * lerpf(3.0, 7.0, float(seed % 101) / 100.0)
+						+ across * (float(seed % 7) - 3.0) * 0.45,
+					"kind": r.kind,
+					"body": side_colors[r.side],
+					"age": 0.0,
+					"duration": CASUALTY_LIFETIME * lerpf(0.82, 1.14, float(seed % 89) / 88.0),
+				})
+		visual_soldier_counts[r.id] = r.soldiers
+	while fallen_soldiers.size() > MAX_FALLEN_SPRITES:
+		fallen_soldiers.pop_front()
+
+
 # ---------------------------------------------------------------- drawing
 
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), GRASS_BASE)
+	_clamp_camera()
 	for patch in patches:
-		var p: Vector2 = Vector2(patch["pos"].x * size.x, patch["pos"].y * size.y)
-		var ps: float = patch["size"]
+		var field_p: Vector2 = Vector2(patch["pos"].x * sim.field.x, patch["pos"].y * sim.field.y)
+		var p: Vector2 = _to_screen(field_p)
+		var ps: float = float(patch["size"]) * _scale() / maxf(0.001, _base_scale())
+		if p.x < -ps or p.y < -ps or p.x > size.x + ps or p.y > size.y + ps:
+			continue
 		match int(patch["kind"]):
 			0:
 				draw_rect(Rect2(p, Vector2(ps * 0.8, ps * 0.5)), ROCK)
@@ -278,6 +447,11 @@ func _draw() -> void:
 				draw_circle(p, ps * 0.9, TREE)
 			_:
 				draw_rect(Rect2(p, Vector2(ps, ps * 0.6)), GRASS_DARK if int(patch["kind"]) % 2 == 0 else GRASS_LIGHT)
+
+	# Fallen sprites sit below the surviving formations and fade quickly; the
+	# authoritative soldier count has already changed in the sim and UI.
+	for fallen in fallen_soldiers:
+		_draw_fallen_soldier(fallen)
 
 	# regiments, painter-sorted by field y
 	var order: Array = sim.regiments.filter(func(r) -> bool: return not r.fled)
@@ -318,56 +492,306 @@ func _draw_regiment(r: BattleSim.Regiment) -> void:
 	var body: Color = side_colors[r.side]
 	if r.routed:
 		body = body.lerp(Color(0.5, 0.5, 0.5), 0.35)
-	var files := r.files_now()
-	var angle := r.facing.angle() + PI / 2.0
 	for i in r.soldiers:
-		var col := i % files
-		var row := i / files
-		var local := Vector2((float(col) - float(files - 1) * 0.5) * BattleSim.SPACING,
-			float(row) * BattleSim.SPACING * 0.85)
-		var jitter := Vector2(
-			float((i * 2654435761 + r.id * 97) % 5) - 2.0,
-			float((i * 40503 + r.id * 31) % 5) - 2.0) * 0.6
-		if r.routed:
-			jitter *= 4.0
-		var world := r.pos + (local + jitter).rotated(angle)
-		_draw_soldier(_to_screen(world), r.kind, body)
+		var pose := _soldier_pose(r, i, r.soldiers)
+		var facing_side := signf(r.facing.x)
+		if absf(facing_side) < 0.1:
+			facing_side = 1.0 if r.side == 0 else -1.0
+		_draw_soldier(_to_screen(Vector2(pose["world"])), r.kind, body, -1.0,
+			float(pose["action"]), facing_side)
 
 
-func _draw_soldier(p: Vector2, kind: String, body: Color, s: float = -1.0) -> void:
-	if s < 0.0:
-		s = _scale()
-	if kind == "cav":
-		draw_rect(Rect2(p + Vector2(-5, -3) * s, Vector2(10, 4) * s), HORSE)
-		draw_rect(Rect2(p + Vector2(4, -5) * s, Vector2(3, 3) * s), HORSE)          # horse head
-		draw_rect(Rect2(p + Vector2(-2, -8) * s, Vector2(4, 5) * s), body)          # rider
-		draw_rect(Rect2(p + Vector2(-1.5, -11) * s, Vector2(3, 3) * s), HELMET)
-		draw_line(p + Vector2(3, -10) * s, p + Vector2(6, -13) * s, HELMET, maxf(1.0, s))
+func _soldier_role(kind: String) -> String:
+	if kind == "cav" or kind.contains("cavalry"):
+		return "cav"
+	if kind.contains("warden") or kind.contains("caeris"):
+		return "dead"
+	if kind.contains("elder_guard") or kind.contains("trade_guard") or kind.contains("coin_sworn") \
+			or kind.contains("sworn_sword") or kind.contains("court_company") or kind.contains("vigil"):
+		return "sword"
+	if kind == "levy" or kind.contains("spear") or kind.contains("ironside") \
+			or kind.contains("column") or kind.contains("militia"):
+		return "spear"
+	if kind == "archer" or kind.contains("archer") or kind.contains("skirmisher") \
+			or kind.contains("arcane") or kind.contains("speaker") \
+			or kind.contains("marine") or kind.contains("harbor_guard"):
+		return "missile"
+	return "sword"
+
+
+func _soldier_metal(kind: String) -> Color:
+	if kind.contains("ironside") or kind.contains("vigil") or kind.contains("elder") \
+			or kind.contains("cavalry") or kind == "cav":
+		return Color("c9c6b8")
+	if kind.contains("warden") or kind.contains("caeris"):
+		return Color("d8d2c4")
+	return HELMET
+
+
+func _soldier_cloth(kind: String, body: Color) -> Color:
+	if kind.contains("warden"):
+		return Color("d8d2c4")
+	if kind.contains("caeris"):
+		return Color("665d5e")
+	if kind.contains("drevak") or kind.contains("berserker") or kind.contains("compact"):
+		return body.lerp(Color("9a4f34"), 0.42)
+	if kind.contains("dwarven") or kind.contains("ironside") or kind.contains("ward"):
+		return body.lerp(Color("7d6a47"), 0.38)
+	if kind.contains("veldarin") or kind.contains("thaladris"):
+		return body.lerp(Color("315a3e"), 0.40)
+	if kind.contains("arcane"):
+		return body.lerp(Color("6f5aa6"), 0.38)
+	return body
+
+
+func _draw_pixel_shadow(p: Vector2, w: float, h: float, s: float) -> void:
+	draw_rect(Rect2(p + Vector2(-w * 0.5, -h * 0.2) * s, Vector2(w, h) * s),
+		Color("16200f70"))
+
+
+static func _fade(color: Color, alpha: float) -> Color:
+	return Color(color.r, color.g, color.b, color.a * alpha)
+
+
+func _draw_fallen_soldier(fallen: Dictionary) -> void:
+	var duration := maxf(0.01, float(fallen["duration"]))
+	var t := clampf(float(fallen["age"]) / duration, 0.0, 1.0)
+	var fade := 1.0 - smoothstep(0.48, 1.0, t)
+	var p := _to_screen(Vector2(fallen["pos"]))
+	var kind := str(fallen["kind"])
+	var body: Color = fallen["body"]
+	var cloth := _fade(_soldier_cloth(kind, body).darkened(0.12), fade)
+	var metal := _fade(_soldier_metal(kind).darkened(0.10), fade)
+	var skin := _fade(Color("d8d2c4") if _soldier_role(kind) == "dead" else SKIN, fade)
+	var s := _scale() * 1.16
+	var settle := minf(1.0, t / 0.24)
+	p += Vector2(0.0, settle * 1.2 * s)
+	draw_rect(Rect2(p + Vector2(-5.2, 1.0) * s, Vector2(10.4, 2.0) * s), _fade(Color("16200f"), fade * 0.34))
+	if _soldier_role(kind) == "cav":
+		draw_colored_polygon(PackedVector2Array([
+			p + Vector2(-8.0, -1.8) * s,
+			p + Vector2(5.7, -2.4) * s,
+			p + Vector2(8.0, 0.6) * s,
+			p + Vector2(-6.7, 1.5) * s,
+		]), _fade(HORSE.darkened(0.08), fade))
+		draw_line(p + Vector2(-5.0, 0.4) * s, p + Vector2(-8.2, 3.3) * s, _fade(Color("1c1410"), fade), maxf(1.0, s * 0.7))
+		draw_circle(p + Vector2(1.0, -3.2) * s, 1.8 * s, skin)
 	else:
-		draw_rect(Rect2(p + Vector2(-2, -6) * s, Vector2(4, 6) * s), body)          # tunic
-		draw_rect(Rect2(p + Vector2(-1.5, -9) * s, Vector2(3, 3) * s), HELMET)      # helm
-		draw_rect(Rect2(p + Vector2(0, -1) * s, Vector2(1.5, 2) * s), SKIN)         # legs hint
-		if kind == "levy":
-			draw_line(p + Vector2(3, 1) * s, p + Vector2(3, -13) * s, HELMET, maxf(1.0, s))   # spear
-			draw_rect(Rect2(p + Vector2(-5, -6) * s, Vector2(2.5, 4) * s), body.darkened(0.3))  # shield
-		elif kind == "archer":
-			draw_arc(p + Vector2(3.5, -4.5) * s, 3.2 * s, -1.25, 1.25, 8, Color("6b4a30"), maxf(1.0, s))  # bow
+		# Horizontal body, loosened limbs, and dropped weapon: enough motion to
+		# read as a fall without allocating a node or rigid body per casualty.
+		draw_colored_polygon(PackedVector2Array([
+			p + Vector2(-4.7, -1.8) * s,
+			p + Vector2(3.4, -2.4) * s,
+			p + Vector2(5.0, 0.3) * s,
+			p + Vector2(-3.8, 1.4) * s,
+		]), cloth)
+		draw_circle(p + Vector2(5.3, -1.4) * s, 1.9 * s, skin)
+		draw_line(p + Vector2(-3.4, 0.4) * s, p + Vector2(-6.4, 3.0) * s, _fade(Color("1a1511"), fade), maxf(1.0, s * 0.75))
+		draw_line(p + Vector2(-1.2, 0.8) * s, p + Vector2(-2.0, 3.6) * s, _fade(Color("1a1511"), fade), maxf(1.0, s * 0.75))
+		draw_line(p + Vector2(-5.5, -2.7) * s, p + Vector2(6.8, 2.7) * s, metal, maxf(1.0, s * 0.50))
+
+
+func _draw_little_shield(c: Vector2, s: float, col: Color, metal: Color, round: bool = false) -> void:
+	if round:
+		draw_circle(c, 2.5 * s, col.darkened(0.25))
+		draw_circle(c, 1.7 * s, col.lightened(0.10))
+		draw_line(c + Vector2(-1.6, 0) * s, c + Vector2(1.6, 0) * s, metal.darkened(0.1), maxf(1.0, s * 0.55))
+	else:
+		draw_colored_polygon(PackedVector2Array([
+			c + Vector2(-2.1, -2.8) * s,
+			c + Vector2(2.1, -2.2) * s,
+			c + Vector2(1.7, 2.1) * s,
+			c + Vector2(0.0, 3.1) * s,
+			c + Vector2(-2.0, 2.0) * s,
+		]), col.darkened(0.25))
+		draw_line(c + Vector2(-1.4, -2.0) * s, c + Vector2(1.0, 1.8) * s,
+			metal.lightened(0.18), maxf(1.0, s * 0.45))
+
+
+func _draw_soldier(p: Vector2, kind: String, body: Color, s: float = -1.0,
+		action: float = 0.0, facing_side: float = 1.0) -> void:
+	if s < 0.0:
+		s = _scale() * 1.16
+	var role := _soldier_role(kind)
+	var cloth := _soldier_cloth(kind, body)
+	var metal := _soldier_metal(kind)
+	var leather := Color("563b24")
+	var skin := SKIN
+	var side := 1.0 if facing_side >= 0.0 else -1.0
+	var strike := maxf(0.0, action)
+	if role == "dead":
+		skin = Color("d8d2c4")
+		cloth = cloth.darkened(0.12)
+
+	if role == "cav":
+		_draw_pixel_shadow(p + Vector2(0, 2.0) * s, 15.0, 4.0, s)
+		var horse := HORSE.lerp(body.darkened(0.35), 0.18)
+		draw_colored_polygon(PackedVector2Array([
+			p + Vector2(-7.6 * side, -3.0) * s,
+			p + Vector2(-3.0 * side, -5.0) * s,
+			p + Vector2(4.8 * side, -4.2) * s,
+			p + Vector2(7.2 * side, -2.0) * s,
+			p + Vector2(5.5 * side, 1.0) * s,
+			p + Vector2(-6.8 * side, 1.1) * s,
+		]), horse)
+		draw_colored_polygon(PackedVector2Array([
+			p + Vector2(4.8 * side, -4.0) * s,
+			p + Vector2(8.2 * side, -6.0) * s,
+			p + Vector2(9.4 * side, -4.3) * s,
+			p + Vector2(6.9 * side, -1.6) * s,
+		]), horse.lightened(0.04))
+		draw_line(p + Vector2(-7.2 * side, -3.0) * s, p + Vector2(-10.0 * side, -5.1) * s,
+			horse.darkened(0.28), maxf(1.0, s * 0.9))
+		for lx in [-5.0, -1.5, 3.2, 6.0]:
+			draw_line(p + Vector2(lx * side, 0.2) * s, p + Vector2((lx - 0.9) * side, 4.4) * s,
+				Color("1c1410"), maxf(1.0, s * 0.65))
+		draw_line(p + Vector2(-2.6, -6.2) * s, p + Vector2(0.8, -5.0) * s,
+			metal.darkened(0.28), maxf(1.0, s * 0.75))
+		draw_colored_polygon(PackedVector2Array([
+			p + Vector2(-2.6, -8.7) * s,
+			p + Vector2(1.6, -8.2) * s,
+			p + Vector2(2.4, -3.8) * s,
+			p + Vector2(-1.8, -3.4) * s,
+		]), cloth)
+		draw_circle(p + Vector2(-0.1, -10.4) * s, 2.0 * s, skin)
+		draw_colored_polygon(PackedVector2Array([
+			p + Vector2(-2.5, -11.0) * s,
+			p + Vector2(0.0, -13.0) * s,
+			p + Vector2(2.6, -11.0) * s,
+			p + Vector2(1.6, -9.5) * s,
+			p + Vector2(-1.8, -9.5) * s,
+		]), metal)
+		draw_line(p + Vector2(2.8 * side, -8.6) * s,
+			p + Vector2((8.8 + strike * 4.0) * side, -12.4 + strike * 5.0) * s,
+			metal.lightened(0.2), maxf(1.0, s * 0.75))
+		return
+
+	_draw_pixel_shadow(p + Vector2(0, 2.0) * s, 8.0, 2.4, s)
+	# legs and boots
+	draw_line(p + Vector2(-1.4, -0.4) * s, p + Vector2(-2.7, 3.8) * s,
+		Color("1a1511"), maxf(1.0, s * 0.85))
+	draw_line(p + Vector2(1.2, -0.4) * s, p + Vector2(2.2, 3.8) * s,
+		Color("1a1511"), maxf(1.0, s * 0.85))
+	# tunic/armour silhouette
+	draw_colored_polygon(PackedVector2Array([
+		p + Vector2(-3.2, -7.2) * s,
+		p + Vector2(3.1, -7.2) * s,
+		p + Vector2(3.6, -1.1) * s,
+		p + Vector2(1.4, 0.7) * s,
+		p + Vector2(-1.6, 0.7) * s,
+		p + Vector2(-3.8, -1.1) * s,
+	]), cloth.darkened(0.08))
+	draw_rect(Rect2(p + Vector2(-2.3, -6.4) * s, Vector2(4.6, 4.7) * s),
+		cloth.lightened(0.08))
+	draw_line(p + Vector2(-2.6, -1.7) * s, p + Vector2(2.7, -1.7) * s,
+		leather, maxf(1.0, s * 0.55))
+
+	# arms, head, helmet
+	draw_line(p + Vector2(-3.2, -5.4) * s, p + Vector2(-5.0, -2.0) * s,
+		skin.darkened(0.12), maxf(1.0, s * 0.75))
+	draw_line(p + Vector2(3.2, -5.4) * s, p + Vector2(5.0, -2.0) * s,
+		skin.darkened(0.12), maxf(1.0, s * 0.75))
+	draw_circle(p + Vector2(0.0, -9.2) * s, 2.05 * s, skin)
+	draw_colored_polygon(PackedVector2Array([
+		p + Vector2(-2.5, -9.6) * s,
+		p + Vector2(-1.0, -11.6) * s,
+		p + Vector2(1.3, -11.6) * s,
+		p + Vector2(2.6, -9.6) * s,
+		p + Vector2(1.6, -8.3) * s,
+		p + Vector2(-1.7, -8.3) * s,
+	]), metal)
+	draw_line(p + Vector2(-1.8, -8.5) * s, p + Vector2(1.8, -8.5) * s,
+		metal.darkened(0.35), maxf(1.0, s * 0.45))
+
+	if role == "spear":
+		var spear_base := p + Vector2(4.4 * side, 2.6) * s
+		var spear_tip := p + Vector2((4.5 + strike * 8.0) * side, -13.8 + strike * 7.0) * s
+		draw_line(spear_base, spear_tip,
+			Color("6b4a30"), maxf(1.0, s * 0.55))
+		draw_colored_polygon(PackedVector2Array([
+			spear_tip + Vector2(0.0, -1.6) * s,
+			spear_tip + Vector2(-0.9 * side, 1.0) * s,
+			spear_tip + Vector2(1.0 * side, 1.0) * s,
+		]), metal.lightened(0.25))
+		_draw_little_shield(p + Vector2(-4.1 * side, -4.5) * s, s, cloth, metal, false)
+	elif role == "missile":
+		if absf(action) > 0.04:
+			# Once caught in contact, missile troops use a short sidearm instead
+			# of continuing to loose arrows through the melee.
+			draw_line(p + Vector2(2.3 * side, -4.0) * s,
+				p + Vector2((6.0 + strike * 3.0) * side, -8.0 + strike * 3.0) * s,
+				metal.lightened(0.18), maxf(1.0, s * 0.62))
 		else:
-			draw_line(p + Vector2(3, -4) * s, p + Vector2(6, -9) * s, HELMET, maxf(1.0, s))   # sword
-			draw_rect(Rect2(p + Vector2(-5, -6) * s, Vector2(2.5, 4) * s), body.darkened(0.3))  # shield
+			draw_arc(p + Vector2(4.8 * side, -5.2) * s, 4.0 * s, -1.35, 1.28, 10,
+				Color("8a5b2c"), maxf(1.0, s * 0.55))
+			draw_line(p + Vector2(4.9 * side, -9.0) * s, p + Vector2(4.8 * side, -1.6) * s,
+				Color("d8d2c4"), maxf(1.0, s * 0.35))
+			draw_line(p + Vector2(-3.0 * side, -6.4) * s, p + Vector2(2.5 * side, -6.0) * s,
+				Color("6b4a30"), maxf(1.0, s * 0.45))
+			if kind.contains("arcane") or kind.contains("speaker") or kind.contains("song"):
+				draw_circle(p + Vector2(5.6 * side, -8.0) * s, maxf(1.0, 0.9 * s), GOLD.lightened(0.15))
+	elif role == "dead":
+		draw_line(p + Vector2(3.0 * side, -4.0) * s,
+			p + Vector2((6.0 + strike * 3.0) * side, -8.8 + strike * 3.2) * s,
+			Color("7b7a72"), maxf(1.0, s * 0.6))
+		draw_circle(p + Vector2(0.0, -9.2) * s, 0.7 * s, Color("1a1511"))
+		draw_circle(p + Vector2(-0.9, -9.3) * s, 0.45 * s, Color("1a1511"))
+	else:
+		draw_line(p + Vector2(3.2 * side, -3.4) * s,
+			p + Vector2((7.0 + strike * 4.2) * side, -9.0 + strike * 5.0) * s,
+			metal.lightened(0.22), maxf(1.0, s * 0.75))
+		draw_line(p + Vector2(2.6 * side, -3.2) * s, p + Vector2(4.2 * side, -1.9) * s,
+			GOLD.darkened(0.1), maxf(1.0, s * 0.55))
+		_draw_little_shield(p + Vector2(-4.0 * side, -4.2) * s, s, cloth, metal, true)
 
 
 func _draw_banner(r: BattleSim.Regiment) -> void:
 	if r.routed:
 		return
 	var top := _to_screen(r.pos) + Vector2(0, -r.radius() * _scale() - 12.0)
-	var pole_base := top + Vector2(0, 16.0)
-	draw_line(pole_base, top + Vector2(0, -14.0), Color("3a2b1c"), 2.0)
-	var flag := Rect2(top + Vector2(1, -14.0), Vector2(18, 11))
-	draw_rect(flag, side_colors[r.side])
-	draw_rect(flag, Color("1c1410"), false, 1.0)
-	draw_line(flag.position + Vector2(4, 8), flag.position + Vector2(14, 2), GOLD, 1.5)
-	var bar_pos := top + Vector2(-12.0, 3.0)
+	var pole_base := top + Vector2(0, 18.0)
+	var pole_top := top + Vector2(0, -18.0)
+	draw_line(pole_base + Vector2(1.0, 0.0), pole_top + Vector2(1.0, 0.0), Color("14100b"), 2.0)
+	draw_line(pole_base, pole_top, Color("6b4a30"), 2.0)
+	draw_circle(pole_top, 2.2, GOLD.darkened(0.15))
+
+	var flag_p := top + Vector2(2.0, -17.0)
+	var flag_col: Color = side_colors[r.side]
+	var flag_dark := flag_col.darkened(0.32)
+	var flag_light := flag_col.lightened(0.20)
+	var cloth := PackedVector2Array([
+		flag_p,
+		flag_p + Vector2(21.0, 1.0),
+		flag_p + Vector2(19.0, 7.0),
+		flag_p + Vector2(21.0, 13.0),
+		flag_p + Vector2(0.0, 12.0),
+	])
+	draw_colored_polygon(cloth, flag_dark)
+	draw_colored_polygon(PackedVector2Array([
+		flag_p + Vector2(2.0, 1.0),
+		flag_p + Vector2(18.0, 2.0),
+		flag_p + Vector2(16.0, 6.8),
+		flag_p + Vector2(18.0, 11.0),
+		flag_p + Vector2(2.0, 10.5),
+	]), flag_col)
+	draw_line(flag_p + Vector2(3.0, 2.0), flag_p + Vector2(18.0, 2.6), flag_light, 1.0)
+	if r.side == 1:
+		draw_colored_polygon(PackedVector2Array([
+			flag_p + Vector2(7.0, 1.4),
+			flag_p + Vector2(12.0, 1.8),
+			flag_p + Vector2(10.0, 11.2),
+			flag_p + Vector2(5.2, 11.0),
+		]), Color("e8e2d4"))
+	var icon_c := flag_p + Vector2(10.8, 7.0)
+	if r.is_cav:
+		draw_arc(icon_c + Vector2(0.0, 1.0), 4.2, PI * 1.08, PI * 1.92, 10, GOLD, 1.4)
+	elif r.rng_range > 0.0:
+		draw_arc(icon_c + Vector2(-1.0, 0.0), 4.3, -PI * 0.42, PI * 0.42, 10, GOLD, 1.4)
+	else:
+		draw_line(icon_c + Vector2(-4.0, 4.0), icon_c + Vector2(4.0, -4.0), GOLD, 1.5)
+		draw_line(icon_c + Vector2(-3.0, -0.8), icon_c + Vector2(0.8, 3.0), GOLD, 1.1)
+
+	var bar_pos := top + Vector2(-12.0, 4.0)
 	var hp := float(r.soldiers) / maxf(1.0, float(r.start_soldiers))
 	var mor := clampf(r.morale() / BattleSim.START_MORALE, 0.0, 1.0)
 	draw_rect(Rect2(bar_pos, Vector2(24, 3)), Color("1c1410"))

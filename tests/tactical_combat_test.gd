@@ -34,6 +34,55 @@ func _init() -> void:
 	assert(float(BattleSim.PRESETS["forsaken_militia"]["conviction_lead"]) == 8.0, "conviction per doc §5.14")
 	print("presets and campaign tables: 5 Tactical Combat kinds wired")
 
+	# --- formation contact and collision regressions ---
+	var contact := BattleSim.new()
+	contact.setup_from_rosters([{"kind": "sword", "soldiers": 36}], [{"kind": "sword", "soldiers": 36}],
+		0, 0, ["A", "B"])
+	var line_a: BattleSim.Regiment = contact.regiments[0]
+	var line_b: BattleSim.Regiment = contact.regiments[1]
+	line_a.pos = Vector2(470.0, 320.0)
+	line_b.pos = Vector2(730.0, 320.0)
+	line_a.facing = Vector2.RIGHT
+	line_b.facing = Vector2.LEFT
+	var untouched_hp := line_b.hp_pool
+	contact.combat_tick()
+	assert(line_b.hp_pool == untouched_hp, "separated formations cannot inflict melee damage")
+	line_a.has_move_order = true
+	line_a.move_target = line_b.pos
+	line_b.has_move_order = true
+	line_b.move_target = line_a.pos
+	# One intentionally large step exercises movement substeps and tunnelling prevention.
+	contact.move_step(4.0)
+	assert(line_a.pos.x < line_b.pos.x, "opposing formations never pass through one another")
+	assert(line_a.engaged_id == line_b.id and line_b.engaged_id == line_a.id,
+		"melee engagement begins only after the front ranks meet")
+	assert(absf(contact._surface_gap(line_a, line_b)) <= BattleSim.CONTACT_TOLERANCE + 0.05,
+		"engaged formations share a physical contact line")
+	contact.combat_tick()
+	assert(line_b.hp_pool < untouched_hp, "contact unlocks melee damage")
+
+	var full_frontage := line_a.frontage_for_count(line_a.start_soldiers)
+	var full_depth := line_a.depth_for_count(line_a.start_soldiers)
+	assert(line_a.frontage_for_count(line_a.start_soldiers / 2) < full_frontage,
+		"casualties contract formation frontage")
+	assert(line_a.depth_for_count(line_a.start_soldiers / 2) < full_depth,
+		"casualties contract formation depth")
+
+	var friends := BattleSim.new()
+	friends.setup_from_rosters([{"kind": "sword", "soldiers": 36}, {"kind": "sword", "soldiers": 36}],
+		[{"kind": "sword", "soldiers": 36}], 0, 0, ["A", "B"])
+	var friend_a: BattleSim.Regiment = friends.regiments[0]
+	var friend_b: BattleSim.Regiment = friends.regiments[1]
+	friend_a.pos = Vector2(400.0, 300.0)
+	friend_b.pos = Vector2(402.0, 300.0)
+	friend_a.facing = Vector2.RIGHT
+	friend_b.facing = Vector2.RIGHT
+	friends.move_step(0.05)
+	var friendly_min := friends._formation_clearance(friend_a, friend_b) + BattleSim.ALLY_GAP
+	assert(friend_a.pos.distance_to(friend_b.pos) >= friendly_min - 0.05,
+		"non-engaged friendly formations retain separation")
+	print("formation collision: contact-gated damage, contraction, separation and no tunnelling")
+
 	# --- 2. the binary reliability gates (doc §3) ---
 	var sim := BattleSim.new()
 	sim.setup_from_rosters([{"kind": "sword", "soldiers": 36}], [{"kind": "sword", "soldiers": 36}], 0, 0, ["A", "B"])

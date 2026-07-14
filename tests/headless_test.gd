@@ -37,6 +37,16 @@ func _init() -> void:
 	assert(world.characters[0].genome.has("symmetry"), "genome missing portrait symmetry gene")
 	assert(world.characters[0].genome.has("presence"), "genome missing portrait presence gene")
 	assert(world.characters[0].genome.has("severity"), "genome missing portrait severity gene")
+	for portrait_gene in ["nose_width", "eye_tilt", "lip_fullness", "forehead", "ear_size", "neck_width"]:
+		assert(world.characters[0].genome.has(portrait_gene), "genome missing portrait gene: %s" % portrait_gene)
+	var portrait_probe := FaceView.new()
+	portrait_probe.set_person(world.characters[0].genome, 30, false, {"id": 1, "shape": "medallion"})
+	var portrait_pose := portrait_probe._portrait_pose(50.0, Vector2(50.0, 50.0), 25.0, 34.0)
+	assert(float(portrait_pose["axis_x"]) > 50.0, "portrait must use a three-quarter face axis")
+	assert((portrait_pose["near_eye"] as Vector2).x < float(portrait_pose["axis_x"]), "near eye must sit on the open side")
+	assert((portrait_pose["far_eye"] as Vector2).x > float(portrait_pose["axis_x"]), "far eye must sit on the compressed side")
+	assert((portrait_pose["nose_tip"] as Vector2).x > float(portrait_pose["axis_x"]), "nose must project with the three-quarter turn")
+	portrait_probe.free()
 	assert(world.characters[0].traits.size() > 0, "founders should have traits")
 	print("founder traits: %s -> %s" % [world.full_name(world.characters[0]), str(world.characters[0].traits)])
 

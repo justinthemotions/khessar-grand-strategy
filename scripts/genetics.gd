@@ -31,6 +31,14 @@ const CONTINUOUS: Array[String] = [
 	"beard",       # males: expresses as a beard above 0.45
 	"hair_texture", # straight -> coarse/wavy silhouette
 ]
+const DETAIL_CONTINUOUS: Array[String] = [
+	"nose_width",  # narrow -> broad bridge and nostrils
+	"eye_tilt",    # downturned -> upturned outer corners
+	"lip_fullness",
+	"forehead",    # low/broad hairline -> tall/narrow brow
+	"ear_size",
+	"neck_width",
+]
 const HAIR_STYLES: int = 4
 const MUTATION_SIGMA: float = 0.08
 const STYLE_MUTATION_CHANCE: float = 0.1
@@ -41,6 +49,13 @@ static func founder(rng: RandomNumberGenerator) -> Dictionary:
 	for key in CONTINUOUS:
 		g[key] = rng.randf()
 	g["hair_style"] = rng.randi_range(0, HAIR_STYLES - 1)
+	# Appearance-only additions use a forked stream. The main RNG therefore
+	# advances exactly as it did before these genes existed, preserving world
+	# generation, traits, council appointments, and event outcomes by seed.
+	var detail_rng := RandomNumberGenerator.new()
+	detail_rng.seed = int(rng.state) ^ 0x2D4C6B8A1735
+	for key in DETAIL_CONTINUOUS:
+		g[key] = detail_rng.randf()
 	return g
 
 
@@ -53,4 +68,9 @@ static func inherit(rng: RandomNumberGenerator, father: Dictionary, mother: Dict
 		g["hair_style"] = rng.randi_range(0, HAIR_STYLES - 1)
 	else:
 		g["hair_style"] = father["hair_style"] if rng.randf() < 0.5 else mother["hair_style"]
+	var detail_rng := RandomNumberGenerator.new()
+	detail_rng.seed = int(rng.state) ^ 0x63A91D5E2047
+	for key in DETAIL_CONTINUOUS:
+		var mid: float = (float(father.get(key, 0.5)) + float(mother.get(key, 0.5))) * 0.5
+		g[key] = clampf(mid + detail_rng.randfn(0.0, MUTATION_SIGMA), 0.0, 1.0)
 	return g

@@ -1550,7 +1550,7 @@ func _refresh_dynasty() -> void:
 		dyn_head_label.text = "Dynasty Head: %s%s" % [world.full_name(head),
 			"" if ruler_is_head else "\n(not your ruler — the head's powers are theirs)"]
 	else:
-		dyn_head_face.set_person({}, 30, false)
+		dyn_head_face.set_person({}, 30, false, {"shape": "medallion"})
 		dyn_head_label.text = "The dynasty has no head."
 
 	for child in houses_box.get_children():
@@ -1846,9 +1846,9 @@ func _refresh_council() -> void:
 		var member = world.council_member(0, seat)
 		var face: FaceView = council_faces[seat]
 		if member != null:
-			face.set_person(member.genome, member.age_years(world.tick), member.is_female)
+			face.set_person(member.genome, member.age_years(world.tick), member.is_female, _portrait_context(member))
 		else:
-			face.set_person({}, 30, false)
+			face.set_person({}, 30, false, {"shape": "medallion"})
 		_fill_char_options(council_opts[seat], _adults_of_realm(0, true), "— vacant —",
 			member.id if member != null else -1, [SimWorld.SEAT_STAT[seat]])
 
@@ -2257,6 +2257,9 @@ func _portrait_context(person: SimCharacter) -> Dictionary:
 		"realm": world.realms[person.realm_id].name if person.realm_id >= 0 else "",
 		"dynasty": world.dynasties[person.dynasty_id].name if person.dynasty_id >= 0 else "",
 		"ruler": ruler,
+		"culture": person.culture,
+		"race": person.race,
+		"shape": "medallion",
 	}
 
 

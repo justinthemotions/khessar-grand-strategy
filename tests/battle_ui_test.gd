@@ -71,9 +71,24 @@ func _init() -> void:
 	# --- 4. the number band's fuel: counts and ammunition ---
 	var archer := _find(view.sim, "archer")
 	assert(int(view.ammo_start.get(archer.id, -1)) == 40, "archer ammunition recorded at start")
+	var archer_full_frontage := archer.frontage()
 	archer.soldiers = 11
 	assert(archer.soldiers == 11, "the band reads soldiers directly — 11 men remain")
-	print("counts: remaining men and starting ammunition tracked per card")
+	view._sync_visual_casualties()
+	assert(int(view.visual_soldier_counts[archer.id]) == 11,
+		"render cache synchronizes to the authoritative casualty count")
+	assert(view.fallen_soldiers.size() == 13,
+		"each newly lost soldier receives one brief fallen-sprite animation")
+	assert(archer.frontage() < archer_full_frontage,
+		"the rendered formation contracts with its strength")
+	var sword := _find(view.sim, "sword")
+	sword.engaged_id = view.sim.regiments.back().id
+	var pose_a := view._soldier_pose(sword, 0, sword.soldiers, 0.0, true)
+	var pose_b := view._soldier_pose(sword, 0, sword.soldiers, 0.17, true)
+	assert((pose_a["world"] as Vector2).distance_to(pose_b["world"] as Vector2) > 0.01
+			or absf(float(pose_a["action"]) - float(pose_b["action"])) > 0.01,
+		"an engaged front-rank soldier lunges or recoils over time")
+	print("counts: cards, formations, fallen sprites and melee motion stay synchronized")
 
 	# --- 5. the commander panel (built by _ready; called directly — no
 	# main loop runs during a SceneTree script's _init) ---
@@ -87,7 +102,33 @@ func _init() -> void:
 	assert("Oath-token: whole" in view.unit_stats.text, "the oath's state shown for the Oath-Sworn")
 	print("commander panel: name, stats and oath state for the hero card")
 
-	# --- 6. no commander -> no hero card; narrow view shrinks the cards ---
+	# --- 6. camera: centered by default, zooms around the cursor, clamps to the field ---
+	view.size = Vector2(1280, 720)
+	assert(view.camera_center.distance_to(view.sim.field * 0.5) < 0.01,
+		"battle camera starts centered on the field")
+	var field_point := Vector2(300.0, 220.0)
+	var round_trip := view._to_field(view._to_screen(field_point))
+	var snap_tol := maxf(3.0, 2.0 / view._scale())
+	assert(round_trip.distance_to(field_point) < snap_tol,
+		"field/screen transform round-trips at default zoom")
+	var zoom_event := InputEventMouseButton.new()
+	zoom_event.button_index = MOUSE_BUTTON_WHEEL_UP
+	zoom_event.pressed = true
+	zoom_event.position = view.size * 0.5
+	view._gui_input(zoom_event)
+	assert(view.camera_zoom > 1.0, "mouse wheel zooms in")
+	round_trip = view._to_field(view._to_screen(field_point))
+	snap_tol = maxf(3.0, 2.0 / view._scale())
+	assert(round_trip.distance_to(field_point) < snap_tol,
+		"field/screen transform round-trips after zoom")
+	view.camera_center = Vector2(-9999.0, 9999.0)
+	view._clamp_camera()
+	assert(view.camera_center.x >= 0.0 and view.camera_center.x <= view.sim.field.x
+			and view.camera_center.y >= 0.0 and view.camera_center.y <= view.sim.field.y,
+		"camera clamps back inside the field")
+	print("camera: centered, wheel-zooms, transforms and clamps")
+
+	# --- 7. no commander -> no hero card; narrow view shrinks the cards ---
 	var plain := BattleView.new()
 	plain.size = Vector2(900, 600)
 	var many: Array = []
