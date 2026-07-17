@@ -1343,6 +1343,21 @@ func _refresh_faiths() -> void:
 	var vigil := world.vigil_status_line()
 	if vigil != "":
 		lines += "\n" + vigil
+	# Canon Pass One & Two (2026-07-15): the sublevel's other ledgers.
+	# The famine number lives HERE and nowhere else — the register is
+	# domestic, never statistical; the raw figure belongs to the chamber.
+	var famine := world.famine_records_lines()
+	if famine != "":
+		lines += "\n\n" + famine
+	var wren := world.wren_status_line()
+	if wren != "":
+		lines += "\n" + wren
+	var entity := world.entity_status_line()
+	if entity != "":
+		lines += "\n" + entity
+	var under := world.underneath_status_line()
+	if under != "":
+		lines += "\n" + under
 	faith_label.text = lines.strip_edges()
 
 

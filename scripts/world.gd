@@ -545,6 +545,87 @@ var hero_pool_carry := 0.0            # fractional accumulator for the yearly dr
 var court_positions := {}             # id -> canonical position label (SRD rule: NPCs are their
                                       # office, not a class — Master Merchant, Chief Archivist...)
 
+# Canon Pass One (Opus's brief v1.1, 2026-07-15): scale and the famine.
+# Khessar holds 110 million souls, and the famine that has been running
+# since Year Zero kills on a logistic curve the Architect priced to the
+# decimal six years before dying. All famine dice roll on `grng`, seed
+# 66 — one in sixty-six, the Year Six mortality. Auto-fire touches ONLY
+# the famine ledger and province population counters; player-initiated
+# grain actions may touch the player's own realm. The number is never a
+# headline: it lives in the Records Sublevel, because that is the only
+# place in Khessar where it is written down.
+var grng := RandomNumberGenerator.new()
+var famine_deaths_total: int = 0      # the running continental toll
+var famine_deaths_year: int = 0       # the current (incomplete) year
+var famine_actual_by_year := {}       # year -> deaths actually recorded
+var architect_forecast := {}          # year -> the forecast, static from setup (his arithmetic)
+var famine_carry := {}                # province id -> fractional deaths accumulator
+var famine_dead_by_pid := {}          # province id -> cumulative famine dead
+var famine_relief := {}               # province id -> tick relief expires (open granaries)
+var villages_emptied: int = 0         # the quiet counter that IS the player-facing surface
+
+# Canon Pass One §3: the Iron Wren. Wren of Vetral — Iron Library
+# records say Wren Callister; twelve when the green-wizard Sark turned
+# her village into a grove of forty-seven trees in Year One. She is not
+# an interface: no opinions, no demands, no deals. Not a hero — the
+# hero roster would be the natural place to put her, and it would be
+# WRONG. She is an independent map-actor with her own logic, closer to
+# a weather system with a grudge. Dice on `wrng`, seed 47 — the trees.
+# Auto-fire touches only her ledger and the anchor-mage roster.
+var wrng := RandomNumberGenerator.new()
+var anchor_mages := {}                # key -> {name, house, age, pid, working, records, alive, ...}
+var wren_alive := true
+var wren_active := false              # false until Vetral burns (Year One)
+var wren_tokens: int = 0              # seven by Year Six; the eighth is uncarved
+var wren_target: String = ""          # anchor-mage roster key under study
+var wren_study_months: int = 0
+var wren_study_needed: int = 0
+var wren_rest_until: int = -1         # between hunts: travel, reading, the mare
+var wren_region_pid: int = 29         # Vetral — a Salt Road margin province
+var wren_unmaking: float = 0.0        # progress toward the un-making (0..100)
+var wren_knows_token := true          # she learned of the consent token in Year One
+var wren_obstruction := {}            # realm id -> score: shield her targets and she remembers
+var wren_avoid_realm := {}            # realm id -> tick she works elsewhere until
+var wren_vetral_attempted := false
+var wren_vetral_outcome := ""         # ""|"unmade"|"failed" — both are canon-compatible
+var wren_token_retrieval := ""        # ""|"scheduled"|"taken"|"driven_off" — the eighth working
+var wren_token_tick := -1
+var patron_anchor_voided := false     # the consent token removed: authorization void — NOT ash
+
+# Canon Pass Two §1: entity density. The Silence did not create new
+# threats; it removed the supervision. Density is a function of
+# ABANDONMENT, not elapsed time — vacancies are produced by human
+# failure, and the correction that inverts intuition: density rises
+# fastest where divine supervision was HEAVIEST. Piety was
+# infrastructure. Dice on `erng`, seed 60 — the sixty feet of a Shade's
+# anchor-bond (47 was taken; her grove is hers). Ledger-only. The
+# Ashfields are EXCLUDED — that density has an author, and he is
+# already fully modeled on `srng`.
+var erng := RandomNumberGenerator.new()
+var province_vacancies := {}          # province id -> float, unclaimed anchor sites
+var province_anchors := {}            # province id -> int, claimed anchors (they do not un-claim)
+var unburied_fields := {}             # province id -> {dead, tick} — five thousand reasons
+var shrines_tended := {}              # province id -> tick the tending lapses
+var regional_tension := {}            # region -> months of sustained unresolved grievance
+var volume2_manifested: Array = []    # [{name, region, tick}] — appointments kept
+var wardstone_linkage_known := false  # the Ironbrand discoverable: WHY the deep passages worsen
+
+# Canon Pass Two §2: the Underneath — the criminal, poverty, and cult
+# layer. Criminal organizations are intrigue actors; cults are faith
+# actors: people who decided that if prayer will not work, leverage
+# might. Poverty is not a new variable — it is the famine module plus
+# the existing scalars read from below; what is new is the refugee
+# flow, and the Bone Court waiting at the end of it. Dice on `urng`,
+# seed 12 — the twelve pact-families of the Hollow Decades.
+var urng := RandomNumberGenerator.new()
+var criminal_orgs := {}               # key -> live record (CanonData seeds it)
+var cults := {}                       # key -> live record: strength, state, beats fired
+var displaced := {}                   # category -> souls on the road (ashfields|famine|war|silence_touched)
+var refugee_flow_month: float = 0.0   # this month's continental movement
+var bone_court_taken: int = 0         # the ledger of the one unambiguous evil
+var underneath_lethal := false        # Justin's ruling gate: may cult cells kill named souls?
+var house_records := {}               # house key -> {discovered: bool, ...} — the 46 houses' live state
+
 # The event framework: choice events with trait-weighted AI resolution.
 var pending_events: Array = []       # events awaiting the player's decision
 var next_event_id: int = 0
@@ -744,6 +825,22 @@ func setup() -> void:
 	# The Hero System v1.0: the named canonical heroes take their levels,
 	# and the ones the chronicle owed a body finally get one.
 	_seed_heroes()
+	# Canon Pass One (2026-07-15): 110 million souls take their provinces,
+	# and the Architect's forecast table is written into the Records
+	# Sublevel — forty years of arithmetic he will see six of.
+	_seed_population()
+	# Canon Pass Two: the 46 houses' buried hooks enter the web (outside
+	# the tavern pool), and the anchor-mage lineages take their towers.
+	_seed_houses()
+	# Canon Pass Two §2: the Underneath — the organizations and the ten
+	# cults, embryonic at Year Zero, growing with the hunger.
+	_seed_underneath()
+	# Canon Pass One §3: a twelve-year-old in Vetral, one year before the
+	# grove. The map does not know her name yet.
+	_seed_wren()
+	# Canon Pass Two §1: the maintenance schedule has ended; the ground
+	# starts keeping its own ledger of vacancies.
+	_seed_entities()
 
 
 func _seed_house(realm: Realm, house_name: String, ruling: bool) -> void:
@@ -857,6 +954,12 @@ func advance_month() -> void:
 	_vigil_tick()
 	_silence_made_tick()
 	_hero_tick()
+	# Canon Passes One & Two: precedence famine > wren > entity >
+	# underneath — all auto-firing and ledger-only, at the chain's foot.
+	_famine_tick()
+	_wren_tick()
+	_entity_tick()
+	_underneath_tick()
 	_diplomacy_tick()
 	_ai_diplomacy()
 	_economy()
@@ -2260,6 +2363,16 @@ func apply_battle_result(winner_side: int, loser_loss_fraction: float, charged: 
 			add_corruption(cmdr, float(cmdr_corruption[i]), "what was channeled at %s" % site)
 		if float(cmdr_stress[i]) > 0.0:
 			add_stress(cmdr, float(cmdr_stress[i]), "what the field asked of the sky at %s" % site)
+	# Canon Pass Two §1.2: the field's dead, if nobody buries them, become
+	# vacancy — five thousand dead unburied is five thousand reasons for
+	# an anchor. A ledger write only; bury_the_dead() is the player's answer.
+	var field_p = _province_at(pa.pos) if pa != null else (_province_at(pb.pos) if pb != null else null)
+	if field_p != null and not field_p.silence_touched:
+		var fallen := int(120.0 + 240.0 * clampf(loser_loss_fraction, 0.0, 1.0))
+		var rec: Dictionary = unburied_fields.get(field_p.id, {"dead": 0, "tick": tick})
+		rec["dead"] = int(rec["dead"]) + fallen
+		rec["tick"] = tick
+		unburied_fields[field_p.id] = rec
 	_commander_fate(pa, pb, winner_side == 0, loser_loss_fraction, site, bool(charged[0]))
 	_commander_fate(pb, pa, winner_side == 1, loser_loss_fraction, site, bool(charged[1]))
 	_champion_fates(pa, pb, winner_side == 0, loser_loss_fraction, site)
@@ -5319,6 +5432,14 @@ func _patron_state_tick() -> void:
 		target = "active"
 	elif bound >= 1:
 		target = "building"
+	# Canon Pass One §3.6: the consent token removed is a DIFFERENT outcome
+	# from the anchor burned. Voided, the network cannot ADVANCE — the
+	# authorization under the foundation stone is gone and no new weight
+	# accrues — but what is already bound stands, and exposure (knowledge)
+	# still travels. Not ash: operationally vulnerable.
+	if patron_anchor_voided and target != "revealed" \
+			and order.find(target) > order.find(patron_state):
+		target = patron_state
 	if order.find(target) > order.find(patron_state):
 		patron_state = target
 		if target == "revealed":
@@ -7167,6 +7288,8 @@ func _raise_patron_communication(c: SimCharacter) -> void:
 					for s in secrets:
 						if str(s["type"]) == "silence_cause_complicity" or s["known"].has(who.realm_id):
 							continue
+						if bool(s.get("under", false)):
+							continue  # the house vaults are beyond even the Patron's small talk (Pass Two)
 						var subj: SimCharacter = characters.get(int(s["subject"]))
 						if subj != null and subj.alive and subj.id != realms[who.realm_id].ruler_id:
 							unknown.append(s)
@@ -8103,6 +8226,10 @@ func _ferret_tick() -> void:
 				# it waits for the Architect's chamber or the family archives
 				if str(s["type"]) == "silence_cause_complicity":
 					continue
+				# the canon-pass house secrets are buried deeper than taverns
+				# (Pass Two §3): they surface through their own modules' beats
+				if bool(s.get("under", false)):
+					continue
 				var subj: SimCharacter = characters.get(int(s["subject"]))
 				if subj != null and subj.alive and subj.id != realms[int(rid)].ruler_id:
 					unknown.append(s)
@@ -8428,17 +8555,19 @@ func eligible_singles(female: bool) -> Array:
 # the spot by the decider's personality — the same trait AI weights
 # (aggression / scheming / greed / patience) score every option.
 
-func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array, magic: bool = false, admin: bool = false, faith: bool = false, vigil: bool = false, silence: bool = false) -> void:
+func raise_event(realm_id: int, decider_id: int, title: String, text: String, options: Array, magic: bool = false, admin: bool = false, faith: bool = false, vigil: bool = false, silence: bool = false, famine: bool = false, wren: bool = false, entity: bool = false, under: bool = false) -> void:
 	if options.is_empty():
 		return
 	# magic-born events resolve on the magic RNG (Magic v1.0), Council
 	# events on the Council's (Administrative v1.0), faith events on the
 	# theology's (Module 9), vigil events on the Architect's (Vigil v1.0),
-	# Ashfields/Forsaken events on the Silence-made stream (v1.1) —
+	# Ashfields/Forsaken events on the Silence-made stream (v1.1), and
+	# the Canon Pass modules on grng/wrng/erng/urng (Pass One/Two) —
 	# the main history stream never feels any system's bookkeeping
 	var ev := {"id": next_event_id, "realm_id": realm_id, "decider": decider_id,
 		"title": title, "text": text, "options": options, "magic": magic, "admin": admin,
-		"faith": faith, "vigil": vigil, "silence": silence}
+		"faith": faith, "vigil": vigil, "silence": silence,
+		"famine": famine, "wren": wren, "entity": entity, "under": under}
 	next_event_id += 1
 	if realm_id != 0 or auto_resolve_events:
 		_ai_resolve_event(ev)
@@ -8462,6 +8591,14 @@ func _ai_resolve_event(ev: Dictionary) -> void:
 		jitter_rng = frng
 	elif bool(ev.get("magic", false)):
 		jitter_rng = mrng
+	elif bool(ev.get("famine", false)):
+		jitter_rng = grng
+	elif bool(ev.get("wren", false)):
+		jitter_rng = wrng
+	elif bool(ev.get("entity", false)):
+		jitter_rng = erng
+	elif bool(ev.get("under", false)):
+		jitter_rng = urng
 	var best := 0
 	var best_score := -INF
 	for i in ev["options"].size():
@@ -10004,3 +10141,1023 @@ func date_string() -> String:
 
 func _log(text: String) -> void:
 	event_logged.emit("[color=#909090]%s[/color]  %s" % [date_string(), text])
+
+
+# ================================================================
+# CANON PASS ONE — scale, the famine, and the Iron Wren
+# (Opus's Fable Brief Pass One v1.1, 2026-07-15)
+# ================================================================
+
+func famine_rate(years: float) -> float:
+	## The corrected curve (Architect's Number v2.0): a single logistic,
+	## Year 1 = 0.36%/yr, Year 6 = 1.50%/yr, plateau 2.00%/yr (Justin's
+	## ruling, 2026-07-14). Returns the annual mortality fraction. The
+	## deceleration is load-bearing: the world does not die, it
+	## stabilizes at a permanently diminished level. Nothing is undone;
+	## the diminishment becomes the new normal.
+	return CanonData.FAMINE_PLATEAU / (1.0 + CanonData.FAMINE_SHAPE_A * exp(-CanonData.FAMINE_SHAPE_R * years))
+
+
+func famine_year() -> int:
+	## The famine ledger's year index: ticks 1..12 are Year 1 (the first
+	## year of the Silence), ticks 61..72 are Year 6 — so the campaign's
+	## opening present arrives with six completed lines in the ledger.
+	return floori((tick - 1) / 12.0) + 1 if tick >= 1 else 0
+
+
+func _seed_population() -> void:
+	## Pass One §1: 110 million souls distributed across 60 provinces by
+	## settlement tier and regional archetype (CanonData). Deterministic
+	## arithmetic — no dice; the map never rolls for its people. The
+	## distribution below the canon total is design, flagged for Justin.
+	grng.seed = 66  # one in sixty-six — the Year Six mortality
+	var weights: Array = []
+	var total_w := 0.0
+	for p in map.provinces:
+		var base: float = float(CanonData.REGION_POP_BASE.get(p.cultural_region, 800_000))
+		var w: float = base * float(CanonData.TERRAIN_POP_MULT.get(p.terrain, 1.0))
+		if CanonData.SETTLEMENT_POP.has(p.name):
+			w += float(CanonData.SETTLEMENT_POP[p.name]) * CanonData.HINTERLAND_MULT
+		weights.append(w)
+		total_w += w
+	var assigned := 0
+	var biggest_pid := 0
+	var biggest_w := 0.0
+	for p in map.provinces:
+		var share: float = float(weights[p.id]) / total_w
+		var pop_i := int(floor(share * float(CanonData.CONTINENTAL_POP) / 1000.0)) * 1000
+		p.pop = pop_i
+		assigned += pop_i
+		if float(weights[p.id]) > biggest_w:
+			biggest_w = float(weights[p.id])
+			biggest_pid = p.id
+	# the rounding remainder settles on the primate city, per convention
+	map.provinces[biggest_pid].pop += CanonData.CONTINENTAL_POP - assigned
+	# The Architect's forecast, generated at setup from the same formula
+	# the ledger runs on. He ran this arithmetic six years before the
+	# campaign opens and never had cause to revise it. He priced out
+	# thirty-four years he will never see: the forecast runs to Year 40;
+	# he dies at Month 72. That gap is the module's point.
+	for y in range(1, CanonData.FORECAST_YEARS + 1):
+		architect_forecast[y] = int(round(famine_rate(float(y)) * float(CanonData.CONTINENTAL_POP)))
+	_log("The census the Magistocracy will never take: a hundred and ten million people under a silent sky, most of them a season's failed harvest from the edge. In the Records Sublevel, a forecast table already exists for all of them.")
+
+
+func province_famine_weight(p) -> float:
+	## Pass One §2.4: famine is not uniform. Development (tax proxy),
+	## control, war state, terrain archetype, entity pressure (Pass Two's
+	## feedback loop), and open granaries all bend a province's share.
+	## All multipliers are INVENTED PARAMETERS, flagged; the continental
+	## total is renormalized so the canon curve holds regardless.
+	var dev_mitigation: float = clampf((p.tax - 1.2) / 2.0 * 0.5, 0.0, 0.5)
+	var w: float = float(p.pop) * (1.0 - dev_mitigation)
+	if p.owner < 0:
+		w *= 1.25  # no one distributes food to unclaimed land
+	if occupied.has(p.id) or partisans.has(p.id):
+		w *= 1.5   # a province under the sword cannot distribute anything
+	var war_mult := 1.0
+	if sieges.has(p.id):
+		war_mult = 2.5
+	elif int(scorched.get(p.id, -1)) > tick:
+		war_mult = 2.0
+	elif int(salted.get(p.id, -1)) > tick:
+		war_mult = 1.6
+	w *= war_mult
+	w *= float(CanonData.FAMINE_TERRAIN.get(p.terrain, 1.0))
+	w *= 1.0 + 0.05 * float(mini(int(province_anchors.get(p.id, 0)), 6))  # the Shade makes the road worse
+	if int(famine_relief.get(p.id, -1)) > tick:
+		w *= 0.5   # open granaries: the only argument the curve listens to
+	return w
+
+
+func _famine_tick() -> void:
+	## The moral clock. Auto-fire touches ONLY the famine ledger and the
+	## province population counters — never live realms' gold, tyranny,
+	## prestige, or opinions. The raw number is never a headline: it is
+	## written in the Records Sublevel, beside a forecast that agrees.
+	var fy := famine_year()
+	if fy < 1:
+		return
+	var rate_y := famine_rate(float(fy)) if fy <= CanonData.FORECAST_YEARS else famine_rate(float(CanonData.FORECAST_YEARS))
+	var quota := rate_y * float(CanonData.CONTINENTAL_POP) / 12.0
+	var total_w := 0.0
+	var w_by_pid := {}
+	for p in map.provinces:
+		if p.silence_touched or p.pop <= 0:
+			continue  # the Ashfields hunger belongs to Caeris's ledger (srng)
+		var w := province_famine_weight(p)
+		w_by_pid[p.id] = w
+		total_w += w
+	if total_w <= 0.0:
+		return
+	for p in map.provinces:
+		if not w_by_pid.has(p.id):
+			continue
+		var deaths_f: float = quota * float(w_by_pid[p.id]) / total_w + float(famine_carry.get(p.id, 0.0))
+		var deaths := int(floor(deaths_f))
+		famine_carry[p.id] = deaths_f - float(deaths)
+		if deaths <= 0:
+			continue
+		deaths = mini(deaths, p.pop)
+		p.pop -= deaths
+		famine_deaths_total += deaths
+		famine_deaths_year += deaths
+		var before: int = int(famine_dead_by_pid.get(p.id, 0))
+		famine_dead_by_pid[p.id] = before + deaths
+		# the player-facing surface is domestic, not statistical: villages
+		var v_before := before / CanonData.VILLAGE_SOULS
+		var v_after := int(famine_dead_by_pid[p.id]) / CanonData.VILLAGE_SOULS
+		if v_after > v_before:
+			villages_emptied += v_after - v_before
+			# Pass Two wiring: an emptied village is an untended shrine, a
+			# well nobody draws from, a crossroads nobody sweeps — vacancy.
+			province_vacancies[p.id] = float(province_vacancies.get(p.id, 0.0)) + float(v_after - v_before)
+			if villages_emptied % 25 == 1 and p.owner == 0:
+				raise_event(0, realms[0].ruler_id, "The Village That Stopped Writing",
+					"The tax roll for a village in %s comes back marked 'no return'. The rider who carried it says the shutters are latched from outside, the well-rope is gone, and the shrine step is unswept. Nobody died there this month. Nobody lives there either." % p.name,
+					[{"label": "Note it in the provincial record", "base": 3.0, "ai": {"stewardship": 0.5}},
+					{"label": "Send no one — the roads eat riders now", "base": 2.0, "ai": {"caution": 0.5}}],
+					false, false, false, false, false, true)
+	# the year closes: the actual is written beside the forecast, and
+	# the two columns agree. That is the horror, and it is visible.
+	if tick % 12 == 0 and tick > 0:
+		famine_actual_by_year[fy] = famine_deaths_year
+		var fc: int = int(architect_forecast.get(fy, 0))
+		if fc > 0:
+			var drift := 0.0 if fc == 0 else absf(float(famine_deaths_year - fc)) / float(fc)
+			if drift < 0.02:
+				_log("The Records Sublevel closes the year: %s dead of hunger, against a forecast of %s written six years before the first of them missed a meal. The columns agree." % [_fmt_count(famine_deaths_year), _fmt_count(fc)])
+			elif famine_deaths_year < fc:
+				_log("The Records Sublevel closes the year: %s dead of hunger, against a forecast of %s. The actual runs BELOW the old man's arithmetic — somewhere, someone kept people fed he had already counted." % [_fmt_count(famine_deaths_year), _fmt_count(fc)])
+			else:
+				_log("The Records Sublevel closes the year: %s dead of hunger, against a forecast of %s. The actual runs above the forecast. The wars were not in his arithmetic." % [_fmt_count(famine_deaths_year), _fmt_count(fc)])
+		famine_deaths_year = 0
+
+
+func open_granaries(realm_id: int, pid: int) -> String:
+	## The exception, and it is the point: player-initiated famine action
+	## MAY touch the player's own realm. A ruler who opens the stores is
+	## bending their own history — the only act in the game that proves
+	## the Architect's forecast wrong about something.
+	if pid < 0 or pid >= map.provinces.size():
+		return "No such province."
+	var p = map.provinces[pid]
+	if p.owner != realm_id:
+		return "The granaries there are not the crown's to open."
+	var realm: Realm = realms[realm_id]
+	if realm.gold < 30.0:
+		return "Opening the stores costs 30 gold — carters, guards, and the grain itself."
+	if int(famine_relief.get(pid, -1)) > tick:
+		return "The stores already stand open there."
+	realm.gold -= 30.0
+	famine_relief[pid] = tick + 12
+	_log("[b]The granaries of %s stand open.[/b] For a year, the crown's grain moves down roads the tax normally travels up. It will not show in any headline. It will show in the Records Sublevel, as a number smaller than a dead man predicted." % p.name)
+	return ""
+
+
+func famine_records_lines() -> String:
+	## The Records Sublevel readout: the only place in Khessar where the
+	## number is written down. Forecast and actual, side by side.
+	var fy := famine_year()
+	if fy < 1:
+		return ""
+	var lines := "The famine ledger (Records Sublevel) — Year %d of the Silence:" % fy
+	var y0 := maxi(1, fy - 2)
+	for y in range(y0, fy):
+		if famine_actual_by_year.has(y):
+			lines += "\n  Year %d — forecast %s · recorded %s" % [y,
+				_fmt_count(int(architect_forecast.get(y, 0))), _fmt_count(int(famine_actual_by_year[y]))]
+	lines += "\n  Year %d — forecast %s · recorded %s, and the year is not done" % [fy,
+		_fmt_count(int(architect_forecast.get(fy, 0))), _fmt_count(famine_deaths_year)]
+	if villages_emptied > 0:
+		lines += "\n  Villages that stopped answering the tax roll: %d" % villages_emptied
+	return lines
+
+
+func _fmt_count(n: int) -> String:
+	## 1650000 -> "1,650,000" — the ledger writes its figures properly.
+	var s := str(n)
+	var out := ""
+	var c := 0
+	for i in range(s.length() - 1, -1, -1):
+		out = s[i] + out
+		c += 1
+		if c % 3 == 0 and i > 0:
+			out = "," + out
+	return out
+
+
+func continental_pop_now() -> int:
+	var total := 0
+	for p in map.provinces:
+		total += p.pop
+	return total
+
+
+# ------------------------------------------------------------ the Iron Wren
+
+# The historical seven: the strike ticks are canon-pinned (seven tokens
+# by Year Six is the brief's fixed fact — the past is a ledger, not a
+# die). WHICH of the six unnamed anchor-mages dies in which season is
+# hers to decide, on her own stream. From tick 72 the cycle runs live.
+const WREN_HISTORICAL_STRIKES := [18, 27, 36, 45, 54, 63, 71]
+const WREN_VETRAL_THRESHOLD := 60.0
+const WREN_TOKEN_THRESHOLD := 85.0
+
+
+func _seed_wren() -> void:
+	wrng.seed = 47  # the forty-seven trees at Vetral
+	anchor_mages = {}
+	for key in CanonData.ANCHOR_MAGES:
+		var src: Dictionary = CanonData.ANCHOR_MAGES[key]
+		anchor_mages[key] = {"name": src["name"], "house": src["house"], "age": int(src["age"]),
+			"pid": int(src["pid"]), "working": src["working"], "records": float(src["records"]),
+			"note": src["note"], "alive": true, "cultivated_by": -1, "cultivate_pid": -1,
+			"cultivate_until": -1, "shielded": false, "warned": false}
+	# She is twelve, in Vetral, and the map does not know her name yet.
+	# She is NOT a hero and NOT a character: no census entry, no court,
+	# no diplomatic surface. An independent map-actor on her own ledger.
+
+
+func wren_age() -> int:
+	return 12 + floori(tick / 12.0)  # born Year -12: twelve at Year Zero, eighteen at Year Six
+
+
+func _wren_tick() -> void:
+	if not wren_alive:
+		return
+	# Year One: the grove. The Silence was the catalyst — it removed the
+	# compacts restraining him. Forty-seven trees, and one twelve-year-old
+	# the working missed because she was at the well before light.
+	if not wren_active:
+		if tick == 12:
+			_log("[b]Vetral is a grove now.[/b] The green-wizard Sark, unrestrained since the compacts stopped answering, paid a working's cost with a village on the Salt Road margins: forty-seven people, forty-seven trees, bark where the mouths were. The Magistocracy files it under 'regional incident'. The Iron Library files the names. One name is missing from both lists — a girl nobody counted, who was at the well before light.")
+		if tick == 14:
+			wren_active = true
+			wren_target = "sark"
+			wren_study_months = 0
+			wren_study_needed = 4
+			_log("West of Vetral, a small quiet girl watches a tower for four months and learns when its master sleeps. The Iron Library will eventually record her as Wren Callister. The tellers will call her something else.")
+		return
+	# the historical seven: schedule-driven, canon-pinned
+	if wren_tokens < 7:
+		# THE MAGISTOCRACY'S REQUEST: Section Three's file on her grows,
+		# and its interest is not benevolent. Both answers are ledger-only
+		# here; the mechanical compliance is assist_hunt_wren, a council act.
+		if tick == 40:
+			raise_event(0, realms[0].ruler_id, "The Magistocracy's Request",
+				"Section Three requests provincial cooperation in locating 'the Vetral irregular' — road-warden rosters, ferry manifests, the usual apparatus. The file is thicker than five dead mages should make it. Somebody upstairs is reading ahead. (Full compliance — wardens and coin — is a council action, if the crown wants her found.)",
+				[{"label": "Note the request; share the rosters", "base": 2.5, "ai": {"scheming": 0.4},
+					"effect": func() -> void:
+						wren_obstruction[0] = int(wren_obstruction.get(0, 0)) + 1
+						_log("The rosters go to Section Three. Somewhere west, a rider notices the checkpoints asking new questions, and adds a name to a list kept in no office.")},
+				{"label": "Lose the request in the registry", "base": 3.0, "ai": {"caution": 0.4},
+					"effect": func() -> void:
+						_log("The request is filed under a heading nobody will think to search. The crown owes the rider nothing. The crown would simply rather not be on her list.")}],
+				false, false, false, false, false, false, true)
+		# Section Three leaves a file where she will find it — a Forsaken
+		# organizer they would like removed. The refusal is characterizing.
+		if tick == 58:
+			_log("In a waystation west of Vael, a file is left where the small rider will find it: a Forsaken organizer, meetings mapped, habits noted, and payment offered in Sarkenvault records. She reads it twice, which is once more than she needed. The organizer is not an anchor-mage. The line is at the anchoring. She leaves the file squared to the table's edge, refused, and Section Three learns something about her that worries them more than the tokens.")
+		if tick in WREN_HISTORICAL_STRIKES and wren_target != "":
+			_wren_strike()
+			if wren_tokens < 7:
+				_wren_pick_target(true)
+		return
+	# Section Three leaves a file where she will find it (tick 58 handled
+	# in the historical window; from here the live cycle runs)
+	if tick < wren_rest_until:
+		return
+	if wren_target == "" or not bool(anchor_mages.get(wren_target, {}).get("alive", false)):
+		_wren_pick_target(false)
+		if wren_target == "":
+			_wren_unmaking_tick()
+			return
+	wren_study_months += 1
+	if wren_study_months >= wren_study_needed:
+		_wren_strike()
+		wren_target = ""
+		wren_rest_until = tick + 3 + wrng.randi_range(0, 3)
+	_wren_unmaking_tick()
+
+
+func _wren_pick_target(historical: bool) -> void:
+	## Hidden priority list, weighted by proximity (the Salt Road and its
+	## margins), personal priority (Sarkenvault highest — Sark was her
+	## first; his family is personal), and knowledge value (the Ossrel
+	## ledger and the Vanneth records are the two most valuable objects
+	## on the continent, to her). The hard constraint lives in the pool
+	## itself: the list holds anchor-mages and nothing else, ever.
+	var best := ""
+	var best_score := -INF
+	for key in anchor_mages:
+		var m: Dictionary = anchor_mages[key]
+		if not bool(m["alive"]):
+			continue
+		if historical and not str(key).begins_with("um_"):
+			continue  # the first six after Sark are the unnamed roster — the named masters keep until Year Six
+		var p = map.provinces[int(m["pid"])]
+		if int(wren_avoid_realm.get(p.owner, -1)) > tick:
+			continue
+		var score: float = float(m["records"]) / 10.0
+		if str(m["house"]) == "sarkenvault":
+			score += 3.0
+		if int(m["pid"]) == wren_region_pid:
+			score += 1.0
+		elif wren_region_pid >= 0 and map.provinces[wren_region_pid].neighbors.has(int(m["pid"])):
+			score += 0.5
+		var cult_realm := int(m["cultivated_by"])
+		if cult_realm >= 0 and int(wren_obstruction.get(cult_realm, 0)) >= 3:
+			score += 2.0  # obstruction: the obstructor's assets die at inconvenient moments
+		if bool(m["shielded"]):
+			score -= 1.5
+		score += wrng.randf() * 0.5
+		if score > best_score:
+			best_score = score
+			best = key
+	wren_target = best
+	if best == "":
+		return
+	var mage: Dictionary = anchor_mages[best]
+	wren_study_months = 0
+	if historical:
+		wren_study_needed = 999  # the schedule strikes, not the counter
+	else:
+		wren_study_needed = 10 + wrng.randi_range(0, 4)  # the named masters keep guards
+		if bool(mage["shielded"]):
+			wren_study_needed += 6
+		if bool(mage["warned"]):
+			wren_study_needed += 3
+	# THE HUNTER ARRIVES: a small hooded rider asking precise questions,
+	# a mage growing nervous. Options are informational — the mechanical
+	# answers (shield, warn, cultivate) are council actions, not clicks.
+	var tp = map.provinces[int(mage["pid"])]
+	if tp.owner == 0:
+		raise_event(0, realms[0].ruler_id, "A Hooded Rider Asks Precise Questions",
+			"In %s, a small rider on a bay mare with a white star has spent a week asking after %s — deliveries, habits, the hours the tower's lamps burn. She pays for her answers, listens more than she asks, and rides on before anyone thinks to hold her. %s has begun declining invitations. (The council may shield the mage, warn them quietly, or leave the road to its business.)" % [tp.name, str(mage["name"]), str(mage["name"])],
+			[{"label": "Note it and watch the road", "base": 3.0, "ai": {"caution": 0.5}},
+			{"label": "The road knows its own business", "base": 2.5, "ai": {"scheming": 0.3}}],
+			false, false, false, false, false, false, true)
+
+
+func _wren_strike() -> void:
+	## Study -> strike. She wins by learning a target's guards and habits
+	## and striking once, when the cost of their own magic has left them
+	## spent. A successful strike removes the anchor-mage as an actor.
+	if wren_target == "" or not anchor_mages.has(wren_target):
+		return
+	var mage: Dictionary = anchor_mages[wren_target]
+	mage["alive"] = false
+	wren_tokens += 1
+	wren_unmaking += float(mage["records"])
+	wren_region_pid = int(mage["pid"])
+	var p = map.provinces[int(mage["pid"])]
+	_log("[b]%s is found dead in %s[/b] — no wound anyone can name, the working-room cold, the ledgers gone. On the road west a rider carves something small from iron, and now there are %d. Somewhere the tellers add a verse." % [str(mage["name"]), p.name, wren_tokens])
+	# THE MAGE YOU WERE CULTIVATING: the asset is gone; the capability
+	# with it. The suppression her target was holding for you ends now.
+	if int(mage["cultivated_by"]) == 0:
+		var cp := int(mage["cultivate_pid"])
+		if cp >= 0:
+			mage["cultivate_until"] = -1
+		raise_event(0, realms[0].ruler_id, "The Mage You Were Cultivating",
+			"%s is dead, and with them the arrangement nobody wrote down. The district they were quieting will notice by spring. Somewhere a girl with seven iron tokens did not ask whose asset they were — the line was at the anchoring, and they were over it." % str(mage["name"]),
+			[{"label": "The ledger closes — let it", "base": 3.0, "ai": {"caution": 0.5}},
+			{"label": "Open a file on the rider", "base": 2.0, "ai": {"scheming": 0.6}}],
+			false, false, false, false, false, false, true)
+	# THE ACCIDENTAL ALLY: if the crown was besieging the same ground she
+	# struck on, the two of them briefly wanted the same thing. She does
+	# not thank anyone. She does not stay.
+	if sieges.has(int(mage["pid"])) and int(sieges[int(mage["pid"])]["attacker"]) == 0:
+		_log("The siege lines at %s report the tower inside went dark before the walls came down. Nobody on the ration books did it. She does not thank the crown. She does not stay." % p.name)
+	# obstruction, spent: killing an obstructor's asset resets the ledger a step
+	var cr := int(mage["cultivated_by"])
+	if cr >= 0 and int(wren_obstruction.get(cr, 0)) >= 3:
+		wren_obstruction[cr] = int(wren_obstruction[cr]) - 1
+
+
+func _wren_unmaking_tick() -> void:
+	## The long-campaign thread: she is not collecting tokens, she is
+	## learning to READ in the direction no academy teaches — not to
+	## cast, but to un-cast. The first attempt is Vetral. She will
+	## probably fail. She knows the odds. She looks anyway.
+	if not wren_vetral_attempted and wren_unmaking >= WREN_VETRAL_THRESHOLD:
+		wren_vetral_attempted = true
+		if wrng.randf() < 0.25:
+			wren_vetral_outcome = "unmade"
+			_log("[b]The grove at Vetral is a village again.[/b] Not the people — the working. Forty-seven trees stand down to forty-seven graves, which is not mercy, but it is TRUE, and true is what she had. The first un-making in recorded history was performed by someone no academy will ever claim, reading the old tongue backwards by lamplight. A small miracle, in a world starved of them.")
+		else:
+			wren_vetral_outcome = "failed"
+			_log("[b]At Vetral, nothing happens.[/b] Six years of stolen craft-knowledge, three lineages' records, a working read backwards syllable by syllable through one whole night — and at dawn the forty-seven trees are still trees. She sits against the one that was the miller until the light comes up, then waters the mare and rides. The eighth token is still uncarved. She has not stopped.")
+		return
+	# THE EIGHTH WORKING IS THE CONSENT TOKEN (Secret Six): a coin-sized
+	# piece of metal bound into the archive's foundation stone when the
+	# bargain was signed — remove it and the Patron anchor's authorization
+	# is VOIDED. Not destroyed: operationally vulnerable. Three people
+	# know it exists. She is the third.
+	if wren_vetral_attempted and wren_unmaking >= WREN_TOKEN_THRESHOLD and wren_token_retrieval == "":
+		wren_token_retrieval = "scheduled"
+		wren_token_tick = tick + 6
+		_log("A reading-room clerk in the Vael archive later remembers a small woman who consulted the foundation-survey folios for nine days and asked nothing of anyone. The folios are two hundred years old. Three people alive know why they matter.")
+	if wren_token_retrieval == "scheduled" and tick >= wren_token_tick:
+		if patron_network_broken:
+			wren_token_retrieval = "taken"
+			_log("Beneath the archive she finds the foundation stone already cold — the anchor is ash, and the token in it is a coin again. She takes it anyway. Some ledgers you close even when someone else has burned them.")
+			return
+		if wrng.randf() < 0.5:
+			wren_token_retrieval = "taken"
+			patron_anchor_voided = true
+			_log("[b]The eighth token.[/b] A coin-sized piece of metal, bound into the archive's foundation stone the year the bargain was signed, comes loose in a hand that has been working toward it for years. The Patron's primary anchor is not destroyed — it is UNAUTHORIZED. Whatever stands behind the Silence still stands; it now stands on paper nobody signed. Magister Vell Ondress will not notice the absence for months. The Architect would have noticed in a day, and the Architect is beyond noticing.")
+		else:
+			wren_token_retrieval = "driven_off"
+			wren_token_tick = tick + 30
+			wren_avoid_realm[0] = tick + 24
+			wren_token_retrieval = "scheduled"
+			_log("Section Three's night-wards catch an intruder two floors above the foundation vault. They catch, specifically, a cloak weighted to tear free, and keep it. She is gone west by morning, and the file on her grows a page. She will not abandon it. She has never abandoned anything since the well.")
+
+
+func wren_offer_target(cid: int) -> String:
+	## The hard constraints, as an API the world can test against: she
+	## will not torture, will not harm the uninvolved, will not kill a
+	## mage merely for being a mage. The line is at the ANCHORING —
+	## paying a working's cost with other people's lives. Characters are
+	## not on her list; only the anchor-mage roster is, ever.
+	var c: SimCharacter = characters.get(cid)
+	var who := full_name(c) if c != null else "the name in the file"
+	return "She reads the file twice, which is once more than she needed. '%s is not an anchor-mage. The line is at the anchoring.' She leaves the file where it was left for her, squared to the table's edge, refused." % who
+
+
+func shield_anchor_mage(realm_id: int, key: String) -> String:
+	## Protect a monstrous but useful neighbor. She registers obstruction
+	## — she does not declare war; she has no war to declare. She becomes
+	## a low-grade disruption, and she can only be outlived.
+	if realm_id != 0:
+		return "Only the player's council shields."
+	if not anchor_mages.has(key) or not bool(anchor_mages[key]["alive"]):
+		return "There is no one there left to shield."
+	var realm: Realm = realms[0]
+	if realm.gold < 40.0:
+		return "Doubled guards and warded locks cost 40 gold."
+	realm.gold -= 40.0
+	var mage: Dictionary = anchor_mages[key]
+	mage["shielded"] = true
+	if wren_target == key and wren_tokens >= 7:
+		wren_study_needed += 6
+	wren_obstruction[0] = int(wren_obstruction.get(0, 0)) + 1
+	_log("The crown quietly doubles the watch around %s. Somewhere on the Salt Road, a rider adds the crown to a list that has no diplomatic surface." % str(mage["name"]))
+	return ""
+
+
+func warn_anchor_mage(realm_id: int, key: String) -> String:
+	if realm_id != 0:
+		return "Only the player's council warns."
+	if not anchor_mages.has(key) or not bool(anchor_mages[key]["alive"]):
+		return "The warning would reach a grave."
+	var mage: Dictionary = anchor_mages[key]
+	if bool(mage["warned"]):
+		return "They have already been told. They did not sleep better."
+	mage["warned"] = true
+	if wren_target == key and wren_tokens >= 7:
+		wren_study_needed += 3
+	_log("A letter with no seal tells %s what is riding toward them. Mercy, of a kind — though the reader should ask what the mage did to earn the rider." % str(mage["name"]))
+	return ""
+
+
+func cultivate_anchor_mage(realm_id: int, key: String, pid: int) -> String:
+	## The dual nature, and it is the design point: anchor-mages are Iron
+	## Wren targets AND player assets. A debt-working quiets a district.
+	## A player who uses them is cultivating monsters — and the rider is
+	## coming for their assets. The district pays either way.
+	if realm_id != 0:
+		return "Only the player's council cultivates monsters."
+	if not anchor_mages.has(key) or not bool(anchor_mages[key]["alive"]):
+		return "That arrangement died with them."
+	if pid < 0 or pid >= map.provinces.size() or map.provinces[pid].owner != 0:
+		return "The working needs crown land to attach to."
+	var realm: Realm = realms[0]
+	if realm.gold < 50.0:
+		return "The retainer — never written down — costs 50 gold."
+	realm.gold -= 50.0
+	var mage: Dictionary = anchor_mages[key]
+	mage["cultivated_by"] = 0
+	mage["cultivate_pid"] = pid
+	mage["cultivate_until"] = tick + 24
+	partisans.erase(pid)
+	_log_covert(realm, "An arrangement nobody writes down: %s attaches a working to %s. The district grows quiet, and tired, and quieter. The crown has cultivated a monster, and monsters draw the rider." % [str(mage["name"]), map.provinces[pid].name])
+	return ""
+
+
+func assist_hunt_wren(realm_id: int) -> String:
+	## THE MAGISTOCRACY'S REQUEST, answered: comply, and standing rises —
+	## and an enemy is made of someone who does not forget. She cannot be
+	## conquered. She relocates, and the file grows, and she remembers.
+	if realm_id != 0:
+		return "Section Three asks only its own crown."
+	var realm: Realm = realms[0]
+	if realm.gold < 25.0:
+		return "Checkpoint rosters and road wardens cost 25 gold."
+	realm.gold -= 25.0
+	realm.prestige += 3.0
+	wren_obstruction[0] = int(wren_obstruction.get(0, 0)) + 2
+	wren_avoid_realm[0] = tick + 24
+	_log("The crown lends Section Three its road wardens. For two years the small rider works other margins — and the crown's name moves up a list kept in no office. She does not declare war. She has no war to declare. She can only be outlived.")
+	return ""
+
+
+func wren_status_line() -> String:
+	## The token counter is flavor and foreshadowing — surfaced somewhere
+	## quiet, never a headline. An attentive player watches it climb and
+	## understands that somewhere, another anchor-mage just died.
+	if not wren_active:
+		return ""
+	if not wren_alive:
+		return "The tellers' verses about the iron tokens have stopped growing."
+	var s := "The tellers count %d iron tokens in the verses now." % wren_tokens
+	if wren_vetral_outcome == "unmade":
+		s += " The newest verse says Vetral is a village again."
+	elif wren_vetral_outcome == "failed":
+		s += " The newest verse is about a grove that stayed a grove."
+	if patron_anchor_voided:
+		s += " The eighth is not iron."
+	return s
+
+
+# ================================================================
+# CANON PASS TWO — entity density, the Underneath, and the houses
+# (Opus's Fable Brief Pass Two v1.0, 2026-07-14)
+# ================================================================
+
+func entity_ground(p) -> String:
+	## Pass Two §1.3: which kind of lid the sky's maintenance left on
+	## this ground. Ward-stone ground is BOTH better for faith AND worst
+	## for entities — the lid still muffles the sky a little, and there
+	## is something under it that has been counting. Deliberate (Rule
+	## Two). The Ashfields return "" — that density has an author.
+	if p.silence_touched:
+		return ""
+	if p.special_feature == "iron_library":
+		return "library"
+	if p.special_feature == "sealed_hold":
+		return "wardstone"
+	return str(CanonData.REGION_GROUND.get(p.cultural_region, "base"))
+
+
+func _seed_entities() -> void:
+	erng.seed = 60  # the sixty feet of a Shade's anchor-bond (47 is hers)
+	# The deep passages are the proof case: divinely-sustained wards went
+	# dark the night of the Silence, and the things behind them had been
+	# paying attention to the maintenance schedule for forty years. They
+	# were not asleep. They were counting.
+	for p in map.provinces:
+		if p.special_feature == "sealed_hold":
+			province_vacancies[p.id] = 3.0
+		elif p.ruined and p.cultural_region == "aurath":
+			province_vacancies[p.id] = 1.5
+
+
+func _entity_tick() -> void:
+	## Deferred maintenance, not an awakening: nothing spawns, nothing
+	## wakes. Entity density is a function of ABANDONMENT — vacancies are
+	## produced by human failure, and anchors are vacancies claimed.
+	## Auto-fire touches only the anchor ledger, density counters, and
+	## vacancy counts. Realm 99's ground is excluded entirely.
+	var orthodox_coherence := 1.0
+	if faiths.has("Aelindran Orthodox"):
+		orthodox_coherence = float(faiths["Aelindran Orthodox"]["coherence"])
+	for p in map.provinces:
+		var g := entity_ground(p)
+		if g == "":
+			continue
+		# abandonment drips: burned fields, salted earth, decaying shrine
+		# networks, provinces emptying past the point of recovery
+		if int(scorched.get(p.id, -1)) > tick or int(salted.get(p.id, -1)) > tick:
+			province_vacancies[p.id] = float(province_vacancies.get(p.id, 0.0)) + 0.05
+		if g == "shrine_net" and orthodox_coherence < 0.4 and int(shrines_tended.get(p.id, -1)) <= tick:
+			province_vacancies[p.id] = float(province_vacancies.get(p.id, 0.0)) + 0.02
+	# unburied battlefields convert two months after the last cart leaves
+	var to_convert: Array = []
+	for pid in unburied_fields:
+		if tick - int(unburied_fields[pid]["tick"]) >= 2:
+			to_convert.append(pid)
+	for pid in to_convert:
+		var dead := int(unburied_fields[pid]["dead"])
+		province_vacancies[pid] = float(province_vacancies.get(pid, 0.0)) + float(dead) / 1000.0
+		unburied_fields.erase(pid)
+		_log("The dead at %s were never buried, and the ground has noticed. Five thousand dead unburied is five thousand reasons for an anchor — these were fewer, and it only takes one." % map.provinces[pid].name)
+	# claims: a vacancy becomes an anchor on an erng roll weighted by the
+	# ground's pressure. Anchors do not un-claim on their own.
+	for p in map.provinces:
+		var g2 := entity_ground(p)
+		if g2 == "":
+			continue
+		var v: float = float(province_vacancies.get(p.id, 0.0))
+		if v < 1.0:
+			continue
+		var pressure: float = float(CanonData.ENTITY_PRESSURE_BY_GROUND.get(g2, 0.3))
+		if erng.randf() < 0.015 * pressure * minf(v, 10.0):
+			province_vacancies[p.id] = v - 1.0
+			province_anchors[p.id] = int(province_anchors.get(p.id, 0)) + 1
+			if int(province_anchors[p.id]) == 1:
+				_log("Something has claimed the untended %s in %s. It is not new. It was always in the well; the gods were the maintenance schedule, and the schedule ended." % [
+					"ward-gallery" if g2 == "wardstone" else "shrine" if g2 == "shrine_net" else "crossroads", p.name])
+	# Volume II is the accumulation tier: ledgers that became bodies,
+	# triggered on sustained unresolved tension — an appointment kept.
+	if tick % 12 == 0 and tick > 0:
+		_volume2_tick()
+
+
+func _volume2_tick() -> void:
+	var regions := {}
+	for p in map.provinces:
+		var region := str(p.cultural_region)
+		if not regions.has(region):
+			regions[region] = 0
+		if at_war and (region == "vael" or region == "drevak_orc"):
+			regions[region] = int(regions[region]) + 12
+		var mv: Dictionary = forsaken_movements.get(region, {})
+		if int(mv.get("stage", 0)) >= 2:
+			regions[region] = int(regions[region]) + 6
+		if int(province_anchors.get(p.id, 0)) >= 3:
+			regions[region] = int(regions[region]) + 4
+	for region in regions:
+		regional_tension[region] = int(regional_tension.get(region, 0)) + int(regions[region])
+		if int(regional_tension[region]) >= 240:
+			var already := false
+			for m in volume2_manifested:
+				if str(m["region"]) == region:
+					already = true
+			if already:
+				continue
+			var vname := "the Grudge Manifest"
+			if region == "aurath":
+				vname = "the Pale Court, convening"
+			volume2_manifested.append({"name": vname, "region": region, "tick": tick})
+			_log("[b]An appointment is kept in the %s marches:[/b] %s — not a bigger monster, but an old ledger that has achieved singular form. Sixty years of catalogued grievance do not arrive suddenly. They arrive on time." % [region, vname])
+
+
+func cleanse_anchor(realm_id: int, pid: int) -> String:
+	## The counter-play, and why the module earns its place: for the old
+	## things, destroying the anchor is the only permanent answer.
+	if pid < 0 or pid >= map.provinces.size():
+		return "No such province."
+	var p = map.provinces[pid]
+	if p.owner != realm_id:
+		return "The crown cleanses its own ground first."
+	if int(province_anchors.get(pid, 0)) <= 0:
+		return "Nothing has claimed anything there — yet."
+	var realm: Realm = realms[realm_id]
+	if realm.gold < 25.0:
+		return "Wardens, oil, and a mason to break the anchor cost 25 gold."
+	realm.gold -= 25.0
+	province_anchors[pid] = int(province_anchors[pid]) - 1
+	_log("Wardens break the claimed anchor in %s — the old answer, and the only permanent one. What wore it must save or die, and either way it has nowhere to sit." % p.name)
+	return ""
+
+
+func resettle_province(realm_id: int, pid: int) -> String:
+	if pid < 0 or pid >= map.provinces.size():
+		return "No such province."
+	var p = map.provinces[pid]
+	if p.owner != realm_id:
+		return "Settlers follow their own crown."
+	var realm: Realm = realms[realm_id]
+	if realm.gold < 40.0:
+		return "Seed grain, roof-beams, and a year's remission cost 40 gold."
+	if float(province_vacancies.get(pid, 0.0)) < 1.0:
+		return "The villages there still answer the tax roll."
+	realm.gold -= 40.0
+	province_vacancies[pid] = maxf(0.0, float(province_vacancies.get(pid, 0.0)) - 3.0)
+	_log("The crown reopens the emptied steads of %s — swept shrines, drawn wells, lamplight where the vacancy was. Occupied ground offers nothing to squat in." % p.name)
+	return ""
+
+
+func tend_shrines(realm_id: int, pid: int) -> String:
+	if pid < 0 or pid >= map.provinces.size():
+		return "No such province."
+	var p = map.provinces[pid]
+	if p.owner != realm_id:
+		return "The shrines there keep other patrons."
+	var realm: Realm = realms[realm_id]
+	if realm.gold < 15.0:
+		return "Lay tenders and lamp oil cost 15 gold."
+	realm.gold -= 15.0
+	shrines_tended[pid] = tick + 24
+	_log("The crown pays lay hands to sweep and light the shrines of %s. Nobody answers the prayers. The POINT is the sweeping: a tended threshold is not a vacancy." % p.name)
+	return ""
+
+
+func bury_the_dead(realm_id: int, pid: int) -> String:
+	if not unburied_fields.has(pid):
+		return "The ground there holds no unburied field."
+	var realm: Realm = realms[realm_id]
+	if realm.gold < 10.0:
+		return "Grave-details and quicklime cost 10 gold."
+	realm.gold -= 10.0
+	var dead := int(unburied_fields[pid]["dead"])
+	unburied_fields.erase(pid)
+	_log("The crown buries the dead at %s — %d of them, named where anyone knew the names. Battlefield anchors never form over a proper grave. The Gravewardens have been saying this for six years." % [map.provinces[pid].name, dead])
+	return ""
+
+
+func silence_reform_province() -> int:
+	## The Silence itself is a Volume II living spell: reduced to zero it
+	## disperses and REFORMS WHERE THE GODS' ABSENCE IS MOST FELT — the
+	## highest faith-dampening deficit. The campaign as a stat block.
+	var best_pid := -1
+	var best_score := -INF
+	for p in map.provinces:
+		var g := entity_ground(p)
+		if g == "":
+			continue
+		var missed: float = float(CanonData.ENTITY_PRESSURE_BY_GROUND.get(g, 0.3))
+		var still_held := FAITH_DAMPENING_BASE
+		if p.special_feature == "iron_library":
+			still_held = FAITH_DAMPENING_LIBRARY
+		elif g == "wardstone":
+			still_held = FAITH_DAMPENING_WARDSTONE
+		var score := missed - still_held
+		if score > best_score:
+			best_score = score
+			best_pid = p.id
+	return best_pid
+
+
+func continental_anchors() -> int:
+	var n := 0
+	for pid in province_anchors:
+		n += int(province_anchors[pid])
+	return n
+
+
+func entity_status_line() -> String:
+	var anchors := continental_anchors()
+	if anchors <= 0:
+		return ""
+	var worst_pid := -1
+	var worst := 0
+	for pid in province_anchors:
+		if int(province_anchors[pid]) > worst:
+			worst = int(province_anchors[pid])
+			worst_pid = int(pid)
+	var s := "Wardens' registry: %d claimed anchors on the continent" % anchors
+	if worst_pid >= 0:
+		s += " — the worst ground is %s (%d)" % [map.provinces[worst_pid].name, worst]
+	if wardstone_linkage_known:
+		s += ". The registry now understands WHY: the heaviest maintenance failed hardest."
+	return s + "."
+
+
+# ------------------------------------------------------------ the Underneath
+
+func _seed_underneath() -> void:
+	urng.seed = 12  # the twelve pact-families of the Hollow Decades
+	criminal_orgs = {}
+	for key in CanonData.CRIMINAL_ORGS:
+		var src: Dictionary = CanonData.CRIMINAL_ORGS[key]
+		criminal_orgs[key] = {"name": src["name"], "scope": src["scope"], "leader": src["leader"],
+			"strength": float(src["strength"]), "tolerated": bool(src["tolerated"]), "note": src["note"]}
+	cults = {}
+	for key in CanonData.CULTS:
+		var src2: Dictionary = CanonData.CULTS[key]
+		cults[key] = {"name": src2["name"], "deity": src2["deity"], "leader": src2["leader"],
+			"method": src2["method"], "strength": 4.0, "state": "gathering",
+			"cell_formed": -1, "attempt_done": false, "prepared": false, "published": false}
+	displaced = {"famine": 0, "war": 0, "ashfields": 0, "silence_touched": 0}
+
+
+func _underneath_tick() -> void:
+	## The criminal, poverty, and cult layer. Poverty is not a new
+	## variable — it is the famine module and the existing scalars read
+	## from below. What is new is the refugee flow, and what waits at the
+	## end of it. Auto-fire: own ledgers only.
+	_refugee_tick()
+	_cult_tick()
+	# organization drift: the Ash Vein feeds on a worsening Salt Road;
+	# the Hidden Grain on every closed gate; the Bone Court on the flow
+	var salt_anchors := 0
+	for pid in range(28, 36):
+		salt_anchors += int(province_anchors.get(pid, 0))
+	var ash_vein: Dictionary = criminal_orgs["ash_vein"]
+	ash_vein["strength"] = clampf(float(ash_vein["strength"]) + 0.02 * float(salt_anchors), 0.0, 100.0)
+	var grain: Dictionary = criminal_orgs["hidden_grain"]
+	grain["strength"] = clampf(float(grain["strength"]) + (0.04 if (not sieges.is_empty() or not scorched.is_empty()) else -0.01), 0.0, 100.0)
+
+
+func _refugee_tick() -> void:
+	## famine -> depopulation -> refugees -> Bone Court harvest + anchor
+	## vacancies -> worse province -> more famine. The loop is the module.
+	refugee_flow_month = 0.0
+	var ash_flow := 0
+	for p in map.provinces:
+		if p.pop <= 0:
+			continue
+		var pressed := false
+		var from_ash := false
+		var category := "famine"
+		if p.silence_touched:
+			pressed = true
+			from_ash = true
+			category = "ashfields"
+		elif int(scorched.get(p.id, -1)) > tick or int(salted.get(p.id, -1)) > tick:
+			pressed = true
+			category = "war"
+		elif int(province_anchors.get(p.id, 0)) >= 2:
+			pressed = true
+		elif famine_dead_by_pid.has(p.id) and p.pop < int(float(_pop_zero(p.id)) * 0.6):
+			pressed = true
+		if not pressed:
+			continue
+		var out := int(float(p.pop) * (0.001 if from_ash else 0.002))
+		if out <= 0:
+			continue
+		p.pop -= out
+		refugee_flow_month += float(out)
+		if from_ash:
+			ash_flow += out
+		displaced[category] = int(displaced.get(category, 0)) + out
+		# they walk toward the nearest standing market — and arrive, mostly
+		var dest_pid := 59  # Halven, the refugee city, when no crown claims them
+		if p.owner >= 0 and p.owner < map.realms.size():
+			dest_pid = map.realms[p.owner].capital_province_id
+		var survivors := int(float(out) * 0.96)
+		map.provinces[dest_pid].pop += survivors
+		# the Bone Court works the roads between: refugees, veterans,
+		# Half-Orcs — the desperate, sold by the desperate
+		var taken := int(float(out) * (0.04 if from_ash else 0.02))
+		if taken > 0:
+			bone_court_taken += taken
+			var bc: Dictionary = criminal_orgs["bone_court"]
+			bc["strength"] = clampf(float(bc["strength"]) + float(taken) / 400.0, 0.0, 100.0)
+	if bone_court_taken > 0 and tick % 12 == 0:
+		_log("The year's roads: %s souls displaced and walking, and the Bone Court's ledgers heavier by %s. The Ashfield Flies feed it the ones nobody counts." % [_fmt_count(int(refugee_flow_month * 12.0)), _fmt_count(bone_court_taken)])
+
+
+func _pop_zero(pid: int) -> int:
+	## Year Zero baselines are reconstructible: current + everything the
+	## ledgers took out. Close enough for the emptying test.
+	return map.provinces[pid].pop + int(famine_dead_by_pid.get(pid, 0))
+
+
+func _cult_tick() -> void:
+	## Ten cults, one per silent deity plus the Pale Accord — people who
+	## decided that if prayer will not work, LEVERAGE might. A faith at
+	## low coherence does not only fracture into heresy; it fractures
+	## into coercion. The Empty Bowl grows on the famine curve itself.
+	var coherence := 1.0
+	if faiths.has("Aelindran Orthodox"):
+		coherence = float(faiths["Aelindran Orthodox"]["coherence"])
+	var base := 0.25 * (1.0 - coherence) if coherence < 0.55 else 0.05
+	for key in cults:
+		var cult: Dictionary = cults[key]
+		var growth := base
+		if key == "empty_bowl":
+			growth += 0.9 * famine_rate(float(tick) / 12.0) / CanonData.FAMINE_PLATEAU
+		elif key == "swords_return":
+			growth += 0.15 if at_war else 0.05
+		elif key == "older_terms":
+			growth = base * 0.6  # the Accord recruits slowly; its terms are older than hunger
+		cult["strength"] = clampf(float(cult["strength"]) + growth, 0.0, 100.0)
+		var s := float(cult["strength"])
+		if str(cult["state"]) == "gathering" and s >= 33.0:
+			cult["state"] = "active"
+			_log("[b]%s is no longer a rumor.[/b] %s — %s. Not heretics: coercionists. An attempt to FORCE a silent god back to the table." % [str(cult["name"]), str(cult["leader"]) if str(cult["leader"]) != "" else "No one name leads it", str(cult["method"])])
+		elif str(cult["state"]) == "active" and s >= 66.0:
+			cult["state"] = "zealous"
+			_log("[b]%s crosses into zealotry.[/b] What began as leverage is becoming liturgy — the most dangerous stage of any argument with heaven." % str(cult["name"]))
+	_cult_beats()
+
+
+func _cult_beats() -> void:
+	## The scripted threads the brief names. Lethal outcomes are gated on
+	## `underneath_lethal` (default false) — whether cult cells may kill
+	## named souls is Justin's ruling to make, and flagged as such.
+	# canon pin: the cell has been tracking Tavisol for EIGHTEEN MONTHS at
+	# the Year Six present (brief §2.3) — so it forms at tick 54, a fact
+	# of the setting rather than a die. Its resolution lands at tick 72.
+	var sword: Dictionary = cults["swords_return"]
+	if tick >= 54 and int(sword["cell_formed"]) < 0:
+		sword["cell_formed"] = tick
+		_log("Three of the Sword's Return stop attending the open gatherings: Sister Merla Blade-True, Brother Kellan Steel-Vow, Squire Torak Iron-Word. They hold, in Commander Halven Iron-Faith's own hand, an assassination authorization. The name on it serves the Vigil.")
+	if int(sword["cell_formed"]) >= 0 and not bool(sword["attempt_done"]) and tick - int(sword["cell_formed"]) >= 18:
+		sword["attempt_done"] = true
+		var tavisol: SimCharacter = null
+		for c in characters.values():
+			if c.alive and c.name == "Tavisol" and c.hero_level > 0:
+				tavisol = c
+				break
+		if tavisol != null:
+			if underneath_lethal:
+				_kill(tavisol, "is taken at prayer by three blades of the Sword's Return —")
+			else:
+				_log("[b]Eighteen months of patience come due:[/b] three blades of the Sword's Return close on Tavisol at prayer — and find the Oath of Devotion does not startle. The attempt fails; the cell scatters; the authorization, in Iron-Faith's own hand, is now evidence walking around loose. (The cell's blades stay sheathed pending Justin's ruling on lethal cult outcomes.)")
+				raise_event(0, realms[0].ruler_id, "The Authorization, In His Own Hand",
+					"A paladin was nearly murdered for the crime of serving a threshold the war-god's cult resents. The scattered cell left paper behind: Commander Halven Iron-Faith's signature under an assassination authorization. The Sword's Return has crossed from coercing heaven to killing its servants.",
+					[{"label": "Circulate the evidence to every court", "base": 3.0, "ai": {"orthodoxy": 0.5}},
+					{"label": "Hold it — leverage over the cult later", "base": 2.0, "ai": {"scheming": 0.7}}],
+					false, false, false, false, false, false, false, false, true)
+	# canon pin: at the Year Six present the Unpublished Record is already
+	# PREPARING to publish Rorend's vote, and Sera already knows (brief).
+	var record: Dictionary = cults["unpublished_record"]
+	if (tick >= 66 or float(record["strength"]) >= 50.0) and not bool(record["prepared"]):
+		record["prepared"] = true
+		_log("Archive Master Ferren Truth-Speaks of the Unpublished Record is assembling something: a vote tally, eighty-eight years old, with House Halvenard-Veil's ancestor Rorend on the wrong side of it. Sera Halvenard-Veil has known for a year. She has told no one, which is itself information.")
+	if float(record["strength"]) >= 75.0 and not bool(record["published"]):
+		record["published"] = true
+		for s in secrets:
+			if str(s["type"]) == "rorend_patron_vote":
+				s["known"][0] = true
+				s["known"][1] = true
+		_log("[b]The Unpublished Record publishes.[/b] Rorend Halvenard-Veil's Patron vote, eighty-eight years buried, is nailed to every notice-post the cult can reach: the truth forced into daylight so the record-god must acknowledge it. The house's buried secret is now everyone's breakfast reading.")
+
+
+func _seed_houses() -> void:
+	## Pass Two §3: the ~46 houses take their live records, and the ones
+	## with buried hooks enter the intrigue web — OUTSIDE the tavern
+	## pool. House secrets surface through their own beats and through
+	## investigate_house, never through a ferreting informant's lucky month.
+	house_records = {}
+	for key in CanonData.HOUSES:
+		house_records[key] = {"discovered": false}
+	var garran_id := -1
+	if sera_id >= 0 and characters.has(sera_id):
+		garran_id = characters[sera_id].father_id
+	_add_secret_under(garran_id, "rorend_patron_vote", "halvenard_veil")
+	_add_secret_under(-1, "iorek_confession", "aurath_voss")
+	var mira_id := -1
+	for c in characters.values():
+		if c.name == "Mira" and dynasties.has(c.dynasty_id) and dynasties[c.dynasty_id].name == "House Crannock-Vey":
+			mira_id = c.id
+			break
+	_add_secret_under(mira_id, "crannock_mira_forsaken", "crannock_vey")
+	_add_secret_under(-1, "vannin_memories", "drome")
+	_add_secret_under(-1, "talan_faerith_romance", "velmarin_house")
+	_add_secret_under(-1, "ironbrand_concealment", "ironbrand")
+	_add_secret_under(-1, "bone_court_patronage", "bone_court")
+
+
+func _add_secret_under(subject_id: int, type: String, house_key: String) -> void:
+	## A buried secret: in the web, but beyond informants — the `under`
+	## flag keeps it out of every generic sampling loop, so the fixed-
+	## seed history never feels the house vaults existing.
+	for s in secrets:
+		if str(s["type"]) == type:
+			return
+	secrets.append({"subject": subject_id, "type": type, "known": {}, "under": true, "house": house_key})
+
+
+func investigate_house(realm_id: int, key: String) -> String:
+	## The Spymaster's deep work: one house's vault at a time. The
+	## Ironbrand discoverable is the one that matters most — the house
+	## lying about the ward-stones is lying about the exact mechanism
+	## that drives entity density. Uncovering it unlocks understanding,
+	## not just a scandal.
+	if realm_id != 0:
+		return "Other crowns run their own inquiries."
+	if not CanonData.HOUSES.has(key):
+		return "No such house in the registry."
+	if council_member(0, "Spymaster") == null:
+		return "Vault-work needs a Spymaster."
+	var realm: Realm = realms[0]
+	if realm.gold < 25.0:
+		return "A season inside a house's ledgers costs 25 gold."
+	if bool(house_records[key]["discovered"]):
+		return "That vault has already been read."
+	realm.gold -= 25.0
+	house_records[key]["discovered"] = true
+	var house: Dictionary = CanonData.HOUSES[key]
+	var secret_type := str(house.get("secret", ""))
+	if secret_type == "":
+		_log("The Spymaster's season inside %s's ledgers finds them boring, which is its own kind of information." % str(house["name"]))
+		return ""
+	for s in secrets:
+		if str(s["type"]) == secret_type:
+			s["known"][0] = true
+	match key:
+		"ironbrand":
+			wardstone_linkage_known = true
+			_log("[b]The Ironbrand concealment, uncovered.[/b] The Dwarven surface merchants have been hiding the ward-stone decline since the Night of the Third Hour — increasing supply so nobody asks why demand rose. Deepstone's research underlies the lie. And the crown now understands something the wardens' registry only suspected: THE DEEP PASSAGES ARE WORST BECAUSE THEIR MAINTENANCE WAS HEAVIEST. Piety was infrastructure. The house lying about the ward-stones was lying about exactly that.")
+		"halvenard_veil":
+			_log("[b]Rorend's vote.[/b] Under Halvenard-Veil's oldest seal: the tally of Year 112, and the house's ancestor among the seven ayes. The feud with Aurath-Voss reads differently in this light. So does everything.")
+		"crannock_vey":
+			_log("The First Voice's daughter, Mira Crannock-Vey, runs with the Forsaken Underground — the generation that never met the gods, organizing in her father's own harbor. He does not know. The Spymaster now does.")
+		"drome":
+			_log("House Drome's head, Vannin, has gaps in his memory with WORKED EDGES — a Vanneth signature. He retains House Vanneth to this day, which means either he does not know, or the second working was to make him stop minding. Both readings are for sale now.")
+		"velmarin_house":
+			_log("Talan Velmarin and Faerith Thornback — heirs of two sorcerer houses that have spent a century feuding — have been exchanging letters through a bookbinder in the capital. The letters are not about the feud.")
+		_:
+			_log("The Spymaster's season inside %s's ledgers pays for itself." % str(house["name"]))
+	return ""
+
+
+func underneath_status_line() -> String:
+	var worst := ""
+	var worst_s := 0.0
+	for key in cults:
+		if float(cults[key]["strength"]) > worst_s:
+			worst_s = float(cults[key]["strength"])
+			worst = str(cults[key]["name"])
+	if worst == "" or worst_s < 20.0:
+		return ""
+	var s := "Below the ledgers: %s is the loudest argument with heaven" % worst
+	if bone_court_taken > 0:
+		s += "; the Bone Court's count stands at %s" % _fmt_count(bone_court_taken)
+	return s + "."

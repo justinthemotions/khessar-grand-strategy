@@ -37,6 +37,10 @@ class Province:
 	var ruined: bool = false            # the Aurath Sovereignty ruins
 	var special_feature: String = ""    # "iron_library", "durn_caeris_seat", ...
 	var culture: String = ""            # majority culture (Cultural Roster v1.0) — see CultureData
+	# Canon Pass One (2026-07-15): the province's living souls. Seeded by
+	# SimWorld._seed_population from CanonData tiers (110M continental);
+	# the famine ledger draws it down. Additive field, appended last.
+	var pop: int = 0
 
 
 class Duchy:
