@@ -329,6 +329,65 @@ class Regiment:
 		return BattleSim.START_MORALE + morale_bonus - shock - flank_penalty - depletion
 
 
+class HeroRuntime:
+	## Lightweight single-entity physics state. Campaign identity and lasting
+	## HP remain in `heroes`/`hero_hp`; this object owns only battlefield
+	## position, collision, motion, and temporary class states.
+	var id := -1
+	var side := 0
+	var class_id := ""
+	var role := "melee"
+	var level := 1
+	var pos := Vector2.ZERO
+	var facing := Vector2.RIGHT
+	var move_target := Vector2.ZERO
+	var has_move_order := false
+	var radius_base := 8.0
+	var speed_base := 34.0
+	var weight_base := 1.5
+	var melee_base := 9.0
+	var reach := 10.0
+	var attack_interval := 2
+	var next_attack_tick := 0
+	var engaged_id := -1
+	var attack_phase := -1000
+	var rage_ticks := 0
+	var wild_shape_ticks := 0
+	var wild_shape_hp := 0.0
+	var wild_shape_hp_max := 0.0
+	var wild_shape_form := "war_beast"
+
+	func raging() -> bool:
+		return rage_ticks > 0
+
+	func shaped() -> bool:
+		return wild_shape_ticks > 0 and wild_shape_hp > 0.0
+
+	func radius() -> float:
+		return radius_base * (1.45 if shaped() else 1.0)
+
+	func speed() -> float:
+		return speed_base * (1.22 if shaped() else 1.0)
+
+	func weight() -> float:
+		var value := weight_base
+		if raging():
+			value *= 2.5
+		if shaped():
+			value *= 1.8
+		return value
+
+	func melee_power() -> float:
+		# One Khessar level is approximately two tabletop levels. The curve is
+		# deliberately compact and feeds aggregate regiment HP, not d20 rolls.
+		var value := melee_base + float(maxi(level - 1, 0)) * 1.8
+		if raging():
+			value *= 1.35
+		if shaped():
+			value *= 1.45
+		return value
+
+
 var regiments: Array = []
 var field := Vector2(1200, 640)
 var ended := false
@@ -352,15 +411,20 @@ var ground_wardstone := false        # the sealed Kharak-Dum holds
 var side_threshold := [false, false] # a Gravewarden-Sworn hand commands this side
 var side_faith := ["", ""]           # the commander's faith — oath-conflict reads it
 
-# Hero System v1.0: heroes on the field. A hero rides with a host line
-# (personal HP separate from unit HP), spends leveled abilities on
-# cooldowns, and at 0 HP rolls death saves on the battle's own dice.
+# Hero System v1.2: heroes are independent single entities. The legacy
+# side-indexed fields remain authoritative for campaign write-back and UI;
+# `hero_units` carries deterministic formation-level physics.
 const HERO_GLOBAL_CD := 10           # combat ticks between any two workings...
 const HERO_GLOBAL_CD_LEGENDARY := 5  # ...halved for Legendary Actions (doc §7)
 const HERO_SAVE_CHANCE := 0.55       # a death save succeeds at this rate
 const HERO_SPLASH := 0.15            # abilities striking the host splash onto the hero
 const HERO_CHIP := 0.45              # hero damage per host casualty in the press
+const HERO_ALLY_GAP := 2.5
+const HERO_CONTACT_GAP := 0.5
+const HERO_FORMATION_MASS_PER_SOLDIER := 0.28
+const HERO_RETALIATION_CAP := 5.5
 var heroes: Array = [{}, {}]         # per side: world.hero_info dict (empty = none)
+var hero_units: Array = [null, null] # per side: independent HeroRuntime
 var hero_hp := [0.0, 0.0]
 var hero_state := ["", ""]           # "" | fighting | unconscious | stable | dead
 var hero_saves: Array = [[0, 0], [0, 0]]  # [fails, successes] while unconscious
@@ -368,7 +432,7 @@ var hero_resist := [0, 0]            # Legendary Resistance charges (3/battle at
 var hero_cd: Array = [{}, {}]        # ability id -> combat tick it comes off cooldown
 var hero_uses: Array = [{}, {}]      # ability id -> uses left this battle
 var hero_global_cd := [0, 0]         # combat tick the hero may act again
-var hero_host := [-1, -1]            # regiment id the hero rides with
+var hero_host := [-1, -1]            # nearest friendly aura anchor (compatibility)
 var hero_host_pool := [0.0, 0.0]     # host hp_pool last tick (chip-damage bookkeeping)
 var hero_counterspells := [0, 0]     # interceptions left (wizard passive)
 var hero_death_ward := [false, false]  # the first killing blow is refused (cleric passive)
@@ -390,6 +454,7 @@ func setup_from_rosters(roster_a: Array, roster_b: Array, lead_bonus_a: int, lea
 	## `ground` is the province's theology (Tactical Combat v1.0):
 	## {silence, ruined, special} — the binary casting gates read it.
 	regiments.clear()
+	_reset_hero_runtime()
 	side_lead = [lead_bonus_a, lead_bonus_b]
 	battle_terrain = terrain
 	brng.seed = BATTLE_SEED
@@ -479,6 +544,27 @@ func setup_from_rosters(roster_a: Array, roster_b: Array, lead_bonus_a: int, lea
 			r.facing = Vector2.RIGHT if side == 0 else Vector2.LEFT
 			regiments.append(r)
 	_arm_static_opposition()
+
+
+func _reset_hero_runtime() -> void:
+	heroes = [{}, {}]
+	hero_units = [null, null]
+	hero_hp = [0.0, 0.0]
+	hero_state = ["", ""]
+	hero_saves = [[0, 0], [0, 0]]
+	hero_resist = [0, 0]
+	hero_cd = [{}, {}]
+	hero_uses = [{}, {}]
+	hero_global_cd = [0, 0]
+	hero_host = [-1, -1]
+	hero_host_pool = [0.0, 0.0]
+	hero_counterspells = [0, 0]
+	hero_death_ward = [false, false]
+	hero_dodge = [1.0, 1.0]
+	hero_auras = [[], []]
+	hero_actions_used = [0, 0]
+	zones.clear()
+	casts.clear()
 
 
 func run_headless(max_frames: int = 30000) -> void:
@@ -722,7 +808,27 @@ func set_hero(side: int, h: Dictionary) -> void:
 	var smods := HeroDB.sub_mods(sub)
 	if smods.has("aura"):
 		hero_auras[side].append(smods["aura"])
+	var profile := HeroDB.tactical_profile(cls)
+	var unit := HeroRuntime.new()
+	unit.id = int(h.get("id", -1))
+	unit.side = side
+	unit.class_id = cls
+	unit.role = str(profile.get("role", "melee"))
+	unit.level = lvl
+	unit.radius_base = float(profile.get("radius", 8.0))
+	unit.speed_base = float(profile.get("speed", 34.0))
+	unit.weight_base = float(profile.get("weight", 1.5))
+	unit.melee_base = float(profile.get("melee", 9.0))
+	unit.reach = float(profile.get("reach", 10.0))
+	unit.attack_interval = maxi(1, int(profile.get("attack_ticks", 2)))
+	unit.pos = Vector2(140.0 if side == 0 else field.x - 140.0, field.y * 0.5)
+	unit.facing = Vector2.RIGHT if side == 0 else Vector2.LEFT
+	unit.move_target = unit.pos
+	hero_units[side] = unit
 	_hero_host_assign(side)
+	if hero_host[side] >= 0:
+		var anchor: Regiment = regiments[hero_host[side]]
+		unit.pos.y = anchor.pos.y
 
 
 func hero_active(side: int) -> bool:
@@ -739,20 +845,46 @@ func hero_abilities(side: int) -> Array:
 
 
 func _hero_host_assign(side: int) -> void:
-	## The hero rides with the strongest line still standing.
+	## Compatibility anchor for zero-radius auras and the old campaign/UI
+	## contract. It no longer owns the hero's position.
 	var best: Regiment = null
 	for r: Regiment in regiments:
 		if r.side == side and r.active():
-			if best == null or r.soldiers > best.soldiers:
+			var prefer := false
+			if best == null:
+				prefer = true
+			elif hero_units[side] != null:
+				var unit: HeroRuntime = hero_units[side]
+				prefer = unit.pos.distance_squared_to(r.pos) < unit.pos.distance_squared_to(best.pos)
+			else:
+				prefer = r.soldiers > best.soldiers
+			if prefer:
 				best = r
 	hero_host[side] = best.id if best != null else -1
 	hero_host_pool[side] = best.hp_pool if best != null else 0.0
 
 
 func hero_pos(side: int) -> Vector2:
-	if hero_host[side] >= 0 and hero_host[side] < regiments.size():
-		return (regiments[hero_host[side]] as Regiment).pos
+	if side >= 0 and side < hero_units.size() and hero_units[side] != null:
+		return (hero_units[side] as HeroRuntime).pos
 	return Vector2(120.0, field.y * 0.5) if side == 0 else Vector2(field.x - 120.0, field.y * 0.5)
+
+
+func hero_radius(side: int) -> float:
+	if side < 0 or side >= hero_units.size() or hero_units[side] == null:
+		return 0.0
+	return (hero_units[side] as HeroRuntime).radius()
+
+
+func order_hero(side: int, target: Vector2) -> bool:
+	## Player and AI issue the same deterministic move order.
+	if not hero_active(side) or hero_units[side] == null:
+		return false
+	var unit: HeroRuntime = hero_units[side]
+	unit.move_target = target.clamp(Vector2(unit.radius(), unit.radius()), field - Vector2(unit.radius(), unit.radius()))
+	unit.has_move_order = true
+	unit.engaged_id = -1
+	return true
 
 
 func hero_ability_gate(side: int, aid: String) -> String:
@@ -774,11 +906,30 @@ func hero_ability_gate(side: int, aid: String) -> String:
 	return ""
 
 
+func hero_ability_target_gate(side: int, aid: String, target: Vector2) -> String:
+	## Geometry that must be valid before a charge/cooldown is spent.
+	var info := HeroDB.info(aid)
+	if str(info.get("kind", "")) != "sneak":
+		return ""
+	var victim := _nearest_enemy_to_point(side, target)
+	if victim == null:
+		return "No enemy is there."
+	var unit: HeroRuntime = hero_units[side]
+	if unit == null or _hero_regiment_surface_gap(unit, victim) > float(info.get("range", 34.0)):
+		return "Sneak Attack requires melee range."
+	if not _hero_sneak_eligible(unit, victim):
+		return "Move to the flank, rear, or a distracted enemy."
+	return ""
+
+
 func use_hero_ability(side: int, aid: String, target: Vector2 = Vector2.ZERO) -> String:
 	## A hero's working: the binary gate rolls first (Tactical v1.0 law —
 	## it fires whole or fizzles whole), the enemy's Counterspell may
 	## interrupt, and the cost lands either way.
 	var gate := hero_ability_gate(side, aid)
+	if gate != "":
+		return gate
+	gate = hero_ability_target_gate(side, aid, target)
 	if gate != "":
 		return gate
 	var info := HeroDB.info(aid)
@@ -792,6 +943,10 @@ func use_hero_ability(side: int, aid: String, target: Vector2 = Vector2.ZERO) ->
 	# the subclass may walk an older theology than its class: threshold-
 	# work and ward-speech never gate (Hero System v1.1)
 	var practice := HeroDB.practice_for(cls, str(h.get("subclass", "")))
+	# Body-driven class states are not spells: the ground cannot fizzle or
+	# Counterspell Rage, Wild Shape, or a Rogue finding an opening.
+	if str(info.get("kind", "")) in ["hero_state", "sneak"]:
+		practice = ""
 	if practice != "":
 		commander_stress[side] += 1.0 if practice == "faith" else 0.5
 	if CLASSES_CAST_CORRUPTION.has(cls):
@@ -852,10 +1007,13 @@ func _hero_apply_effect(side: int, aid: String, info: Dictionary, target: Vector
 			var radius := float(info.get("radius", 50.0))
 			var struck := 0
 			for r: Regiment in regiments:
-				if r.side != side and r.alive() and r.pos.distance_to(target) <= radius + r.radius() * 0.5:
-					_hero_damage(r, float(info.get("pow", 20.0)) * scale, float(info.get("shock", 0.0)))
+				if r.side != side and r.alive() and _circle_intersects_regiment(target, radius, r):
+					_hero_damage(r, float(info.get("pow", 20.0)) * scale * dmg_m, float(info.get("shock", 0.0)))
+					_apply_ability_slow(r, info)
 					struck += 1
-			casts.append({"pos": target, "radius": radius, "ttl": 10, "color": "fire"})
+			if hero_active(1 - side) and hero_pos(1 - side).distance_to(target) <= radius + hero_radius(1 - side):
+				_hero_take_damage(1 - side, float(info.get("pow", 20.0)) * 0.35 * scale * dmg_m, false)
+			casts.append({"shape": "circle", "pos": target, "radius": radius, "ttl": 10, "color": "fire"})
 			if struck > 0:
 				event.emit("%s casts %s — %d enemy line%s caught in it!" % [hname, label, struck, "" if struck == 1 else "s"])
 			else:
@@ -867,20 +1025,41 @@ func _hero_apply_effect(side: int, aid: String, info: Dictionary, target: Vector
 				dir = Vector2.RIGHT if side == 0 else Vector2.LEFT
 			dir = dir.normalized()
 			var length := float(info.get("length", 240.0))
+			var width := float(info.get("width", 18.0))
 			var struck2 := 0
 			for r: Regiment in regiments:
 				if r.side == side or not r.alive():
 					continue
-				var to := r.pos - origin
-				var along := to.dot(dir)
-				if along < 0.0 or along > length:
-					continue
-				if (to - dir * along).length() <= r.radius() * 0.6 + 14.0:
+				if _line_intersects_regiment(origin, dir, length, width, r):
 					_hero_damage(r, float(info.get("pow", 30.0)) * scale, 4.0)
 					struck2 += 1
-			casts.append({"pos": origin + dir * length * 0.5, "radius": length * 0.5, "ttl": 8, "color": "bolt"})
+			if hero_active(1 - side) and _point_in_line(hero_pos(1 - side), hero_radius(1 - side), origin, dir, length, width):
+				_hero_take_damage(1 - side, float(info.get("pow", 30.0)) * 0.35 * scale * dmg_m, false)
+			casts.append({"shape": "line", "origin": origin, "dir": dir, "length": length, "width": width,
+				"pos": origin + dir * length * 0.5, "radius": length * 0.5, "ttl": 8, "color": "bolt"})
 			event.emit("%s looses %s down the field%s" % [hname, label,
 				" — %d lines struck!" % struck2 if struck2 > 0 else ". It grounds harmlessly."])
+		"cone":
+			var origin2 := hero_pos(side)
+			var dir2 := target - origin2
+			if dir2.length_squared() < 1.0:
+				dir2 = Vector2.RIGHT if side == 0 else Vector2.LEFT
+			dir2 = dir2.normalized()
+			var length2 := float(info.get("length", 150.0))
+			var half_angle := deg_to_rad(float(info.get("angle", 60.0)) * 0.5)
+			var struck3 := 0
+			for r: Regiment in regiments:
+				if r.side != side and r.alive() and _cone_intersects_regiment(origin2, dir2, length2, half_angle, r):
+					_hero_damage(r, float(info.get("pow", 30.0)) * scale * dmg_m, float(info.get("shock", 0.0)))
+					_apply_ability_slow(r, info)
+					struck3 += 1
+			if hero_active(1 - side) and _point_in_cone(hero_pos(1 - side), hero_radius(1 - side), origin2, dir2, length2, half_angle):
+				_hero_take_damage(1 - side, float(info.get("pow", 30.0)) * 0.35 * scale * dmg_m, false)
+			casts.append({"shape": "cone", "origin": origin2, "dir": dir2, "length": length2,
+				"angle": half_angle * 2.0, "pos": origin2 + dir2 * length2 * 0.5,
+				"radius": length2 * 0.5, "ttl": 10, "color": "cold"})
+			event.emit("%s casts %s — %d enemy line%s caught in the cone." % [
+				hname, label, struck3, "" if struck3 == 1 else "s"])
 		"multi":
 			var count := int(info.get("count", 3))
 			var reach := float(info.get("range", 260.0))
@@ -904,6 +1083,34 @@ func _hero_apply_effect(side: int, aid: String, info: Dictionary, target: Vector
 				_hero_damage(t, strike, float(info.get("shock", 0.0)))
 				casts.append({"pos": t.pos, "radius": 20.0, "ttl": 8, "color": "bolt"})
 				event.emit("%s strikes %s with %s!" % [hname, t.label, label])
+		"sneak":
+			var quarry := _nearest_enemy_to_point(side, target)
+			var unit: HeroRuntime = hero_units[side]
+			if quarry != null and unit != null:
+				var dice_curve := ceilf(float(unit.level) * 0.5) * 7.0
+				var strike2 := (float(info.get("pow", 20.0)) + dice_curve) * dmg_m
+				_hero_damage(quarry, strike2, float(info.get("shock", 0.0)))
+				unit.facing = (quarry.pos - unit.pos).normalized()
+				unit.attack_phase = combat_ticks
+				casts.append({"shape": "circle", "pos": quarry.pos, "radius": 18.0, "ttl": 7, "color": "dread"})
+				event.emit("%s finds %s's open flank — %s lands." % [hname, quarry.label, label])
+		"hero_state":
+			var unit2: HeroRuntime = hero_units[side]
+			if unit2 == null:
+				return
+			match str(info.get("state", "")):
+				"rage":
+					unit2.rage_ticks = int(info.get("dur", 24))
+					casts.append({"shape": "circle", "pos": unit2.pos, "radius": unit2.radius() * 2.2,
+						"ttl": 8, "color": "rage"})
+					event.emit("%s enters a rage and drives into the press!" % hname)
+				"wild_shape":
+					unit2.wild_shape_ticks = int(info.get("dur", 48))
+					unit2.wild_shape_hp_max = float(info.get("temp_hp", 34.0)) + float(unit2.level) * 6.0
+					unit2.wild_shape_hp = unit2.wild_shape_hp_max
+					casts.append({"shape": "circle", "pos": unit2.pos, "radius": unit2.radius() * 2.4,
+						"ttl": 10, "color": "primal"})
+					event.emit("%s takes the shape of a war-beast." % hname)
 		"zone":
 			zones.append({"pos": target, "radius": float(info.get("radius", 50.0)),
 				"dpt": float(info.get("dpt", 5.0)) * scale * dmg_m, "ticks": int(info.get("dur", 20)),
@@ -984,6 +1191,81 @@ func _hero_apply_effect(side: int, aid: String, info: Dictionary, target: Vector
 			event.emit("%s: %s — the workings on this field are dismissed." % [hname, label])
 
 
+func _apply_ability_slow(r: Regiment, info: Dictionary) -> void:
+	if not info.has("slow_dur"):
+		return
+	r.fx_ticks = maxi(r.fx_ticks, int(info.get("slow_dur", 0)))
+	r.fx_speed_mult = minf(r.fx_speed_mult, float(info.get("slow_mult", 1.0)))
+
+
+func _point_regiment_signed_distance(point: Vector2, r: Regiment) -> float:
+	## Signed distance to the regiment's oriented formation rectangle.
+	var forward := r.facing.normalized()
+	if forward.length_squared() < 0.001:
+		forward = Vector2.RIGHT if r.side == 0 else Vector2.LEFT
+	var across := forward.rotated(PI * 0.5)
+	var local := point - r.pos
+	var dx := absf(local.dot(across)) - r.frontage() * 0.5
+	var dy := absf(local.dot(forward)) - r.depth() * 0.5
+	var outside := Vector2(maxf(dx, 0.0), maxf(dy, 0.0)).length()
+	return outside + minf(maxf(dx, dy), 0.0)
+
+
+func _circle_intersects_regiment(center: Vector2, radius: float, r: Regiment) -> bool:
+	return _point_regiment_signed_distance(center, r) <= radius
+
+
+func _line_intersects_regiment(origin: Vector2, dir: Vector2, length: float, width: float, r: Regiment) -> bool:
+	var to := r.pos - origin
+	var along := to.dot(dir)
+	var along_extent := r.half_extent_along(dir)
+	if along + along_extent < 0.0 or along - along_extent > length:
+		return false
+	var perpendicular := dir.rotated(PI * 0.5)
+	return absf(to.dot(perpendicular)) <= width * 0.5 + r.half_extent_along(perpendicular)
+
+
+func _point_in_line(point: Vector2, radius: float, origin: Vector2, dir: Vector2,
+		length: float, width: float) -> bool:
+	var to := point - origin
+	var along := to.dot(dir)
+	if along < -radius or along > length + radius:
+		return false
+	return absf(to.dot(dir.rotated(PI * 0.5))) <= width * 0.5 + radius
+
+
+func _point_in_cone(point: Vector2, radius: float, origin: Vector2, dir: Vector2,
+		length: float, half_angle: float) -> bool:
+	var to := point - origin
+	var distance := to.length()
+	if distance <= radius:
+		return true
+	if distance - radius > length:
+		return false
+	var slack := asin(clampf(radius / maxf(distance, 0.001), 0.0, 1.0))
+	return absf(dir.angle_to(to / distance)) <= half_angle + slack
+
+
+func _cone_intersects_regiment(origin: Vector2, dir: Vector2, length: float,
+		half_angle: float, r: Regiment) -> bool:
+	return _point_in_cone(r.pos, r.radius(), origin, dir, length, half_angle)
+
+
+func _hero_regiment_surface_gap(unit: HeroRuntime, r: Regiment) -> float:
+	return _point_regiment_signed_distance(unit.pos, r) - unit.radius()
+
+
+func _hero_sneak_eligible(unit: HeroRuntime, target: Regiment) -> bool:
+	if target.engaged_id >= 0:
+		return true
+	var attack_vector := target.pos - unit.pos
+	if attack_vector.length_squared() < 0.001:
+		return true
+	# Front is <= -0.5. Side and rear expose the formation, matching the
+	# same dot-product arcs used by regiment flanking.
+	return attack_vector.normalized().dot(target.facing.normalized()) > -0.5
+
+
 func _apply_timed(r: Regiment, info: Dictionary, scale: float = 1.0) -> void:
 	r.fx_ticks = int(info.get("dur", 12))
 	r.fx_ma = float(info.get("ma", 0.0)) * scale
@@ -1006,10 +1288,8 @@ func _hero_damage(r: Regiment, amount: float, shock_amt: float) -> void:
 		r.shock += (float(cas) / maxf(1.0, float(before))) * CASUALTY_SHOCK * r.shock_mult
 	if shock_amt > 0.0 and not r.no_morale:
 		r.shock += shock_amt * (1.0 - r.silence_immunity if r.silence_kind else 1.0) * r.shock_mult
-	# the enemy hero rides somewhere — a working that strikes the host
-	# splashes onto the rider
-	if r.id == hero_host[r.side] and hero_state[r.side] == "fighting":
-		_hero_take_damage(r.side, amount * HERO_SPLASH)
+	# Independent heroes are hit by their own spatial intersection tests;
+	# damaging a nearby formation no longer teleports splash damage to them.
 	if r.soldiers <= 0:
 		r.fled = true
 		event.emit("%s %s under the working!" % [r.label,
@@ -1023,10 +1303,24 @@ func _hero_heal(r: Regiment, amount: float) -> void:
 	r.soldiers = mini(r.start_soldiers, int(ceil(r.hp_pool / r.hp_per)))
 
 
-func _hero_take_damage(side: int, amount: float) -> void:
+func _hero_take_damage(side: int, amount: float, physical: bool = true) -> void:
 	if heroes[side].is_empty() or hero_state[side] != "fighting":
 		return
-	hero_hp[side] -= amount * hero_dodge[side]
+	var incoming: float = amount * float(hero_dodge[side])
+	var unit: HeroRuntime = hero_units[side]
+	if unit != null and physical and unit.raging():
+		incoming *= 0.5
+	if unit != null and unit.shaped():
+		var absorbed := minf(incoming, unit.wild_shape_hp)
+		unit.wild_shape_hp -= absorbed
+		incoming -= absorbed
+		if unit.wild_shape_hp <= 0.0:
+			unit.wild_shape_hp = 0.0
+			unit.wild_shape_ticks = 0
+			event.emit("%s's war-beast shape breaks; the remaining blow carries through." % str(heroes[side].get("name", "The druid")))
+	if incoming <= 0.0:
+		return
+	hero_hp[side] -= incoming
 	if hero_hp[side] <= 0.0:
 		if hero_death_ward[side]:
 			hero_death_ward[side] = false
@@ -1036,6 +1330,9 @@ func _hero_take_damage(side: int, amount: float) -> void:
 		hero_hp[side] = 0.0
 		hero_state[side] = "unconscious"
 		hero_saves[side] = [0, 0]
+		if unit != null:
+			unit.has_move_order = false
+			unit.engaged_id = -1
 		event.emit("[b]%s goes down![/b] The line closes around the body — the saves begin." % str(heroes[side].get("name", "The hero")))
 
 
@@ -1077,29 +1374,28 @@ func _hero_battle_tick() -> void:
 			if r.side != int(z["side"]) and r.alive() \
 					and r.pos.distance_to(z["pos"]) <= float(z["radius"]) + r.radius() * 0.4:
 				_hero_damage(r, float(z["dpt"]), 0.0)
+		for target_side in 2:
+			if target_side != int(z["side"]) and hero_active(target_side) \
+					and hero_pos(target_side).distance_to(z["pos"]) <= float(z["radius"]) + hero_radius(target_side):
+				_hero_take_damage(target_side, float(z["dpt"]) * 0.5, false)
 	zones = zones.filter(func(z2) -> bool: return int(z2["ticks"]) > 0)
 	for side in 2:
 		if heroes[side].is_empty():
 			continue
 		match str(hero_state[side]):
 			"fighting":
-				# the host may have broken or fallen — find a new line
-				var host_id: int = hero_host[side]
-				var host: Regiment = regiments[host_id] if host_id >= 0 and host_id < regiments.size() else null
-				if host == null or not host.active():
-					_hero_host_assign(side)
-					host_id = hero_host[side]
-					host = regiments[host_id] if host_id >= 0 else null
-					hero_host_pool[side] = host.hp_pool if host != null else 0.0
-					continue
-				# riding a bleeding line costs the rider (prowess keeps you alive)
-				if host.engaged_id >= 0:
-					var lost := maxf(0.0, hero_host_pool[side] - host.hp_pool)
-					if lost > 0.0:
-						var cas := lost / maxf(1.0, host.hp_per)
-						var guard := maxf(0.2, 1.0 - float(heroes[side].get("prowess", 6)) * 0.025)
-						_hero_take_damage(side, cas * HERO_CHIP * guard)
-				hero_host_pool[side] = host.hp_pool
+				var unit: HeroRuntime = hero_units[side]
+				if unit != null:
+					if unit.rage_ticks > 0:
+						unit.rage_ticks -= 1
+					if unit.wild_shape_ticks > 0:
+						unit.wild_shape_ticks -= 1
+						if unit.wild_shape_ticks <= 0 and unit.wild_shape_hp > 0.0:
+							unit.wild_shape_hp = 0.0
+							event.emit("%s returns to their own shape." % str(heroes[side].get("name", "The druid")))
+				# Keep a nearest-line compatibility anchor for radius-zero auras;
+				# the hero's position itself remains independent.
+				_hero_host_assign(side)
 			"unconscious":
 				# death saves, one per combat tick: three failures and the
 				# campaign loses a name; three successes and it keeps one
@@ -1131,7 +1427,7 @@ func _ai_hero(side: int) -> void:
 			continue
 		var info := HeroDB.info(aid)
 		match str(info["kind"]):
-			"aoe", "zone", "line", "multi":
+			"aoe", "cone", "zone", "line", "multi":
 				# aim at the enemy line with the most company around it
 				var radius := float(info.get("radius", info.get("length", 60.0)))
 				for r: Regiment in regiments:
@@ -1183,6 +1479,23 @@ func _ai_hero(side: int) -> void:
 					best_value = 20.0
 					best_aid = aid
 					best_target = t2.pos
+			"sneak":
+				var unit: HeroRuntime = hero_units[side]
+				var t3 := _nearest_enemy_to_hero(unit) if unit != null else null
+				if t3 != null and _hero_regiment_surface_gap(unit, t3) <= float(info.get("range", 34.0)) \
+						and _hero_sneak_eligible(unit, t3) and best_value < 44.0:
+					best_value = 44.0
+					best_aid = aid
+					best_target = t3.pos
+			"hero_state":
+				var unit2: HeroRuntime = hero_units[side]
+				var state := str(info.get("state", ""))
+				var inactive := unit2 != null and ((state == "rage" and not unit2.raging()) \
+					or (state == "wild_shape" and not unit2.shaped()))
+				if inactive and best_value < 32.0:
+					best_value = 32.0
+					best_aid = aid
+					best_target = hero_pos(side)
 			"hero_strike":
 				if hero_active(1 - side) and hero_hp[1 - side] < float(heroes[1 - side].get("hp_max", 40)) * 0.6 \
 						and best_value < 40.0:
@@ -1191,6 +1504,42 @@ func _ai_hero(side: int) -> void:
 					best_target = hero_pos(1 - side)
 	if best_aid != "":
 		var _e := use_hero_ability(side, best_aid, best_target)
+
+
+func _ai_hero_movement(side: int) -> void:
+	if not hero_active(side) or hero_units[side] == null:
+		return
+	var unit: HeroRuntime = hero_units[side]
+	var enemy := _nearest_enemy_to_hero(unit)
+	if enemy == null:
+		unit.has_move_order = false
+		return
+	if unit.role in ["caster", "support", "skirmish"] and not unit.shaped():
+		var anchor := _biggest_friend(side)
+		if anchor == null:
+			return
+		var away := anchor.pos - enemy.pos
+		if away.length_squared() < 0.001:
+			away = Vector2.LEFT if side == 0 else Vector2.RIGHT
+		var desired := anchor.pos + away.normalized() * (anchor.depth() * 0.5 + 42.0)
+		if unit.pos.distance_to(enemy.pos) < 105.0:
+			desired = unit.pos + (unit.pos - enemy.pos).normalized() * 90.0
+		if unit.pos.distance_to(desired) > 12.0:
+			order_hero(side, desired)
+		return
+	if unit.role == "flanker":
+		var rear := enemy.pos - enemy.facing.normalized() * (enemy.depth() * 0.5 + unit.radius() + 16.0)
+		order_hero(side, rear if unit.pos.distance_to(rear) > 18.0 else enemy.pos)
+		return
+	order_hero(side, enemy.pos)
+
+
+func _biggest_friend(side: int) -> Regiment:
+	var best: Regiment = null
+	for r: Regiment in regiments:
+		if r.side == side and r.active() and (best == null or r.soldiers > best.soldiers):
+			best = r
+	return best
 
 
 func _biggest_enemy(side: int) -> Regiment:
@@ -1514,6 +1863,9 @@ func move_step(delta: float) -> void:
 	for r: Regiment in regiments:
 		if r.alive():
 			max_speed = maxf(max_speed, r.speed * (1.35 if r.routed else 1.0))
+	for unit in hero_units:
+		if unit != null and hero_active((unit as HeroRuntime).side):
+			max_speed = maxf(max_speed, (unit as HeroRuntime).speed())
 	var steps := clampi(int(ceil(max_speed * maxf(delta, 0.0) / MAX_MOVE_SUBSTEP)), 1, 128)
 	var sub_delta := delta / float(steps)
 	for _step in steps:
@@ -1595,7 +1947,95 @@ func _move_substep(delta: float) -> void:
 				if enemy2 != null:
 					var desired := (enemy2.pos - r.pos).normalized()
 					r.facing = r.facing.slerp(desired, minf(1.0, 1.8 * delta)).normalized()
+	_move_heroes(delta)
 	_separate()
+	_separate_heroes()
+
+
+func _move_heroes(delta: float) -> void:
+	for side in 2:
+		if not hero_active(side) or hero_units[side] == null:
+			continue
+		var unit: HeroRuntime = hero_units[side]
+		if not unit.has_move_order:
+			continue
+		var to := unit.move_target - unit.pos
+		if to.length() <= 2.0:
+			unit.pos = unit.move_target
+			unit.has_move_order = false
+			continue
+		var direction := to.normalized()
+		unit.facing = direction
+		unit.pos += direction * minf(to.length(), unit.speed() * delta)
+
+
+func _hero_regiment_overlap(unit: HeroRuntime, r: Regiment, gap: float) -> Dictionary:
+	var forward := r.facing.normalized()
+	if forward.length_squared() < 0.001:
+		forward = Vector2.RIGHT if r.side == 0 else Vector2.LEFT
+	var across := forward.rotated(PI * 0.5)
+	var local := unit.pos - r.pos
+	var lx := local.dot(across)
+	var ly := local.dot(forward)
+	var hx := r.frontage() * 0.5 + unit.radius() + gap
+	var hy := r.depth() * 0.5 + unit.radius() + gap
+	if absf(lx) >= hx or absf(ly) >= hy:
+		return {}
+	var pen_x := hx - absf(lx)
+	var pen_y := hy - absf(ly)
+	if pen_x < pen_y:
+		var sx := signf(lx)
+		if absf(sx) < 0.1:
+			sx = 1.0 if unit.side == 0 else -1.0
+		return {"normal": across * sx, "depth": pen_x}
+	var sy := signf(ly)
+	if absf(sy) < 0.1:
+		sy = -1.0 if unit.side == r.side else (1.0 if unit.side == 0 else -1.0)
+	return {"normal": forward * sy, "depth": pen_y}
+
+
+func _separate_heroes() -> void:
+	## Circle-vs-oriented-formation collision. Formations stay aggregate;
+	## only their center receives a small weighted correction from a heavy
+	## Rage/Wild Shape actor, avoiding per-soldier rigid bodies.
+	for side in 2:
+		if not hero_active(side) or hero_units[side] == null:
+			continue
+		var unit: HeroRuntime = hero_units[side]
+		unit.engaged_id = -1
+		for r: Regiment in regiments:
+			if not r.alive() or r.routed:
+				continue
+			var same_side := r.side == side
+			var overlap := _hero_regiment_overlap(unit, r, HERO_ALLY_GAP if same_side else HERO_CONTACT_GAP)
+			if overlap.is_empty():
+				continue
+			var normal: Vector2 = overlap["normal"]
+			var depth := float(overlap["depth"])
+			if same_side:
+				unit.pos += normal * depth
+			else:
+				var push_share := 0.02
+				if unit.raging() or unit.shaped():
+					var formation_mass := maxf(1.0, float(r.soldiers) * HERO_FORMATION_MASS_PER_SOLDIER)
+					push_share = clampf(unit.weight() / (unit.weight() + formation_mass), 0.04, 0.28)
+				r.pos -= normal * depth * push_share
+				unit.pos += normal * depth * (1.0 - push_share)
+				unit.engaged_id = r.id
+		unit.pos = unit.pos.clamp(Vector2(unit.radius(), unit.radius()), field - Vector2(unit.radius(), unit.radius()))
+	# Heroes are solid to one another as circles.
+	if hero_active(0) and hero_active(1) and hero_units[0] != null and hero_units[1] != null:
+		var a: HeroRuntime = hero_units[0]
+		var b: HeroRuntime = hero_units[1]
+		var delta := b.pos - a.pos
+		var distance := delta.length()
+		var minimum := a.radius() + b.radius() + HERO_CONTACT_GAP
+		if distance < minimum:
+			var normal := delta / distance if distance > 0.001 else Vector2.RIGHT
+			var overlap := minimum - distance
+			var total_weight := maxf(0.001, a.weight() + b.weight())
+			a.pos -= normal * overlap * (b.weight() / total_weight)
+			b.pos += normal * overlap * (a.weight() / total_weight)
 
 
 func _separate() -> void:
@@ -1633,9 +2073,11 @@ func ai_step(control_side_0: bool) -> void:
 	## Simple AI: unengaged regiments march at the nearest enemy.
 	## Side 0 is normally the player; pass true to automate both sides.
 	_ai_tactics(1)
+	_ai_hero_movement(1)
 	_ai_hero(1)
 	if control_side_0:
 		_ai_tactics(0)
+		_ai_hero_movement(0)
 		_ai_hero(0)
 	for r: Regiment in regiments:
 		if not r.active():
@@ -1841,8 +2283,63 @@ func combat_tick() -> void:
 			r.routed = true
 			event.emit("%s breaks and runs!" % r.label)
 			_cascade_panic(r)
+	_hero_melee_tick()
 	_hero_battle_tick()
 	_check_end()
+
+
+func _nearest_enemy_to_hero(unit: HeroRuntime) -> Regiment:
+	var best: Regiment = null
+	var best_gap := INF
+	for r: Regiment in regiments:
+		if r.side == unit.side or not r.active():
+			continue
+		var gap := _hero_regiment_surface_gap(unit, r)
+		if gap < best_gap:
+			best_gap = gap
+			best = r
+	return best
+
+
+func _hero_melee_tick() -> void:
+	## Single-entity heroes resolve deterministic melee against aggregate
+	## regiment HP. Enemy front ranks retaliate as one lightweight pressure
+	## value; there are still no soldier-level physics bodies or attack dice.
+	for side in 2:
+		if not hero_active(side) or hero_units[side] == null:
+			continue
+		var unit: HeroRuntime = hero_units[side]
+		var enemy_unit: HeroRuntime = hero_units[1 - side]
+		var enemy_hero_gap := INF
+		if hero_active(1 - side) and enemy_unit != null:
+			enemy_hero_gap = unit.pos.distance_to(enemy_unit.pos) - unit.radius() - enemy_unit.radius()
+		var target := _nearest_enemy_to_hero(unit)
+		var regiment_gap := _hero_regiment_surface_gap(unit, target) if target != null else INF
+		if enemy_hero_gap <= unit.reach and enemy_hero_gap <= regiment_gap:
+			unit.facing = (enemy_unit.pos - unit.pos).normalized()
+			if combat_ticks >= unit.next_attack_tick:
+				_hero_take_damage(1 - side, unit.melee_power(), true)
+				unit.next_attack_tick = combat_ticks + unit.attack_interval
+				unit.attack_phase = combat_ticks
+			continue
+		if target == null or regiment_gap > unit.reach:
+			if unit.engaged_id >= 0 and (target == null or target.id != unit.engaged_id):
+				unit.engaged_id = -1
+			continue
+		unit.engaged_id = target.id
+		var toward := target.pos - unit.pos
+		if toward.length_squared() > 0.001:
+			unit.facing = toward.normalized()
+		if combat_ticks >= unit.next_attack_tick:
+			_hero_damage(target, unit.melee_power(), 1.0 if unit.raging() else 0.35)
+			unit.next_attack_tick = combat_ticks + unit.attack_interval
+			unit.attack_phase = combat_ticks
+		# The contacted files answer the hero. This is intentionally bounded:
+		# heroes are vulnerable in a press without evaporating in one tick.
+		if target.active():
+			var answering := mini(target.files_now(), 8)
+			var pressure := float(target.ma) * 0.025 + float(target.ws) * 0.06 + float(answering) * 0.06
+			_hero_take_damage(side, clampf(pressure, 0.6, HERO_RETALIATION_CAP), true)
 
 
 func _fatigue_penalty(r: Regiment) -> float:

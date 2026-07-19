@@ -27,6 +27,9 @@ func _init() -> void:
 		0, 0, ["Aldmark", "Sarova"], [Color("3f5f83"), Color("8c4a3f")], "The Test Field")
 	view.sim.set_commander_info(0, {"name": "Aldric Vaelmark", "martial": 14, "intrigue": 8,
 		"prowess": 10, "traits": ["Oath-Sworn"], "oath_intact": true, "faith": "Aelindran Orthodox"})
+	view.sim.set_hero(0, {"id": 77, "name": "Aldric Vaelmark", "class": "fighter", "subclass": "champion",
+		"level": 5, "combat_level": 5, "legendary": false, "hp": 82, "hp_max": 82,
+		"traits": ["Oath-Sworn"], "oath_intact": true})
 	var lay: Dictionary = view._card_layout()
 	assert(bool(lay["has_commander"]), "commander info set -> hero card present")
 	var cards: Array = lay["cards"]
@@ -67,6 +70,23 @@ func _init() -> void:
 	assert(not view._card_click(Vector2(20, 20), MOUSE_BUTTON_LEFT, true),
 		"clicks outside the bar fall through to the field")
 	print("click routing: cards select, hero card selects the commander, bar consumes strays")
+	view._ensure_hero_actors()
+	assert(view.hero_actors[0] is HeroActor2D, "the battlefield owns an independent HeroActor2D visual")
+	var hero_click := InputEventMouseButton.new()
+	hero_click.button_index = MOUSE_BUTTON_LEFT
+	hero_click.pressed = true
+	hero_click.position = view._to_screen(view.sim.hero_pos(0))
+	view._gui_input(hero_click)
+	assert(view.commander_selected and view.selected_id == -1, "clicking the field actor selects the hero card")
+	var hero_start := view.sim.hero_pos(0)
+	var hero_order := InputEventMouseButton.new()
+	hero_order.button_index = MOUSE_BUTTON_RIGHT
+	hero_order.pressed = true
+	hero_order.position = view._to_screen(hero_start + Vector2(80.0, 30.0))
+	view._gui_input(hero_order)
+	assert((view.sim.hero_units[0] as BattleSim.HeroRuntime).has_move_order,
+		"right-click gives the selected hero an independent move order")
+	print("hero actor: field selection and right-click movement route to HeroRuntime")
 
 	# --- 4. the number band's fuel: counts and ammunition ---
 	var archer := _find(view.sim, "archer")
