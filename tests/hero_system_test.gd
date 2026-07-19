@@ -30,13 +30,13 @@ func _init() -> void:
 		"frail wizards, hearty warriors, 40 baseline (doc §3)")
 	assert(HeroDB.hp_max("wizard", 10) == 102 and HeroDB.hp_max("cleric", 10) == 112,
 		"+8 HP per level: the doc's 112 at the 40-baseline")
-	# the SRD 5.1 rule: EXACTLY the eleven classes — no invented ones
-	assert(HeroDB.CLASSES.size() == 11, "eleven classes, exactly (SRD 5.1), got %d" % HeroDB.CLASSES.size())
+	# Twelve familiar class chassis, compressed to the campaign's 1-10 scale.
+	assert(HeroDB.CLASSES.size() == 12, "twelve class chassis, got %d" % HeroDB.CLASSES.size())
 	for gone in ["scholar", "diplomat", "merchant", "bureaucrat", "noble", "gravewarden", "ward_speaker"]:
 		assert(not HeroDB.has_class(gone), "'%s' is an office or a subclass, never a class" % gone)
-	for cid in ["wizard", "sorcerer", "cleric", "paladin", "druid", "warlock", "bard", "monk",
+	for cid in ["barbarian", "wizard", "sorcerer", "cleric", "paladin", "druid", "warlock", "bard", "monk",
 			"fighter", "ranger", "rogue"]:
-		assert(HeroDB.has_class(cid), "the eleven progression classes exist: %s" % cid)
+		assert(HeroDB.has_class(cid), "the twelve progression classes exist: %s" % cid)
 		assert(HeroDB.growth(cid).size() == 2, "%s grows two stats per level" % cid)
 		assert(HeroDB.default_subclass(cid) != "", "%s has its SRD subclass" % cid)
 	# subclasses: the SRD ships one per class; Khessar's traditions fill the shelf
@@ -47,9 +47,9 @@ func _init() -> void:
 			"carried_names", "brushgate", "clan_sworn", "watchful"]:
 		assert(HeroDB.has_subclass(khessari) and not bool(HeroDB.SUBCLASSES[khessari].get("srd", false)),
 			"the Khessari tradition %s exists beside the SRD's" % khessari)
-	# distinct progressions: no two of the eleven share both growth stats AND grants
+	# distinct progressions: no two classes share both growth stats AND grants
 	var shapes := {}
-	for cid in ["wizard", "cleric", "paladin", "druid", "warlock", "bard", "monk",
+	for cid in ["barbarian", "wizard", "cleric", "paladin", "druid", "warlock", "bard", "monk",
 			"fighter", "ranger", "rogue"]:
 		var shape := str(HeroDB.growth(cid)) + str(HeroDB.GRANTS.get(cid, {}).keys())
 		assert(not shapes.has(shape), "%s duplicates another class's progression shape" % cid)
@@ -61,6 +61,8 @@ func _init() -> void:
 		"level 4 keeps Lightning Bolt and Counterspell")
 	assert(not HeroDB.battle_actives("wizard", 5).has("detect_magic"), "utilities are not field orders")
 	assert(HeroDB.battle_passives("paladin", 5).has("aura_of_protection"), "the paladin aura is a passive")
+	assert(HeroDB.battle_actives("barbarian", 1).has("rage"), "barbarians enter the field with Rage")
+	assert(HeroDB.battle_actives("druid", 2).has("wild_shape"), "compressed level 2 unlocks Wild Shape")
 	# exclusive traditions stand apart from their class table
 	assert(HeroDB.abilities_at("wizard", 9, "unfinished") == ["observe", "redirect", "settling_touch"],
 		"the School of the Unfinished never learned a fireball")
@@ -71,7 +73,7 @@ func _init() -> void:
 		"the School of the Archive fights with correspondence")
 	assert(HeroDB.practice_for("wizard", "unfinished") == "" and HeroDB.practice_for("wizard") == "arcane",
 		"threshold anchor-work walks an older theology than the academy")
-	print("HeroDB: eleven SRD classes, Khessari subclasses beside the SRD's, Fireball at five")
+	print("HeroDB: twelve compressed class chassis, Khessari subclasses, spatial spells at five")
 
 	# --- 2. canonical instantiation at Year Zero (doc §8) ---
 	var world := SimWorld.new()
@@ -316,6 +318,8 @@ func _init() -> void:
 		[{"kind": "sword", "soldiers": 36}], [{"kind": "levy", "soldiers": 48}],
 		0, 0, ["Home", "Foe"], [], [], "plains", {})
 	var drev := _find_hero(world, "Drev Karn-Vol")
+	assert(drev != null and drev.hero_class == "barbarian" and drev.hero_subclass == "berserker",
+		"Drev Karn-Vol makes the Rage chassis available to the current campaign")
 	sim8.set_hero(0, world.hero_info(drev.id))
 	sim8.hero_state[0] = "stable"
 	sim8.ended = true

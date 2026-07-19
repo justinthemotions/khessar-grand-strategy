@@ -24,6 +24,7 @@ const HORSE := Color("5f4630")
 const GOLD := Color("d9c07a")
 const HP_COLOR := Color("4f9e3c")
 const MORALE_COLOR := Color("d9b13a")
+const Appearance = preload("res://scripts/portrait_appearance.gd")
 
 # The card bar (TW-style unit cards along the bottom edge)
 const AMMO_COLOR := Color("d97b2f")
@@ -68,6 +69,7 @@ var ammo_start: Dictionary = {}       # regiment id -> starting ammunition (the 
 # Hero System v1.0: the hero's spell bar and targeted casting
 var hero_bar: HBoxContainer = null    # built lazily once sim.heroes[0] is set
 var hero_buttons: Dictionary = {}     # ability id -> Button
+var hero_actors: Array = [null, null] # independent HeroActor2D visual adapters
 var pending_ability := ""             # a working awaiting its target on the field
 var spell_fx: Array = []              # consumed sim.casts, animated locally
 var camera_center := Vector2.ZERO
@@ -219,7 +221,7 @@ func _hero_button_pressed(aid: String) -> void:
 		pending_ability = ""  # pressing again puts the working down
 		return
 	var kind := str(HeroDB.info(aid).get("kind", ""))
-	if kind in ["dispel", "hero_strike"]:
+	if kind in ["dispel", "hero_strike", "hero_state"]:
 		var _e := sim.use_hero_ability(0, aid, sim.hero_pos(0))
 		pending_ability = ""
 	else:
@@ -241,6 +243,17 @@ func _refresh_hero_buttons() -> void:
 		b.tooltip_text = str(info.get("desc", "")) + ("" if gate == "" else "\n" + gate)
 
 
+func _ensure_hero_actors() -> void:
+	for side in 2:
+		if sim.hero_units[side] == null or hero_actors[side] != null:
+			continue
+		var actor := HeroActor2D.new()
+		actor.configure(sim, side, side_colors[side])
+		add_child(actor)
+		move_child(actor, 0) # battlefield actor below the HUD controls
+		hero_actors[side] = actor
+
+
 func _process(delta: float) -> void:
 	if not over and speed_scale > 0.0:
 		var scaled := delta * speed_scale
@@ -258,8 +271,9 @@ func _process(delta: float) -> void:
 		sim.volleys.clear()
 		# consume the heroes' workings the same way
 		for cst in sim.casts:
-			spell_fx.append({"pos": cst["pos"], "radius": cst["radius"],
-				"color": cst["color"], "age": 0.0})
+			var fresh: Dictionary = cst.duplicate()
+			fresh["age"] = 0.0
+			spell_fx.append(fresh)
 		sim.casts.clear()
 		var fx_kept: Array = []
 		for fx in spell_fx:
@@ -281,6 +295,10 @@ func _process(delta: float) -> void:
 				fallen_kept.append(fallen)
 		fallen_soldiers = fallen_kept
 	_update_camera(delta)
+	_ensure_hero_actors()
+	for side in 2:
+		if hero_actors[side] != null:
+			(hero_actors[side] as HeroActor2D).sync_from_view(self, commander_selected and side == 0)
 	_refresh_unit_panel()
 	_refresh_tactic_buttons()
 	_refresh_hero_buttons()
@@ -329,11 +347,18 @@ func _gui_input(event: InputEvent) -> void:
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			selected_id = -1
 			commander_selected = false
+			if sim.hero_active(0) and _to_screen(sim.hero_pos(0)).distance_to(event.position) \
+					<= maxf(sim.hero_radius(0) * _scale() + 8.0, 22.0):
+				commander_selected = true
+				return
 			for r: BattleSim.Regiment in sim.regiments:
 				if r.alive() and _to_screen(r.pos).distance_to(event.position) < maxf(r.radius() * _scale(), 26.0):
 					selected_id = r.id
 					break
 		elif event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+			if commander_selected and sim.hero_active(0):
+				sim.order_hero(0, _to_field(event.position))
+				return
 			if selected_id >= 0:
 				var r: BattleSim.Regiment = sim.regiments[selected_id]
 				if r.side == 0 and r.active():
@@ -507,6 +532,16 @@ func _sync_visual_casualties() -> void:
 		fallen_soldiers.pop_front()
 
 
+func _cone_screen_points(origin: Vector2, direction: Vector2, length: float,
+		half_angle: float, segments: int = 16) -> PackedVector2Array:
+	var points := PackedVector2Array([_to_screen(origin)])
+	var base_angle := direction.angle()
+	for i in range(segments + 1):
+		var angle := base_angle - half_angle + (half_angle * 2.0) * float(i) / float(segments)
+		points.append(_to_screen(origin + Vector2.from_angle(angle) * length))
+	return points
+
+
 # ---------------------------------------------------------------- drawing
 
 func _draw() -> void:
@@ -563,16 +598,31 @@ func _draw() -> void:
 	# the heroes' workings flare and fade where they landed
 	for fx in spell_fx:
 		var age: float = float(fx["age"]) / 0.7
-		var fp := _to_screen(fx["pos"])
-		var fr := float(fx["radius"]) * _scale() * (0.4 + 0.6 * age)
 		var col := Color(0.95, 0.55, 0.15)
 		match str(fx["color"]):
 			"gold": col = Color(0.85, 0.75, 0.35)
 			"bolt": col = Color(0.55, 0.75, 0.95)
 			"dread": col = Color(0.55, 0.30, 0.65)
+			"cold": col = Color(0.62, 0.88, 1.0)
+			"primal": col = Color(0.35, 0.72, 0.32)
+			"rage": col = Color(0.95, 0.22, 0.10)
 		col.a = (1.0 - age) * 0.8
-		draw_arc(fp, fr, 0.0, TAU, 40, col, 3.0 * (1.0 - age) + 1.0)
-		draw_circle(fp, fr * 0.25 * (1.0 - age), Color(col, col.a * 0.5))
+		match str(fx.get("shape", "circle")):
+			"line":
+				var line_from := _to_screen(Vector2(fx["origin"]))
+				var line_to := _to_screen(Vector2(fx["origin"]) + Vector2(fx["dir"]) * float(fx["length"]))
+				draw_line(line_from, line_to, col, maxf(2.0, float(fx.get("width", 18.0)) * _scale() * (1.0 - age * 0.55)))
+				draw_line(line_from, line_to, Color(0.9, 0.95, 1.0, col.a), 1.2)
+			"cone":
+				var points := _cone_screen_points(Vector2(fx["origin"]), Vector2(fx["dir"]),
+					float(fx["length"]) * (0.55 + age * 0.45), float(fx["angle"]) * 0.5)
+				draw_colored_polygon(points, Color(col, col.a * 0.30))
+				draw_polyline(points, col, 2.0)
+			_:
+				var fp := _to_screen(Vector2(fx["pos"]))
+				var fr := float(fx["radius"]) * _scale() * (0.4 + 0.6 * age)
+				draw_arc(fp, fr, 0.0, TAU, 40, col, 3.0 * (1.0 - age) + 1.0)
+				draw_circle(fp, fr * 0.25 * (1.0 - age), Color(col, col.a * 0.5))
 
 	for r: BattleSim.Regiment in order:
 		_draw_banner(r)
@@ -590,8 +640,28 @@ func _draw() -> void:
 	# a working awaiting its target: the reach previewed under the cursor
 	if pending_ability != "":
 		var pinfo: Dictionary = HeroDB.info(pending_ability)
-		var preview := float(pinfo.get("radius", pinfo.get("length", 30.0))) * _scale()
-		draw_arc(mouse_now, preview, 0.0, TAU, 40, Color(0.95, 0.65, 0.25, 0.85), 2.0)
+		var preview_color := Color(0.95, 0.65, 0.25, 0.85)
+		var kind := str(pinfo.get("kind", ""))
+		if kind == "line":
+			var origin_screen := _to_screen(sim.hero_pos(0))
+			var toward := mouse_now - origin_screen
+			if toward.length_squared() < 1.0:
+				toward = Vector2.RIGHT
+			var endpoint := origin_screen + toward.normalized() * float(pinfo.get("length", 240.0)) * _scale()
+			draw_line(origin_screen, endpoint, Color(preview_color, 0.20), float(pinfo.get("width", 18.0)) * _scale())
+			draw_line(origin_screen, endpoint, preview_color, 2.0)
+		elif kind == "cone":
+			var origin := sim.hero_pos(0)
+			var direction := _to_field(mouse_now) - origin
+			if direction.length_squared() < 1.0:
+				direction = Vector2.RIGHT
+			var cone_points := _cone_screen_points(origin, direction.normalized(), float(pinfo.get("length", 150.0)),
+				deg_to_rad(float(pinfo.get("angle", 60.0)) * 0.5))
+			draw_colored_polygon(cone_points, Color(preview_color, 0.16))
+			draw_polyline(cone_points, preview_color, 2.0)
+		else:
+			var preview := float(pinfo.get("radius", 20.0)) * _scale()
+			draw_arc(mouse_now, preview, 0.0, TAU, 40, preview_color, 2.0)
 		draw_arc(mouse_now, 4.0, 0.0, TAU, 12, Color(0.95, 0.65, 0.25, 0.85), 2.0)
 		var pfont := get_theme_default_font()
 		draw_string(pfont, mouse_now + Vector2(12, -10), str(pinfo.get("label", pending_ability)),
@@ -1075,9 +1145,12 @@ func _draw_commander_card(rect: Rect2) -> void:
 	draw_rect(portrait, (side_colors[0] as Color).darkened(0.5))
 	var base := Vector2(portrait.get_center().x, portrait.end.y - 7.0)
 	var ps := minf(3.4, portrait.size.y / 17.0)
-	_draw_soldier(base, "sword", side_colors[0], ps)
-	# the plume marks him out among his own
-	draw_line(base + Vector2(0.0, -9.0) * ps, base + Vector2(-3.0, -13.0) * ps, GOLD, 2.5)
+	if is_hero:
+		_draw_hero_card_portrait(base, ps, sim.heroes[0])
+	else:
+		_draw_soldier(base, "sword", side_colors[0], ps)
+		# the plume marks an ordinary commander out among his own
+		draw_line(base + Vector2(0.0, -9.0) * ps, base + Vector2(-3.0, -13.0) * ps, GOLD, 2.5)
 	# a fallen hero shades his own card, exactly like a fallen line
 	if is_hero and str(sim.hero_state[0]) in ["unconscious", "stable", "dead"]:
 		draw_rect(rect, Color(0.05, 0.04, 0.03, 0.68))
@@ -1090,6 +1163,118 @@ func _draw_commander_card(rect: Rect2) -> void:
 		draw_rect(rect, GOLD, false, 2.0)
 	else:
 		draw_rect(rect, GOLD.darkened(0.35), false, 1.0)
+
+
+func _draw_hero_card_portrait(base: Vector2, s: float, hero: Dictionary) -> void:
+	var raw = hero.get("appearance", {})
+	var profile: Dictionary = raw if raw is Dictionary else {}
+	var skin := Appearance.profile_color(profile, "skin_color", SKIN)
+	var hair := Appearance.profile_color(profile, "hair_color", Color("4f321c"))
+	var eyes := Appearance.profile_color(profile, "eye_color", Color("526f82"))
+	var style := clampi(int(profile.get("hair_style", 0)), 0, 3)
+	var female := bool(profile.get("is_female", false))
+	var beard := clampf(float(profile.get("beard", 0.0)), 0.0, 1.0)
+	var face_width := lerpf(1.82, 2.25, clampf(float(profile.get("face_width", 0.5)), 0.0, 1.0))
+	var role := str(hero.get("class", "fighter"))
+	var cloth: Color = side_colors[0]
+
+	_draw_pixel_shadow(base + Vector2(0, 2.0) * s, 8.5, 2.5, s)
+	draw_line(base + Vector2(-1.4, -0.4) * s, base + Vector2(-2.5, 3.8) * s,
+		Color("1a1511"), maxf(1.0, s * 0.85))
+	draw_line(base + Vector2(1.2, -0.4) * s, base + Vector2(2.1, 3.8) * s,
+		Color("1a1511"), maxf(1.0, s * 0.85))
+	draw_colored_polygon(PackedVector2Array([
+		base + Vector2(-3.5, -7.0) * s, base + Vector2(3.0, -7.1) * s,
+		base + Vector2(3.7, -1.0) * s, base + Vector2(1.5, 0.7) * s,
+		base + Vector2(-1.6, 0.7) * s, base + Vector2(-3.9, -1.0) * s,
+	]), cloth.darkened(0.08))
+	draw_rect(Rect2(base + Vector2(-2.2, -6.2) * s, Vector2(4.4, 4.3) * s), cloth.lightened(0.10))
+	draw_line(base + Vector2(-3.0, -5.2) * s, base + Vector2(-4.8, -2.1) * s,
+		skin.darkened(0.10), maxf(1.0, s * 0.78))
+	draw_line(base + Vector2(3.0, -5.2) * s, base + Vector2(4.8, -2.0) * s,
+		skin.darkened(0.10), maxf(1.0, s * 0.78))
+
+	var head := base + Vector2(0.0, -9.2) * s
+	var fw := face_width * s
+	var fh := 2.15 * s
+	if (female and style != 1) or style == 2:
+		draw_colored_polygon(PackedVector2Array([
+			head + Vector2(-fw * 0.95, -fh * 0.65), head + Vector2(fw * 0.78, -fh * 0.72),
+			head + Vector2(fw * 0.94, fh * 1.45), head + Vector2(fw * 0.28, fh * 2.05),
+			head + Vector2(-fw * 0.78, fh * 1.72), head + Vector2(-fw * 1.04, fh * 0.10),
+		]), hair.darkened(0.14))
+	if bool(profile.get("has_horns", false)):
+		var horn := hair.darkened(0.35).lerp(Color("493d38"), 0.45)
+		draw_colored_polygon(PackedVector2Array([
+			head + Vector2(-fw * 0.62, -fh * 0.72), head + Vector2(-fw * 1.12, -fh * 2.10),
+			head + Vector2(-fw * 0.05, -fh * 1.05),
+		]), horn)
+		draw_colored_polygon(PackedVector2Array([
+			head + Vector2(fw * 0.20, -fh * 0.96), head + Vector2(fw * 0.52, -fh * 2.00),
+			head + Vector2(fw * 0.82, -fh * 0.70),
+		]), horn.lightened(0.05))
+	var ear_kind := str(profile.get("ear_kind", "round"))
+	if ear_kind == "pointed":
+		draw_colored_polygon(PackedVector2Array([
+			head + Vector2(-fw * 0.82, -fh * 0.22), head + Vector2(-fw * 1.65, -fh * 0.36),
+			head + Vector2(-fw * 0.84, fh * 0.35),
+		]), skin.darkened(0.06))
+	elif ear_kind == "broad":
+		draw_circle(head + Vector2(-fw * 1.02, 0.0), fh * 0.52, skin.darkened(0.06))
+
+	# Asymmetric eight-point head: a tiny three-quarter version of FaceView.
+	draw_colored_polygon(PackedVector2Array([
+		head + Vector2(-fw * 0.72, -fh * 0.86), head + Vector2(-fw * 0.10, -fh * 1.05),
+		head + Vector2(fw * 0.52, -fh * 0.90), head + Vector2(fw * 0.94, -fh * 0.36),
+		head + Vector2(fw * 0.92, fh * 0.22), head + Vector2(fw * 0.54, fh * 0.88),
+		head + Vector2(fw * 0.06, fh * 1.08), head + Vector2(-fw * 0.68, fh * 0.74),
+		head + Vector2(-fw * 0.94, fh * 0.08), head + Vector2(-fw * 0.91, -fh * 0.48),
+	]), skin)
+	draw_colored_polygon(PackedVector2Array([
+		head + Vector2(fw * 0.10, -fh * 0.92), head + Vector2(fw * 0.55, -fh * 0.82),
+		head + Vector2(fw * 0.91, -fh * 0.30), head + Vector2(fw * 0.88, fh * 0.28),
+		head + Vector2(fw * 0.45, fh * 0.80), head + Vector2(fw * 0.04, fh * 0.72),
+	]), Color(skin.darkened(0.21), 0.30))
+	draw_circle(head + Vector2(fw * 0.42, -fh * 0.22), maxf(1.0, s * 0.42), eyes)
+	draw_circle(head + Vector2(fw * 0.45, -fh * 0.21), maxf(0.5, s * 0.16), Color("17130f"))
+	draw_circle(head + Vector2(-fw * 0.28, -fh * 0.27), maxf(0.75, s * 0.31), eyes.darkened(0.08))
+	draw_line(head + Vector2(fw * 0.18, -fh * 0.05), head + Vector2(fw * 0.82, fh * 0.20),
+		skin.darkened(0.24), maxf(0.7, s * 0.28))
+	if bool(profile.get("has_tusks", false)):
+		draw_line(head + Vector2(fw * 0.38, fh * 0.55), head + Vector2(fw * 0.52, fh * 0.88),
+			Color("ead9b3"), maxf(0.8, s * 0.30))
+
+	match style:
+		0, 2:
+			draw_colored_polygon(PackedVector2Array([
+				head + Vector2(-fw * 0.92, -fh * 0.42), head + Vector2(-fw * 0.60, -fh * 0.94),
+				head + Vector2(-fw * 0.04, -fh * 1.16), head + Vector2(fw * 0.72, -fh * 0.86),
+				head + Vector2(fw * 0.22, -fh * 0.66), head + Vector2(-fw * 0.24, -fh * 0.72),
+			]), hair)
+		1:
+			draw_arc(head + Vector2(0, -fh * 0.10), fw, PI, TAU, 10, hair.darkened(0.08), maxf(1.0, s * 0.70))
+		3:
+			for i in 5:
+				var t := float(i) / 4.0
+				draw_circle(head + Vector2(lerpf(-fw * 0.72, fw * 0.62, t),
+					-fh * (0.82 + sin(t * PI) * 0.24)), maxf(1.0, s * 0.43), hair)
+	if not female and beard > 0.45 and int(profile.get("age", 30)) >= 16:
+		var drop := fh * lerpf(0.18, 0.78, (beard - 0.45) / 0.55)
+		draw_colored_polygon(PackedVector2Array([
+			head + Vector2(-fw * 0.56, fh * 0.50), head + Vector2(-fw * 0.32, fh * 0.90),
+			head + Vector2(fw * 0.04, fh + drop), head + Vector2(fw * 0.52, fh * 0.76),
+			head + Vector2(fw * 0.44, fh * 0.49), head + Vector2(fw * 0.04, fh * 0.63),
+		]), hair.darkened(0.08))
+
+	# Equipment remains class-readable around the personal portrait.
+	if role in ["wizard", "sorcerer", "cleric", "druid", "warlock", "bard"]:
+		draw_line(base + Vector2(4.8, 2.0) * s, base + Vector2(6.0, -13.0) * s,
+			Color("765b35"), maxf(1.0, s * 0.55))
+		draw_circle(base + Vector2(6.0, -13.0) * s, maxf(1.0, s * 0.60), GOLD)
+	else:
+		draw_line(base + Vector2(4.4, -2.0) * s, base + Vector2(8.8, -10.0) * s,
+			Color("c7c8c3"), maxf(1.0, s * 0.62))
+	draw_line(head + Vector2(0, -fh * 0.86), head + Vector2(-fw * 1.25, -fh * 2.15), GOLD, maxf(1.0, s * 0.55))
 
 
 func _draw_skull(c: Vector2, s: float) -> void:
@@ -1155,6 +1340,13 @@ func _refresh_unit_panel() -> void:
 			if str(h.get("subclass", "")) != "":
 				lines += "\n%s" % HeroDB.sub_label(str(h.get("subclass", "")))
 			lines += "\nPersonal HP: %d / %d" % [int(sim.hero_hp[0]), int(h.get("hp_max", 40))]
+			if sim.hero_units[0] != null:
+				var actor: BattleSim.HeroRuntime = sim.hero_units[0]
+				lines += "\nField role: %s · Weight %.1f" % [actor.role.capitalize(), actor.weight()]
+				if actor.raging():
+					lines += "\nRAGING — physical damage halved"
+				if actor.shaped():
+					lines += "\nWILD SHAPE: %d / %d temporary HP" % [int(actor.wild_shape_hp), int(actor.wild_shape_hp_max)]
 			match str(sim.hero_state[0]):
 				"unconscious":
 					lines += "\nDOWN — rolling death saves"

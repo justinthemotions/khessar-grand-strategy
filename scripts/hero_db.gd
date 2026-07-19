@@ -1,6 +1,6 @@
 class_name HeroDB
 
-## The Hero System v1.0 (Opus doc, 2026-07-08): the static tables.
+## The Hero System v1.2: streamlined grand-strategy hero data.
 ##
 ## Heroes are distinguished individuals — practitioners whose personal
 ## actions meaningfully affect battles and campaigns. They amplify their
@@ -13,8 +13,9 @@ class_name HeroDB
 ## Doc fidelity notes:
 ##  - Fireball unlocks at LEVEL 5, per the doc's "(per your instinct)"
 ##    ruling — level 4 keeps Lightning Bolt / Ice Storm / Counterspell.
-##  - Khessar follows the SRD 5.1: EXACTLY the eleven progression
-##    classes, and classes belong to hero-tier (PC-chassis) characters
+##  - The grand-strategy game uses twelve recognizable progression
+##    classes on a compressed 1-10 scale. Classes belong to hero-tier
+##    characters; this is not a duplicate tabletop character sheet.
 ##    only. Everyone else is an ordinary soul identified by court
 ##    position (world.position_of) — spymaster, envoy, lord, courtier,
 ##    commoner — with no class, no level, no personal HP pool. Not
@@ -69,7 +70,8 @@ const XP_AWARDS := {
 # per level. practice: which binary casting gate the class's workings
 # roll (battle_sim.casting_reliability); "" = the craft never gates.
 const CLASSES := {
-	# --- the eleven, exactly as the SRD gives them (doc §4) ---
+	"barbarian":   {"label": "Barbarian",   "base_hp": 55, "growth": ["prw", "mar"], "practice": ""},
+	# --- the twelve familiar class chassis ---
 	"wizard":      {"label": "Wizard",      "base_hp": 30, "growth": ["lrn", "int"], "practice": "arcane"},
 	"sorcerer":    {"label": "Sorcerer",    "base_hp": 30, "growth": ["dip", "lrn"], "practice": "arcane",
 		"unreliable": 0.8, "cast_corruption": 0.5},   # doc §4.2: 20% less reliable, corruption per casting
@@ -97,6 +99,9 @@ const CLASSES := {
 #   mods:     {pow_mult, heal_mult, rally_mult, vs_silence_mult,
 #              song_cap, hero_strike_mult, aura: {...}} — battle tuning
 const SUBCLASSES := {
+	# --- Barbarian ---
+	"berserker":     {"class": "barbarian", "label": "Path of the Berserker", "srd": true,
+		"desc": "Momentum, endurance, and violence translated into a single battlefield state."},
 	# --- Wizard ---
 	"evocation":     {"class": "wizard", "label": "School of Evocation", "srd": true,
 		"mods": {"pow_mult": 1.10}, "desc": "The academy's answer to most questions: more fire."},
@@ -173,7 +178,8 @@ const SUBCLASSES := {
 #
 # kind vocabulary (consumed by battle_sim.use_hero_ability):
 #   aoe        {radius, pow, shock}         damage every enemy line in the circle
-#   line       {length, pow}                damage along a bolt from the hero's host
+#   cone       {length, angle, pow}         directional sector from the hero
+#   line       {length, width, pow}         directional corridor from the hero
 #   multi      {count, range, pow}          strike the N nearest enemy lines
 #   single     {pow, shock, vs_silence}     one enemy line takes it whole
 #   zone       {radius, dpt, dur}           a persistent working on the ground
@@ -182,6 +188,8 @@ const SUBCLASSES := {
 #   rally      {radius, amount}             lift shock from friendly lines
 #   shockwave  {radius, amount}             drive shock into enemy lines
 #   heal       {amount} / heal_area {radius, amount}
+#   hero_state {dur, ...}                   temporary Rage / Wild Shape state
+#   sneak      {pow, range}                 geometry-gated melee burst
 #   hero_strike {pow}                       hero-hunting: damage the enemy hero
 #   dispel     {}                           clear enemy zones and friendly afflictions
 #   aura       passive: {radius, lead, md, ma, terror_block, missile_block}
@@ -192,6 +200,10 @@ const SUBCLASSES := {
 # song_scaled: amounts scale ×(1 + names_carried/200), capped ×2 (the
 # same law as the commander-scale song aura).
 const ABILITIES := {
+	# --- Barbarian ---
+	"rage":            {"label": "Rage", "kind": "hero_state", "state": "rage", "target": "none",
+		"dur": 24, "cd": 40, "uses": 2,
+		"desc": "Become heavier in collisions, halve physical damage, and strike with greater force for 12 seconds."},
 	# --- Wizard (doc §4.1) ---
 	"flame_hands":     {"label": "Flame Hands",     "kind": "aoe", "target": "point", "radius": 45.0, "pow": 25.0, "shock": 4.0, "cd": 16, "uses": 3, "desc": "A short cone of fire — local damage."},
 	"detect_magic":    {"label": "Detect Magic",    "kind": "utility", "desc": "The formulas nearby declare themselves."},
@@ -202,12 +214,12 @@ const ABILITIES := {
 	"scorching_ray":   {"label": "Scorching Ray",   "kind": "multi", "target": "point", "count": 3, "range": 260.0, "pow": 16.0, "cd": 18, "uses": 3, "desc": "Three rays, three lines struck."},
 	"web_working":     {"label": "Web",             "kind": "timed", "target": "enemy", "dur": 20, "speed_mult": 0.35, "md": -4.0, "cd": 24, "uses": 2, "desc": "The ground itself holds them."},
 	"invisibility":    {"label": "Invisibility",    "kind": "utility", "desc": "Personal utility; the field does not see it."},
-	"lightning_bolt":  {"label": "Lightning Bolt",  "kind": "line", "target": "point", "length": 240.0, "pow": 40.0, "cd": 22, "uses": 2, "desc": "A line of ruin from the hero's hand."},
+	"lightning_bolt":  {"label": "Lightning Bolt",  "kind": "line", "shape": "line", "target": "point", "length": 240.0, "width": 18.0, "pow": 40.0, "cd": 22, "uses": 2, "desc": "A narrow piercing corridor of ruin from the hero's hand."},
 	"ice_storm":       {"label": "Ice Storm",       "kind": "aoe", "target": "point", "radius": 60.0, "pow": 28.0, "shock": 6.0, "slow_dur": 10, "slow_mult": 0.6, "cd": 24, "uses": 2, "desc": "Hail and cold; the advance stumbles."},
 	"counterspell":    {"label": "Counterspell",    "kind": "counterspell", "uses": 1, "desc": "The enemy's working dies mid-air. Once."},
-	"fireball":        {"label": "Fireball",        "kind": "aoe", "target": "point", "radius": 70.0, "pow": 85.0, "shock": 15.0, "cd": 30, "uses": 2, "desc": "The level-five spell. A formed regiment is not formed afterward."},
+	"fireball":        {"label": "Fireball",        "kind": "aoe", "shape": "circle", "target": "point", "radius": 70.0, "pow": 85.0, "shock": 15.0, "cd": 30, "uses": 2, "desc": "A circular blast. A formed regiment is not formed afterward."},
 	"wall_of_fire":    {"label": "Wall of Fire",    "kind": "zone", "target": "point", "radius": 55.0, "dpt": 6.0, "dur": 24, "cd": 30, "uses": 1, "desc": "A persistent burning ground."},
-	"cone_of_cold":    {"label": "Cone of Cold",    "kind": "aoe", "target": "point", "radius": 65.0, "pow": 60.0, "shock": 8.0, "slow_dur": 8, "slow_mult": 0.7, "cd": 28, "uses": 1, "desc": "A killing frost across the line."},
+	"cone_of_cold":    {"label": "Cone of Cold",    "kind": "cone", "shape": "cone", "target": "point", "length": 150.0, "angle": 60.0, "pow": 60.0, "shock": 8.0, "slow_dur": 8, "slow_mult": 0.7, "cd": 28, "uses": 1, "desc": "A sixty-degree killing frost projected from the hero."},
 	"cloudkill":       {"label": "Cloudkill",       "kind": "zone", "target": "point", "radius": 50.0, "dpt": 7.0, "dur": 20, "cd": 30, "uses": 1, "desc": "A necrotic fog that holds its ground."},
 	"chain_lightning": {"label": "Chain Lightning", "kind": "multi", "target": "point", "count": 5, "range": 300.0, "pow": 30.0, "cd": 30, "uses": 1, "desc": "It arcs until it runs out of lines to find."},
 	"bigbys_hand":     {"label": "Bigby's Hand",    "kind": "zone", "target": "point", "radius": 45.0, "dpt": 5.0, "dur": 20, "cd": 28, "uses": 1, "desc": "A persistent presence on the field."},
@@ -254,6 +266,9 @@ const ABILITIES := {
 
 	# --- Druid (doc §4.5) ---
 	"entangle":        {"label": "Entangle",        "kind": "timed", "target": "enemy", "dur": 16, "speed_mult": 0.4, "cd": 18, "uses": 3, "desc": "The ground grows hands."},
+	"wild_shape":      {"label": "Wild Shape",      "kind": "hero_state", "state": "wild_shape", "target": "none",
+		"dur": 48, "cd": 52, "uses": 2, "temp_hp": 34.0,
+		"desc": "Assume a war-beast form with a larger footprint, temporary HP, speed, and melee pressure."},
 	"cure_wounds_druid": {"label": "Cure Wounds",   "kind": "heal", "target": "friend", "amount": 50.0, "cd": 18, "uses": 2, "desc": "Green mending."},
 	"speak_with_animals": {"label": "Speak with Animals", "kind": "utility", "desc": "The field has more scouts than it appears."},
 	"barkskin":        {"label": "Barkskin",        "kind": "timed", "target": "friend", "dur": 20, "dmg_mult": 0.75, "cd": 22, "uses": 2, "desc": "One line weathers like old oak."},
@@ -300,7 +315,7 @@ const ABILITIES := {
 	"volley":          {"label": "Volley",          "kind": "aoe", "target": "point", "radius": 65.0, "pow": 45.0, "shock": 5.0, "cd": 26, "uses": 2, "desc": "Everything airborne at once."},
 
 	# --- Rogue (doc §4.11) ---
-	"sneak_strike":    {"label": "Sneak Attack",    "kind": "single", "target": "enemy", "pow": 20.0, "shock": 3.0, "flat": true, "cd": 14, "uses": 3, "desc": "Armour is a suggestion from certain angles."},
+	"sneak_strike":    {"label": "Sneak Attack",    "kind": "sneak", "target": "enemy", "pow": 20.0, "range": 34.0, "shock": 3.0, "flat": true, "cd": 14, "uses": 3, "desc": "A melee burst available from the flank or while an ally occupies the target."},
 	"cunning_action":  {"label": "Cunning Action",  "kind": "timed", "target": "friend", "dur": 12, "speed_mult": 1.3, "cd": 18, "uses": 2, "desc": "Somewhere else, suddenly."},
 	"assassinate":     {"label": "Assassinate",     "kind": "hero_strike", "target": "none", "pow": 25.0, "cd": 30, "uses": 1, "desc": "Hero-hunting. The enemy's commander bleeds."},
 	"uncanny_dodge":   {"label": "Uncanny Dodge",   "kind": "dodge", "mult": 0.5, "desc": "What reaches the hero, reaches half of them."},
@@ -328,6 +343,9 @@ const ABILITIES := {
 # spells ride along for the record; only entries with field mechanics
 # become buttons and AI options.
 const GRANTS := {
+	"barbarian": {
+		1: ["rage"],
+	},
 	"wizard": {
 		1: ["flame_hands", "detect_magic", "prestidigitation"],
 		2: ["burning_hands", "magic_missile", "sleep_working"],
@@ -366,7 +384,7 @@ const GRANTS := {
 	},
 	"druid": {
 		1: ["entangle", "cure_wounds_druid", "speak_with_animals"],
-		2: ["barkskin", "beast_sense", "enhance_ability"],
+		2: ["wild_shape", "barkskin", "beast_sense", "enhance_ability"],
 		3: ["call_lightning", "wind_wall"],
 		4: ["ice_storm_druid", "wall_of_fire_druid"],
 		5: ["awaken", "insect_plague_druid", "wall_of_stone"],
@@ -411,6 +429,25 @@ const GRANTS := {
 }
 
 
+# Tactical values are class-and-level driven. They are not a hidden copy of
+# the tabletop's six attributes: these are field pixels, formation-relative
+# collision weight, and deterministic damage per combat tick.
+const HERO_PROFILES := {
+	"barbarian": {"role": "melee", "speed": 38.0, "radius": 9.5, "weight": 3.0, "melee": 15.0, "reach": 11.0, "attack_ticks": 2},
+	"fighter":   {"role": "melee", "speed": 35.0, "radius": 9.0, "weight": 2.4, "melee": 14.0, "reach": 11.0, "attack_ticks": 2},
+	"paladin":   {"role": "melee", "speed": 34.0, "radius": 9.0, "weight": 2.5, "melee": 13.0, "reach": 11.0, "attack_ticks": 2},
+	"monk":      {"role": "melee", "speed": 44.0, "radius": 7.5, "weight": 1.4, "melee": 11.0, "reach": 10.0, "attack_ticks": 1},
+	"ranger":    {"role": "skirmish", "speed": 39.0, "radius": 8.0, "weight": 1.5, "melee": 10.0, "reach": 10.0, "attack_ticks": 2},
+	"rogue":     {"role": "flanker", "speed": 42.0, "radius": 7.5, "weight": 1.2, "melee": 10.0, "reach": 10.0, "attack_ticks": 2},
+	"druid":     {"role": "support", "speed": 35.0, "radius": 8.0, "weight": 1.5, "melee": 8.0, "reach": 10.0, "attack_ticks": 2},
+	"cleric":    {"role": "support", "speed": 33.0, "radius": 8.5, "weight": 1.8, "melee": 8.0, "reach": 10.0, "attack_ticks": 2},
+	"bard":      {"role": "support", "speed": 36.0, "radius": 8.0, "weight": 1.3, "melee": 7.0, "reach": 10.0, "attack_ticks": 2},
+	"warlock":   {"role": "caster", "speed": 34.0, "radius": 8.0, "weight": 1.3, "melee": 7.0, "reach": 10.0, "attack_ticks": 3},
+	"sorcerer":  {"role": "caster", "speed": 35.0, "radius": 7.5, "weight": 1.0, "melee": 6.0, "reach": 9.0, "attack_ticks": 3},
+	"wizard":    {"role": "caster", "speed": 32.0, "radius": 7.5, "weight": 0.9, "melee": 5.0, "reach": 9.0, "attack_ticks": 3},
+}
+
+
 static func has_class(class_id: String) -> bool:
 	return CLASSES.has(class_id)
 
@@ -419,6 +456,13 @@ static func class_label(class_id: String) -> String:
 	if not CLASSES.has(class_id):
 		return class_id.capitalize()
 	return str(CLASSES[class_id]["label"])
+
+
+static func tactical_profile(class_id: String) -> Dictionary:
+	return HERO_PROFILES.get(class_id, {
+		"role": "melee", "speed": 34.0, "radius": 8.0, "weight": 1.5,
+		"melee": 9.0, "reach": 10.0, "attack_ticks": 2,
+	})
 
 
 static func xp_for_level(level: int) -> int:

@@ -8,6 +8,8 @@ extends Control
 
 signal pressed
 
+const Appearance = preload("res://scripts/portrait_appearance.gd")
+
 var genome: Dictionary = {}
 var age: int = 30
 var is_female: bool = false
@@ -107,30 +109,15 @@ func _portrait_pose(cx: float, head_c: Vector2, fw: float, fh: float) -> Diction
 
 
 func _skin_color() -> Color:
-	var warm := Color(1.0, 0.82, 0.62).lerp(Color(0.55, 0.34, 0.22), _g("skin"))
-	var cool := Color(0.92, 0.78, 0.70).lerp(Color(0.43, 0.31, 0.27), _g("skin"))
-	return cool.lerp(warm, _g("undertone"))
+	return Appearance.skin_color(genome, str(_ctx("race", "human")), context)
 
 
 func _hair_color() -> Color:
-	var t := _g("hair_hue")
-	var col: Color
-	if t < 0.33:
-		col = Color(0.85, 0.72, 0.45).lerp(Color(0.55, 0.27, 0.12), t / 0.33)
-	elif t < 0.66:
-		col = Color(0.55, 0.27, 0.12).lerp(Color(0.32, 0.20, 0.11), (t - 0.33) / 0.33)
-	else:
-		col = Color(0.32, 0.20, 0.11).lerp(Color(0.08, 0.07, 0.06), (t - 0.66) / 0.34)
-	if age > 40:
-		col = col.lerp(Color(0.78, 0.77, 0.74), clampf((age - 40) / 28.0, 0.0, 0.85))
-	return col
+	return Appearance.hair_color(genome, age, context)
 
 
 func _eye_color() -> Color:
-	var t := _g("eye_hue")
-	if t < 0.5:
-		return Color(0.30, 0.45, 0.62).lerp(Color(0.30, 0.48, 0.30), t / 0.5)
-	return Color(0.30, 0.48, 0.30).lerp(Color(0.28, 0.18, 0.10), (t - 0.5) / 0.5)
+	return Appearance.eye_color(genome, context)
 
 
 func _realm_color() -> Color:
@@ -383,12 +370,35 @@ func _draw_head(cx: float, head_c: Vector2, fw: float, fh: float, skin: Color, s
 	var ear_scale := lerpf(0.78, 1.20, _g("ear_size"))
 	var ear_rx := maxf(1.2, fw * 0.115 * ear_scale)
 	var ear_ry := maxf(1.8, fh * 0.18 * ear_scale)
-	draw_colored_polygon(_ellipse(far_ear, ear_rx * 0.56, ear_ry * 0.76, 18), skin.darkened(0.11))
-	draw_colored_polygon(_ellipse(near_ear, ear_rx, ear_ry, 22), skin.darkened(0.035))
-	draw_arc(near_ear + Vector2(ear_rx * 0.04, 0.0), ear_rx * 0.58, -PI * 0.70, PI * 0.70,
-		14, skin.darkened(0.24), maxf(0.7, s * 0.006), true)
-	draw_arc(near_ear + Vector2(ear_rx * 0.12, ear_ry * 0.16), ear_rx * 0.30, -PI * 0.45, PI * 0.55,
-		9, skin.lightened(0.04), maxf(0.6, s * 0.004), true)
+	var race := str(_ctx("race", "human"))
+	if race in ["elf", "half_elf", "tiefling", "half_tiefling"]:
+		# Pointed ears remain unequal in the three-quarter pose; the near ear is
+		# a full paper-doll layer while the far one is compressed by perspective.
+		draw_colored_polygon(PackedVector2Array([
+			far_ear + Vector2(-ear_rx * 0.32, -ear_ry * 0.55),
+			far_ear + Vector2(ear_rx * 1.85, -ear_ry * 0.33),
+			far_ear + Vector2(-ear_rx * 0.10, ear_ry * 0.62),
+		]), skin.darkened(0.11))
+		draw_colored_polygon(PackedVector2Array([
+			near_ear + Vector2(ear_rx * 0.35, -ear_ry * 0.75),
+			near_ear + Vector2(-ear_rx * 2.55, -ear_ry * 0.24),
+			near_ear + Vector2(ear_rx * 0.25, ear_ry * 0.82),
+		]), skin.darkened(0.035))
+		draw_line(near_ear + Vector2(ear_rx * 0.15, -ear_ry * 0.38),
+			near_ear + Vector2(-ear_rx * 1.62, -ear_ry * 0.19), skin.darkened(0.24),
+			maxf(0.7, s * 0.006), true)
+	elif race in ["orc", "half_orc"]:
+		draw_colored_polygon(_ellipse(far_ear, ear_rx * 0.82, ear_ry * 0.82, 18), skin.darkened(0.11))
+		draw_colored_polygon(_ellipse(near_ear + Vector2(-ear_rx * 0.18, 0.0), ear_rx * 1.35, ear_ry * 1.04, 22), skin.darkened(0.035))
+		draw_arc(near_ear + Vector2(-ear_rx * 0.12, 0.0), ear_rx * 0.78, -PI * 0.70, PI * 0.70,
+			14, skin.darkened(0.24), maxf(0.7, s * 0.006), true)
+	else:
+		draw_colored_polygon(_ellipse(far_ear, ear_rx * 0.56, ear_ry * 0.76, 18), skin.darkened(0.11))
+		draw_colored_polygon(_ellipse(near_ear, ear_rx, ear_ry, 22), skin.darkened(0.035))
+		draw_arc(near_ear + Vector2(ear_rx * 0.04, 0.0), ear_rx * 0.58, -PI * 0.70, PI * 0.70,
+			14, skin.darkened(0.24), maxf(0.7, s * 0.006), true)
+		draw_arc(near_ear + Vector2(ear_rx * 0.12, ear_ry * 0.16), ear_rx * 0.30, -PI * 0.45, PI * 0.55,
+			9, skin.lightened(0.04), maxf(0.6, s * 0.004), true)
 
 	# Rounded, unequal contours replace the old mirrored jaw diamond.
 	var face := PackedVector2Array([
@@ -925,6 +935,51 @@ func _draw_frame(s: float) -> void:
 		draw_rect(Rect2(Vector2.ONE, size - Vector2.ONE * 2.0), frame_col, false, 2.0)
 
 
+func _draw_ancestry_back(head_c: Vector2, fw: float, fh: float, hair: Color) -> void:
+	var race := str(_ctx("race", "human"))
+	if race not in ["tiefling", "half_tiefling"]:
+		return
+	var extent := 1.0 if race == "tiefling" else 0.68
+	var horn := hair.darkened(0.34).lerp(Color("4a3d3a"), 0.48)
+	# Unequal horns follow the same three-quarter perspective as the face.
+	draw_colored_polygon(PackedVector2Array([
+		head_c + Vector2(-fw * 0.50, -fh * 0.74),
+		head_c + Vector2(-fw * (0.94 + 0.42 * extent), -fh * (1.05 + 0.55 * extent)),
+		head_c + Vector2(-fw * 0.06, -fh * 0.91),
+	]), horn)
+	draw_colored_polygon(PackedVector2Array([
+		head_c + Vector2(fw * 0.15, -fh * 0.91),
+		head_c + Vector2(fw * (0.48 + 0.30 * extent), -fh * (1.16 + 0.42 * extent)),
+		head_c + Vector2(fw * 0.67, -fh * 0.72),
+	]), horn.lightened(0.055))
+	draw_line(head_c + Vector2(-fw * 0.44, -fh * 0.82),
+		head_c + Vector2(-fw * (1.00 + 0.22 * extent), -fh * (1.12 + 0.34 * extent)),
+		horn.lightened(0.18), maxf(0.7, minf(fw, fh) * 0.035), true)
+
+
+func _draw_ancestry_front(cx: float, head_c: Vector2, fw: float, fh: float, skin: Color, s: float) -> void:
+	var race := str(_ctx("race", "human"))
+	if race not in ["orc", "half_orc"]:
+		return
+	var pose := _portrait_pose(cx, head_c, fw, fh)
+	var mouth: Vector2 = pose["mouth"]
+	var size_mult := 1.0 if race == "orc" else 0.66
+	var ivory := Color("ead9b3").lerp(skin.lightened(0.20), 0.12)
+	# The near tusk is stronger; the far tusk is compressed with the far eye.
+	draw_colored_polygon(PackedVector2Array([
+		mouth + Vector2(fw * 0.25, fh * 0.015),
+		mouth + Vector2(fw * (0.31 + 0.05 * size_mult), -fh * (0.04 + 0.11 * size_mult)),
+		mouth + Vector2(fw * 0.39, fh * 0.045),
+	]), ivory)
+	draw_colored_polygon(PackedVector2Array([
+		mouth + Vector2(-fw * 0.23, fh * 0.025),
+		mouth + Vector2(-fw * (0.21 + 0.02 * size_mult), -fh * (0.02 + 0.07 * size_mult)),
+		mouth + Vector2(-fw * 0.13, fh * 0.035),
+	]), ivory.darkened(0.08))
+	draw_line(mouth + Vector2(fw * 0.22, fh * 0.052), mouth + Vector2(fw * 0.41, fh * 0.055),
+		skin.darkened(0.38), maxf(0.6, s * 0.0038), true)
+
+
 func _draw() -> void:
 	var s := minf(size.x, size.y)
 	if s <= 0.0:
@@ -949,8 +1004,10 @@ func _draw() -> void:
 
 	_draw_clothing(cx, s, shoulder_y)
 	_draw_hair_back(cx, head_c, fw, fh, s, hair, style)
+	_draw_ancestry_back(head_c, fw, fh, hair)
 	_draw_head(cx, head_c, fw, fh, skin, s)
 	_draw_features(cx, head_c, fw, fh, s, skin, hair)
+	_draw_ancestry_front(cx, head_c, fw, fh, skin, s)
 	_draw_marks(cx, head_c, fw, fh, s, skin)
 	_draw_beard(cx, head_c, fw, fh, hair, s)
 	_draw_hair_front(cx, head_c, fw, fh, s, hair, style)

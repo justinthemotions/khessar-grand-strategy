@@ -9,6 +9,7 @@ extends RefCounted
 signal event_logged(text: String)
 signal event_raised  # a choice event awaits the player — the UI shows a popup
 
+const Appearance = preload("res://scripts/portrait_appearance.gd")
 const TICK_ZERO_YEAR: int = 0   # Year Zero of the Silence — the Night of the Third Hour
 const ADULT_AGE: int = 16
 
@@ -6673,7 +6674,7 @@ func _seed_heroes() -> void:
 	var drev := _hero_character("Drev", "House Karn-Vol", false, 31, 1, "orc", "karn_vol",
 		{"dip": 6, "mar": 16, "stw": 6, "int": 8, "lrn": 5, "prw": 18},
 		["Brave", "Impulsive"], "Pragmatic")
-	_hero_bless(drev.id, "fighter", 4, {"sub": "clan_sworn", "deploys": "eager"})
+	_hero_bless(drev.id, "barbarian", 4, {"sub": "berserker", "deploys": "eager"})
 	var grim_vg := _hero_character("Grim", "House Vol-Gar", false, 61, 1, "orc", "karn_vol",
 		{"dip": 12, "mar": 18, "stw": 10, "int": 10, "lrn": 9, "prw": 14},
 		["Patient", "Stoic"], "Pragmatic")
@@ -6863,6 +6864,8 @@ func hero_info(cid: int) -> Dictionary:
 	var c: SimCharacter = characters.get(cid)
 	if c == null or c.hero_level <= 0 or not c.alive:
 		return {}
+	var appearance := Appearance.battle_profile(c.genome, c.age_years(tick), c.is_female,
+		c.race, c.culture, {"traits": c.traits})
 	return {
 		"id": c.id, "name": full_name(c), "class": c.hero_class,
 		"subclass": c.hero_subclass if c.hero_subclass != "" else HeroDB.default_subclass(c.hero_class),
@@ -6871,6 +6874,7 @@ func hero_info(cid: int) -> Dictionary:
 		"hp": c.hero_hp, "hp_max": c.hero_hp_max,
 		"prowess": c.prowess, "names": c.names_carried,
 		"traits": c.traits.duplicate(), "oath_intact": c.oath_token_intact,
+		"appearance": appearance,
 	}
 
 
