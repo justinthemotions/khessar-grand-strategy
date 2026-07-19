@@ -24,6 +24,11 @@ var day_in_month: int = 1
 var selected_id: int = -1
 var battle_layer: BattleView = null
 var battle_announced: bool = false
+# The Save & Menu pass: the title screen and the scribes' ledger.
+# `world` stays null until New Game / Continue / Load starts a campaign.
+var menu_layer: Control = null
+var menu_box: VBoxContainer = null   # swapped between the root menu and the save list
+var btn_save_game: Button
 var battle_panel: PanelContainer
 var btn_battle: Button
 var btn_autoresolve: Button
@@ -145,16 +150,14 @@ var intrigue_msg: Label
 
 func _ready() -> void:
 	theme = _make_theme()
-	world = SimWorld.new()
-	_build_ui()
-	world.event_logged.connect(_on_event)
-	world.event_raised.connect(_on_event_raised)
-	world.setup()
-	map_view.world = world
-	selected_id = world.realms[0].ruler_id
-	_refresh()
 	# dev aids: `godot --path . -- --screenshot` (campaign UI) or
-	# `-- --battle-screenshot` (mid-battle) save a png to user:// and quit
+	# `-- --battle-screenshot` (mid-battle) save a png to user:// and quit;
+	# both skip the title menu and start a fresh campaign directly
+	var dev_args := OS.get_cmdline_user_args()
+	if not (dev_args.has("--screenshot") or dev_args.has("--battle-screenshot")):
+		_build_menu()
+		return
+	_start_new_game()
 	if OS.get_cmdline_user_args().has("--screenshot"):
 		tabs_container.current_tab = 1  # show the Military tab in the capture
 		# stage a sample choice event so the popup is in the shot
@@ -181,7 +184,196 @@ func _capture_screenshot(path: String, wait: float) -> void:
 	get_tree().quit()
 
 
+# ---------------------------------------------------------------- title menu
+
+func _build_menu() -> void:
+	menu_layer = Control.new()
+	menu_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(menu_layer)
+
+	var bg := ColorRect.new()
+	bg.color = Color("15100a")
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	menu_layer.add_child(bg)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	menu_layer.add_child(center)
+
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 8)
+	center.add_child(column)
+
+	var title := Label.new()
+	title.text = "KHESSAR"
+	title.add_theme_font_size_override("font_size", 46)
+	title.add_theme_color_override("font_color", GOLD)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(title)
+
+	var subtitle := Label.new()
+	subtitle.text = "Grand Strategy — a history of the Silence"
+	subtitle.add_theme_font_size_override("font_size", 14)
+	subtitle.add_theme_color_override("font_color", MUTED)
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(subtitle)
+
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 24)
+	column.add_child(gap)
+
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(480, 0)
+	column.add_child(panel)
+	menu_box = VBoxContainer.new()
+	menu_box.add_theme_constant_override("separation", 8)
+	panel.add_child(menu_box)
+
+	_menu_show_root()
+
+
+func _menu_clear() -> void:
+	for child in menu_box.get_children():
+		menu_box.remove_child(child)
+		child.queue_free()
+
+
+func _menu_button(text: String, enabled: bool = true) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.disabled = not enabled
+	b.custom_minimum_size = Vector2(0, 42)
+	b.add_theme_font_size_override("font_size", 16)
+	menu_box.add_child(b)
+	return b
+
+
+func _menu_show_root() -> void:
+	_menu_clear()
+	# Continue sits on top and resumes the most recent save — manual or
+	# the yearly autosave, whichever the scribes touched last.
+	var latest := SaveLoad.latest_save()
+	if latest == "":
+		var _bc := _menu_button("Continue", false)
+	else:
+		var meta := SaveLoad.read_meta(latest)
+		var bc := _menu_button("Continue  ·  %s" % str(meta.get("date", "an unmarked page")))
+		bc.pressed.connect(func() -> void: _start_loaded_game(latest))
+	var bn := _menu_button("New Game")
+	bn.pressed.connect(_start_new_game)
+	var bl := _menu_button("Load Game", latest != "")
+	if latest != "":
+		bl.pressed.connect(_menu_show_saves)
+
+
+func _menu_show_saves() -> void:
+	_menu_clear()
+	var head := Label.new()
+	head.text = "Load Game"
+	head.add_theme_font_size_override("font_size", 16)
+	head.add_theme_color_override("font_color", GOLD)
+	menu_box.add_child(head)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, 300)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	menu_box.add_child(scroll)
+	var rows := VBoxContainer.new()
+	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rows.add_theme_constant_override("separation", 4)
+	scroll.add_child(rows)
+
+	for entry: Dictionary in SaveLoad.list_saves():
+		var path: String = str(entry["path"])
+		var meta: Dictionary = entry["meta"]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		rows.add_child(row)
+
+		var kind := "autosave" if path.get_file().begins_with("autosave") else "saved"
+		var b := Button.new()
+		b.text = "%s — %s" % [str(meta.get("date", "?")), str(meta.get("realm", ""))]
+		b.tooltip_text = "%s under %s · %s %s" % [str(meta.get("date", "?")),
+			str(meta.get("ruler", "an empty throne")), kind, str(meta.get("saved_text", ""))]
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.pressed.connect(func() -> void: _start_loaded_game(path))
+		row.add_child(b)
+
+		var stamp := Label.new()
+		stamp.text = "%s · %s" % [kind, str(meta.get("saved_text", ""))]
+		stamp.add_theme_font_size_override("font_size", 11)
+		stamp.add_theme_color_override("font_color", MUTED)
+		row.add_child(stamp)
+
+		# delete asks twice — the first press only changes its mind out loud
+		var del := Button.new()
+		del.text = "✕"
+		del.tooltip_text = "Delete this save"
+		del.pressed.connect(func() -> void:
+			if del.text == "✕":
+				del.text = "Delete?"
+			else:
+				SaveLoad.delete_save(path)
+				_menu_show_saves())
+		row.add_child(del)
+
+	var back := _menu_button("Back")
+	back.pressed.connect(_menu_show_root)
+
+
+func _start_new_game() -> void:
+	world = SimWorld.new()
+	_build_ui()
+	world.event_logged.connect(_on_event)
+	world.event_raised.connect(_on_event_raised)
+	world.setup()
+	_enter_game()
+
+
+func _start_loaded_game(path: String) -> void:
+	var loaded := SaveLoad.load_game(path)
+	if loaded == null:
+		push_warning("SaveLoad: could not read %s" % path)
+		_menu_show_root()
+		return
+	world = loaded
+	_build_ui()
+	world.event_logged.connect(_on_event)
+	world.event_raised.connect(_on_event_raised)
+	_enter_game()
+	_on_event("[b]The chronicle resumes.[/b] The scribes take up the pen where it was set down.")
+
+
+func _enter_game() -> void:
+	map_view.world = world
+	selected_id = world.realms[0].ruler_id
+	if menu_layer != null:
+		menu_layer.queue_free()
+		menu_layer = null
+		menu_box = null
+	_refresh()
+
+
+func _on_save_pressed() -> void:
+	if world == null or battle_layer != null:
+		return
+	var slot := "manual_%d_t%d" % [int(Time.get_unix_time_from_system()), world.tick]
+	var err := SaveLoad.save_game(world, slot)
+	if err == "":
+		_on_event("[b]The chronicle is copied fair[/b] — the reign to this day is preserved.")
+	else:
+		_on_event("[i]The scribes cannot save now:[/i] %s" % err)
+
+
+func _notification(what: int) -> void:
+	# closing the window autosaves best-effort, so Continue always has a page
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and world != null and battle_layer == null:
+		var _err := SaveLoad.save_game(world, "autosave")
+
+
 func _process(delta: float) -> void:
+	if world == null:
+		return  # the title menu is up — no campaign to advance
 	var days_per_second: float = SPEEDS[speed_index]
 	if days_per_second <= 0.0:
 		return
@@ -196,6 +388,10 @@ func _process(delta: float) -> void:
 			day_in_month = 1
 			world.advance_month()
 			advanced = true
+			# each new year the scribes copy the ledger unbidden (skipped
+			# while a decision is pending — Callables cannot cross a save)
+			if world.tick % 12 == 0 and world.pending_events.is_empty():
+				var _err := SaveLoad.save_game(world, "autosave")
 	if advanced:
 		_refresh()
 	elif day_turned:
@@ -426,6 +622,13 @@ func _make_top_bar() -> PanelContainer:
 			speed_index = i
 			_refresh())
 		box.add_child(b)
+
+	btn_save_game = Button.new()
+	btn_save_game.text = "Save"
+	btn_save_game.add_theme_font_size_override("font_size", 13)
+	btn_save_game.tooltip_text = "Preserve the reign to this day (a yearly autosave runs regardless)"
+	btn_save_game.pressed.connect(_on_save_pressed)
+	box.add_child(btn_save_game)
 	return bar
 
 

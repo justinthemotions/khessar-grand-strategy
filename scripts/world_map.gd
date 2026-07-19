@@ -66,9 +66,11 @@ class MapRealm:
 var provinces: Array = []
 var duchies: Array = []
 var realms: Array = []                  # MapRealm records for every power at Year Zero
+var seed_used: int = 777                # save/load regenerates geometry from this
 
 
 func generate(seed_value: int) -> void:
+	seed_used = seed_value
 	provinces.clear()
 	duchies.clear()
 	realms.clear()

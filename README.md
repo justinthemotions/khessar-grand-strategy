@@ -296,6 +296,14 @@ a 35% chance to pass to a child.
 - **`scripts/character.gd` (SimCharacter)**: every cross-reference (spouse, parents,
   children, ruler) is an **integer id**, never an object reference. This is the
   save/load discipline decided on day one — serialization later is just dumping dicts.
+- **`scripts/save_load.gd` (SaveLoad)** cashes that day-one check: a save is a
+  reflective walk over SimWorld's script variables (RNG streams round-trip
+  seed + state; the map re-generates from its seed and re-applies mutable
+  province fields). Saves live in `user://saves/`; the title menu's Continue
+  loads the newest, a yearly autosave runs unbidden, and saving is refused
+  while an event decision is pending (option effects are Callables and cannot
+  cross a file). See `tests/save_load_test.gd` — a loaded world must advance
+  bit-identically to one that never left memory.
 - **`scripts/main.gd`** is UI only. It reads SimWorld and calls its action methods;
   it never mutates simulation state directly.
 - **The battle-layer seam is marked**: `SimWorld._skirmish_death()` is where abstract
